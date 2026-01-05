@@ -16,6 +16,8 @@ def data_dictionary_help_text() -> str:
         "- Fixations: tries `participant_id`/`subject_id`, `unique_trial_id`/`trial_id`/`unique_paragraph_id`, "
         "`CURRENT_FIX_DURATION`, `CURRENT_FIX_X`/`CURRENT_FIX_Y`, and optionally `CURRENT_FIX_START`, "
         "`IA_ID`, `pass_index`/`reread`, `saccade_type`, `eye`, `noise_flag`.\n"
+        "- Raw gaze (optional): millisecond-level data with `participant_id`, `trial_id`, `x`, `y`. "
+        "Each row represents one timepoint.\n"
         "Only fields present in your data are used for filters, coloring, and tooltips."
     )
 
@@ -25,7 +27,7 @@ def render_dictionary() -> None:
         st.markdown(data_dictionary_help_text())
 
 
-def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int) -> Dict:
+def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False) -> Dict:
     st.sidebar.header("Visualization controls")
     show_words = st.sidebar.checkbox("Show word boxes", value=True)
     show_labels = st.sidebar.checkbox("Show word labels", value=True)
@@ -33,6 +35,12 @@ def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int) -> Dict
     show_order = st.sidebar.checkbox("Number fixation order", value=True)
     show_saccades = st.sidebar.checkbox("Show saccades", value=True)
     show_heatmap = st.sidebar.checkbox("Add density heatmap", value=True)
+    show_raw_gaze = st.sidebar.checkbox(
+        "Show raw gaze data",
+        value=False,
+        help="Display millisecond-level gaze positions as small dots.",
+        disabled=not has_raw_gaze,
+    ) if has_raw_gaze else False
 
     color_fields = [
         field
@@ -70,10 +78,25 @@ def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int) -> Dict
     show_colorbars = False
     fixation_color_range = None
     heatmap_range = None
+    fixation_colorscale = "Blues"
+    heatmap_colorscale = "Oranges"
     if advanced:
+        from .constants import COLORSCALES, DEFAULT_FIXATION_COLORSCALE, DEFAULT_HEATMAP_COLORSCALE
         order_font_color = st.sidebar.color_picker("Order label color", value="#111111")
         order_font_size = st.sidebar.slider("Order label size", 6, 72, int(base_font_size))
         size_min, size_max = st.sidebar.slider("Fixation marker size (px)", 4, 40, (8, 24))
+        fixation_colorscale = st.sidebar.selectbox(
+            "Fixation colorscale",
+            options=COLORSCALES,
+            index=COLORSCALES.index(DEFAULT_FIXATION_COLORSCALE),
+            help="Color palette for fixation markers when coloring by numeric values.",
+        )
+        heatmap_colorscale = st.sidebar.selectbox(
+            "Heatmap colorscale",
+            options=COLORSCALES,
+            index=COLORSCALES.index(DEFAULT_HEATMAP_COLORSCALE),
+            help="Color palette for the density heatmap overlay.",
+        )
         show_colorbars = st.sidebar.checkbox("Show color bars", value=False)
         if show_colorbars and pd.api.types.is_numeric_dtype(trial_fixations[color_by]):
             cmin = float(trial_fixations[color_by].min())
@@ -107,6 +130,7 @@ def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int) -> Dict
         show_order=show_order,
         show_saccades=show_saccades,
         show_heatmap=show_heatmap,
+        show_raw_gaze=show_raw_gaze,
         color_by=color_by,
         heatmap_metric=heatmap_metric,
         x_field=x_field,
@@ -117,4 +141,6 @@ def sidebar_controls(trial_fixations: pd.DataFrame, base_font_size: int) -> Dict
         show_colorbars=show_colorbars,
         fixation_color_range=fixation_color_range,
         heatmap_range=heatmap_range,
+        fixation_colorscale=fixation_colorscale,
+        heatmap_colorscale=heatmap_colorscale,
     )

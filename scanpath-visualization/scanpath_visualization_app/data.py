@@ -39,6 +39,76 @@ def load_sample_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return words, fixations
 
 
+@st.cache_data
+def load_sample_raw_gaze() -> pd.DataFrame:
+    """Load the bundled raw gaze sample data (millisecond-level x,y coordinates)."""
+    data_root = resources.files(PACKAGE_NAME).joinpath("sample_data")
+    raw_gaze_resource = data_root / "raw_gaze.csv"
+
+    try:
+        with resources.as_file(raw_gaze_resource) as raw_gaze_path:
+            raw_gaze = pd.read_csv(raw_gaze_path)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+    return raw_gaze
+
+
+def infer_raw_gaze_schema(raw_gaze: pd.DataFrame) -> Optional[Dict[str, str]]:
+    """Infer schema for raw millisecond-level gaze data."""
+    participant = pick_column(raw_gaze, ["participant_id", "subject_id", "participant", "recording_session_label"])
+    trial = pick_column(
+        raw_gaze,
+        ["unique_trial_id", "trial_id", "unique_paragraph_id", "paragraph_id", "trial", "trial_index", "TRIAL_INDEX"],
+    )
+    text = pick_column(
+        raw_gaze,
+        ["text", "IA_LABEL", "ia_label", "label", "word", "WORD", "content", "CONTENT", "token", "TOKEN"],
+    )
+    x = pick_column(raw_gaze, ["x", "X", "FPOGX", "gaze_x", "GAZE_X"])
+    y = pick_column(raw_gaze, ["y", "Y", "FPOGY", "gaze_y", "GAZE_Y"])
+    timestamp = pick_column(raw_gaze, ["timestamp", "time", "ms", "timestamp_ms", "time_ms"])
+
+    missing_core = [
+        name for name, val in [("participant", participant), ("trial", trial), ("x", x), ("y", y)]
+        if val is None
+    ]
+    if missing_core:
+        st.error(f"Missing required raw gaze fields in uploaded data: {', '.join(missing_core)}")
+        return None
+
+    return dict(
+        participant=participant,
+        trial=trial,
+        text=text,
+        x=x,
+        y=y,
+        timestamp=timestamp,
+    )
+
+
+def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
+    """Normalize raw gaze data to canonical column names."""
+    df = pd.DataFrame()
+    df["participant_id"] = raw_gaze[schema["participant"]].astype(str)
+    trial_col = "unique_trial_id" if "unique_trial_id" in raw_gaze.columns else schema["trial"]
+    df["trial_id"] = raw_gaze[trial_col].astype(str)
+    if "unique_trial_id" in raw_gaze.columns:
+        df["unique_trial_id"] = raw_gaze["unique_trial_id"].astype(str)
+    if schema.get("text"):
+        df["text"] = raw_gaze[schema["text"]].astype(str)
+    else:
+        df["text"] = ""
+    df["x"] = pd.to_numeric(raw_gaze[schema["x"]], errors="coerce")
+    df["y"] = pd.to_numeric(raw_gaze[schema["y"]], errors="coerce")
+    if schema.get("timestamp"):
+        df["timestamp_ms"] = pd.to_numeric(raw_gaze[schema["timestamp"]], errors="coerce")
+    else:
+        # Each row represents one millisecond, so use row index within trial as timestamp
+        df["timestamp_ms"] = df.groupby(["participant_id", "trial_id"]).cumcount()
+    return df
+
+
 def infer_word_schema(words: pd.DataFrame) -> Optional[Dict[str, str]]:
     participant = pick_column(words, ["participant_id", "subject_id", "participant", "recording_session_label"])
     trial = pick_column(
@@ -343,6 +413,18 @@ def filter_data(
         fix_mask &= ~fixations["noise_flag"].fillna(False)
     fixations_filtered = fixations[fix_mask]
     return words_filtered, fixations_filtered
+
+
+def filter_raw_gaze(
+    raw_gaze: pd.DataFrame,
+    participants: list,
+    trials: list,
+) -> pd.DataFrame:
+    """Filter raw gaze data by participants and trials."""
+    if raw_gaze.empty:
+        return raw_gaze
+    mask = raw_gaze["participant_id"].isin(participants) & raw_gaze["trial_id"].isin(trials)
+    return raw_gaze[mask]
 
 
 def compute_canvas_size(words: pd.DataFrame, fixations: pd.DataFrame) -> Tuple[int, int]:
