@@ -37,15 +37,12 @@ def sidebar_controls(
     show_order = st.sidebar.checkbox("Number fixation order", value=True)
     show_saccades = st.sidebar.checkbox("Show saccades", value=True)
     show_heatmap = st.sidebar.checkbox("Add density heatmap", value=True)
-    show_raw_gaze = (
-        st.sidebar.checkbox(
-            "Show raw gaze data",
-            value=False,
-            help="Display millisecond-level gaze positions as small dots.",
-            disabled=not has_raw_gaze,
-        )
-        if has_raw_gaze
-        else False
+    show_raw_gaze = st.sidebar.checkbox(
+        "Show raw gaze data",
+        value=False,
+        help="Display millisecond-level gaze positions as small dots. "
+        + ("" if has_raw_gaze else "(No raw gaze data loaded)"),
+        disabled=not has_raw_gaze,
     )
 
     color_fields = [

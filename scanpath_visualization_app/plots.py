@@ -138,10 +138,10 @@ def make_scanpath_figure(
                 y=raw_gaze["y"],
                 mode="markers",
                 marker=dict(
-                    size=3,
+                    size=4,
                     color=color_vals,
                     colorscale=colorscale,
-                    opacity=0.5,
+                    opacity=0.6,
                     showscale=False,
                 ),
                 hovertemplate=(
@@ -840,6 +840,9 @@ def make_comparison_figure(
     canvas_height: int,
     font_family: str,
     base_font_size: int,
+    show_words: bool = True,
+    show_word_labels: bool = False,
+    trial_labels: Optional[Tuple[str, str]] = None,
 ) -> go.Figure:
     fig = go.Figure()
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
@@ -871,6 +874,25 @@ def make_comparison_figure(
         if not trial_fix.empty:
             x_candidates.extend([trial_fix["x"].min(), trial_fix["x"].max()])
             y_candidates.extend([trial_fix["y"].min(), trial_fix["y"].max()])
+
+        # Build a concise display name (optionally provided by caller)
+        text_id = None
+        if "paragraph_id" in trial_words.columns and not trial_words.empty:
+            text_id = trial_words["paragraph_id"].iloc[0]
+        display_name = None
+        if trial_labels is not None and len(trial_labels) > idx:
+            display_name = trial_labels[idx]
+        else:
+            text_str = str(text_id) if text_id is not None else ""
+            trial_str = str(trial_id)
+            contains_text = text_str and text_str.lower() in trial_str.lower()
+            if text_str:
+                display_name = f"{participant} · {text_str}"
+                if not contains_text:
+                    display_name = f"{display_name} (trial {trial_str})"
+            else:
+                display_name = f"{participant} · {trial_str}"
+
         fig.add_trace(
             go.Scatter(
                 x=trial_fix["x"],
@@ -882,21 +904,47 @@ def make_comparison_figure(
                     line=dict(color="#111", width=0.5),
                 ),
                 line=dict(color=palette[idx], width=2, dash="solid"),
-                name=f"{participant} – {trial_id}",
+                name=display_name,
                 text=trial_fix["order_in_trial"],
                 textposition="top center",
                 textfont=font_settings,
                 hovertemplate=(
-                    f"{participant}-{trial_id} "
+                    f"{display_name} "
                     "Order %{text}<br>Time %{customdata[0]} ms<br>Duration %{customdata[1]} ms<extra></extra>"
                 ),
                 customdata=trial_fix[["timestamp_ms", "duration_ms"]],
             )
         )
-        existing_shapes = list(fig.layout.shapes) if fig.layout.shapes else []
-        fig.update_layout(
-            shapes=existing_shapes + build_word_boxes(trial_words, color=palette[idx])
-        )
+        if show_words:
+            existing_shapes = list(fig.layout.shapes) if fig.layout.shapes else []
+            fig.update_layout(
+                shapes=existing_shapes
+                + build_word_boxes(trial_words, color=palette[idx])
+            )
+        if show_word_labels and not trial_words.empty and "text" in trial_words.columns:
+            word_customdata = None
+            hover_tmpl = "Word %{text}<extra></extra>"
+            if "word_id" in trial_words.columns and "line_idx" in trial_words.columns:
+                word_customdata = trial_words[["word_id", "line_idx"]]
+                hover_tmpl = (
+                    "Word %{text}<br>Word ID %{customdata[0]}<br>Line %{customdata[1]}<extra></extra>"
+                )
+            fig.add_trace(
+                go.Scatter(
+                    x=trial_words["x"] + trial_words["width"] / 2,
+                    y=trial_words["y"] + trial_words["height"] / 2,
+                    text=trial_words["text"],
+                    mode="text",
+                    showlegend=False,
+                    textfont=dict(
+                        color="#343a40",
+                        size=base_font_size,
+                        family=font_settings["family"],
+                    ),
+                    hovertemplate=hover_tmpl,
+                    customdata=word_customdata,
+                )
+            )
 
     x_range = [0, canvas_width]
     y_range = [canvas_height, 0]

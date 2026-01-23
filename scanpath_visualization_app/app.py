@@ -265,7 +265,7 @@ def select_trial(
                 "← Prev",
                 key=f"{key_prefix}_prev_btn" if key_prefix else "prev_btn",
                 disabled=current_idx <= 0,
-                use_container_width=True,
+                width='stretch',
             ):
                 st.session_state[state_key] = current_idx - 1
                 st.rerun()
@@ -274,7 +274,7 @@ def select_trial(
                 "Next →",
                 key=f"{key_prefix}_next_btn" if key_prefix else "next_btn",
                 disabled=current_idx >= len(trial_options) - 1,
-                use_container_width=True,
+                width='stretch',
             ):
                 st.session_state[state_key] = current_idx + 1
                 st.rerun()
@@ -583,6 +583,34 @@ def export_filtered_trials(
     )
 
 
+def _friendly_trial_label(
+    participant_id: str,
+    trial_id: str,
+    text_id: Optional[str],
+    existing_labels: set[str],
+    prefix: str = "",
+) -> str:
+    """Create a short, de-duplicated label for comparison dropdowns/legends."""
+    trial_str = str(trial_id) if trial_id is not None else ""
+    text_str = str(text_id) if text_id is not None else ""
+    text_str = text_str.strip()
+    trial_contains_text = text_str and text_str.lower() in trial_str.lower()
+
+    if text_str:
+        base = f"{participant_id} · {text_str}"
+        # Only append trial id when it isn't already encoded in the text label
+        if not trial_contains_text:
+            base = f"{base} (trial {trial_str})" if trial_str else base
+    else:
+        base = f"{participant_id} · {trial_str}" if trial_str else participant_id
+
+    label = f"{prefix}{base}"
+    if label in existing_labels:
+        label = f"{prefix}{base} [{trial_str or 'trial'}]"
+    existing_labels.add(label)
+    return label
+
+
 def _build_comparison_options(
     combos: pd.DataFrame,
     selection_mode: str,
@@ -605,6 +633,7 @@ def _build_comparison_options(
 
     options: list[Tuple[str, str, str]] = []
     added = set()
+    used_labels: set[str] = set()
 
     # Helper to add options from a filtered dataframe
     def add_options(df: pd.DataFrame, prefix: str = ""):
@@ -612,10 +641,12 @@ def _build_comparison_options(
             key = (row.participant_id, row.trial_id)
             if key not in added and key != (primary_participant, primary_trial):
                 text_id = getattr(row, paragraph_field, "")
-                label = (
-                    f"{prefix}{row.participant_id} / {row.trial_id} · {text_id}"
-                    if prefix
-                    else f"{row.participant_id} / {row.trial_id} · {text_id}"
+                label = _friendly_trial_label(
+                    row.participant_id,
+                    row.trial_id,
+                    text_id,
+                    used_labels,
+                    prefix=prefix,
                 )
                 options.append((row.participant_id, row.trial_id, label))
                 added.add(key)
@@ -775,6 +806,38 @@ def render_single_trial_tab(
         and compare_participant is not None
         and compare_trial is not None
     ):
+        paragraph_field = (
+            "unique_paragraph_id"
+            if "unique_paragraph_id" in combos.columns
+            else "paragraph_id"
+        )
+
+        def _lookup_text_id(participant_id: str, trial_id: str) -> Optional[str]:
+            match = combos[
+                (combos["participant_id"] == participant_id)
+                & (combos["trial_id"] == trial_id)
+            ]
+            if match.empty or paragraph_field not in match.columns:
+                return None
+            return str(match.iloc[0][paragraph_field])
+
+        label_pool: set[str] = set()
+        primary_text_id = selected_text or _lookup_text_id(
+            selected_participant, selected_trial
+        )
+        compare_text_id = _lookup_text_id(compare_participant, compare_trial)
+        primary_label = _friendly_trial_label(
+            selected_participant,
+            selected_trial,
+            primary_text_id,
+            label_pool,
+        )
+        compare_label = _friendly_trial_label(
+            compare_participant,
+            compare_trial,
+            compare_text_id,
+            label_pool,
+        )
         trial_a = (selected_participant, selected_trial)
         trial_b = (compare_participant, compare_trial)
 
@@ -787,6 +850,9 @@ def render_single_trial_tab(
             canvas_height=int(canvas_height),
             font_family=font_family,
             base_font_size=int(base_font_size),
+            show_words=viz_settings["show_words"],
+            show_word_labels=viz_settings["show_labels"],
+            trial_labels=(primary_label, compare_label),
         )
         st.plotly_chart(fig_compare, width="content", config={"responsive": False})
     else:
@@ -930,7 +996,7 @@ def render_metrics_tab(
     st.dataframe(
         display_df,
         hide_index=True,
-        use_container_width=True,
+        width='stretch',
     )
     st.caption("Word-level data with computed reading metrics where available.")
 
@@ -964,21 +1030,181 @@ def render_fixations_tab(fixations_filtered: pd.DataFrame) -> None:
     st.dataframe(
         display_df,
         hide_index=True,
-        use_container_width=True,
+        width='stretch',
     )
     st.caption(
         "All fixation records after applying filters; includes ids, timing, and optional flags."
     )
 
 
+def render_raw_gaze_tab(raw_gaze_filtered: pd.DataFrame) -> None:
+    st.subheader("Raw gaze data")
+
+    if raw_gaze_filtered.empty:
+        st.info("No raw gaze data available after filtering.")
+        return
+
+    PAGE_SIZE = 1000
+    total_rows = len(raw_gaze_filtered)
+    total_pages = max(1, (total_rows + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if total_rows > PAGE_SIZE:
+        st.info(
+            f"Showing {total_rows:,} rows with pagination ({PAGE_SIZE:,} per page)."
+        )
+        page = st.number_input(
+            "Page",
+            min_value=1,
+            max_value=total_pages,
+            value=1,
+            key="raw_gaze_page",
+            help=f"Total pages: {total_pages:,}",
+        )
+        start_idx = (page - 1) * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, total_rows)
+        display_df = raw_gaze_filtered.iloc[start_idx:end_idx]
+        st.caption(f"Showing rows {start_idx + 1:,} – {end_idx:,} of {total_rows:,}")
+    else:
+        display_df = raw_gaze_filtered
+
+    st.dataframe(display_df, hide_index=True, width="stretch")
+    st.caption("Millisecond-level gaze samples after applying filters.")
+
+
 def render_raw_data_tab(
-    words_filtered: pd.DataFrame, fixations_filtered: pd.DataFrame
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    raw_gaze_filtered: pd.DataFrame,
 ) -> None:
-    word_tab, fixation_tab = st.tabs(["Word-level", "Fixation-level"])
+    word_tab, fixation_tab, raw_gaze_tab = st.tabs(
+        ["Word-level", "Fixation-level", "Raw gaze"]
+    )
     with word_tab:
         render_metrics_tab(words_filtered, fixations_filtered)
     with fixation_tab:
         render_fixations_tab(fixations_filtered)
+    with raw_gaze_tab:
+        render_raw_gaze_tab(raw_gaze_filtered)
+
+
+def _safe_summary(series: pd.Series) -> dict:
+    if series.empty:
+        nan_val = float("nan")
+        return dict(mean=nan_val, std=nan_val, min=nan_val, max=nan_val, median=nan_val)
+    return dict(
+        mean=float(series.mean()),
+        std=float(series.std(ddof=0)),
+        min=float(series.min()),
+        max=float(series.max()),
+        median=float(series.median()),
+    )
+
+
+def render_data_statistics_tab(
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    raw_gaze_filtered: pd.DataFrame,
+) -> None:
+    st.subheader("Dataset statistics")
+
+    participant_ids = set(words_filtered["participant_id"].unique()) | set(
+        fixations_filtered["participant_id"].unique()
+    )
+    trial_ids = set(words_filtered["trial_id"].unique()) | set(
+        fixations_filtered["trial_id"].unique()
+    )
+    paragraph_col = (
+        "unique_paragraph_id"
+        if "unique_paragraph_id" in words_filtered.columns
+        else "paragraph_id"
+    )
+    text_ids = (
+        set(words_filtered[paragraph_col].unique()) if paragraph_col in words_filtered.columns else set()
+    )
+
+    num_participants = len(participant_ids)
+    num_trials = len(trial_ids)
+    num_texts = len(text_ids)
+    num_fixations = len(fixations_filtered)
+    num_words = len(words_filtered)
+    num_gaze_points = len(raw_gaze_filtered) if not raw_gaze_filtered.empty else 0
+
+    top_cols = st.columns(6)
+    top_cols[0].metric("Participants", f"{num_participants:,}")
+    top_cols[1].metric("Texts", f"{num_texts:,}")
+    top_cols[2].metric("Trials", f"{num_trials:,}")
+    top_cols[3].metric("Fixations", f"{num_fixations:,}")
+    top_cols[4].metric("Words", f"{num_words:,}")
+    top_cols[5].metric(
+        "Gaze points", f"{num_gaze_points:,}", help="Counts raw gaze samples if provided."
+    )
+
+    st.divider()
+
+    # Trials per participant
+    trial_source = fixations_filtered if not fixations_filtered.empty else words_filtered
+    trials_per_participant = (
+        trial_source.groupby("participant_id")["trial_id"].nunique()
+        if not trial_source.empty
+        else pd.Series(dtype=float)
+    )
+    trials_summary = _safe_summary(trials_per_participant)
+
+    # Fixations per trial
+    fixations_per_trial = (
+        fixations_filtered.groupby(["participant_id", "trial_id"]).size()
+        if not fixations_filtered.empty
+        else pd.Series(dtype=float)
+    )
+    fixations_summary = _safe_summary(fixations_per_trial)
+
+    # Words per trial
+    words_per_trial = (
+        words_filtered.groupby(["participant_id", "trial_id"]).size()
+        if not words_filtered.empty
+        else pd.Series(dtype=float)
+    )
+    words_summary = _safe_summary(words_per_trial)
+
+    stats_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Trials per participant",
+                "Mean": trials_summary["mean"],
+                "Std": trials_summary["std"],
+                "Min": trials_summary["min"],
+                "Median": trials_summary["median"],
+                "Max": trials_summary["max"],
+            },
+            {
+                "Metric": "Fixations per trial",
+                "Mean": fixations_summary["mean"],
+                "Std": fixations_summary["std"],
+                "Min": fixations_summary["min"],
+                "Median": fixations_summary["median"],
+                "Max": fixations_summary["max"],
+            },
+            {
+                "Metric": "Words per trial",
+                "Mean": words_summary["mean"],
+                "Std": words_summary["std"],
+                "Min": words_summary["min"],
+                "Median": words_summary["median"],
+                "Max": words_summary["max"],
+            },
+        ]
+    )
+
+    st.dataframe(
+        stats_df,
+        hide_index=True,
+        width="stretch",
+        column_config={col: st.column_config.NumberColumn(format="%.2f") for col in ["Mean", "Std", "Min", "Median", "Max"]},
+    )
+
+    st.caption(
+        "Statistics computed after filtering; missing values indicate the source data was empty for that metric."
+    )
 
 
 def render_animation_tab(
@@ -1080,6 +1306,11 @@ def main() -> None:
             raw_gaze_schema = infer_raw_gaze_schema(raw_gaze_df)
             if raw_gaze_schema:
                 raw_gaze_df = normalize_raw_gaze(raw_gaze_df, raw_gaze_schema)
+            else:
+                st.sidebar.warning("Could not infer raw gaze schema from sample data")
+                raw_gaze_df = pd.DataFrame()
+        else:
+            st.sidebar.info("No sample raw gaze data available")
     else:
         uploaded_raw_gaze = st.sidebar.file_uploader(
             "Raw gaze csv (optional)",
@@ -1108,6 +1339,12 @@ def main() -> None:
             filters.get("participants", []),
             filters.get("trials", []),
         )
+        if raw_gaze_filtered.empty and not raw_gaze_df.empty:
+            st.sidebar.warning(
+                f"Raw gaze data was filtered out. "
+                f"Original: {len(raw_gaze_df)} rows, "
+                f"After filter: {len(raw_gaze_filtered)} rows"
+            )
     else:
         raw_gaze_filtered = pd.DataFrame()
 
@@ -1141,10 +1378,14 @@ def main() -> None:
         max_value=72,
         value=16,
         step=1,
-        help="Controls label text size; uses a Lucida Sans monospace family.",
+        help="Match the font size used in your experiment to keep bounding boxes aligned.",
+    )
+    font_family = st.sidebar.text_input(
+        "Word label font family",
+        value=FONT_FAMILY,
+        help="Use the exact font from the experiment (e.g., 'Arial' or a fall-back stack).",
     )
     st.sidebar.divider()
-    font_family = FONT_FAMILY
 
     # Create visualization controls once, shared by all tabs
     # Use filtered fixations to determine available fields
@@ -1153,8 +1394,8 @@ def main() -> None:
         fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
     )
 
-    tab_single, tab_animation, tab_raw = st.tabs(
-        ["Interactive Plot", "Animated Scanpath", "Raw Data"]
+    tab_single, tab_animation, tab_raw, tab_stats = st.tabs(
+        ["Interactive Plot", "Animated Scanpath", "Raw Data", "Data Statistics"]
     )
 
     with tab_single:
@@ -1183,7 +1424,12 @@ def main() -> None:
         )
 
     with tab_raw:
-        render_raw_data_tab(words_filtered, fixations_filtered)
+        render_raw_data_tab(words_filtered, fixations_filtered, raw_gaze_filtered)
+
+    with tab_stats:
+        render_data_statistics_tab(
+            words_filtered, fixations_filtered, raw_gaze_filtered
+        )
 
 
 if __name__ == "__main__":
