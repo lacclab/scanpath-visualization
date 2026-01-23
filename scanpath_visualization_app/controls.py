@@ -43,6 +43,7 @@ def sidebar_controls(
         help="Display millisecond-level gaze positions as small dots. "
         + ("" if has_raw_gaze else "(No raw gaze data loaded)"),
         disabled=not has_raw_gaze,
+        key="global_show_raw_gaze",
     )
 
     color_fields = [

@@ -709,6 +709,16 @@ def render_single_trial_tab(
 
     st.markdown(f"Showing **{selected_trial}** ")
 
+    # Per-trial raw gaze handling: if toggle is on but this trial has no data, notify
+    trial_has_raw_gaze = not trial_raw_gaze.empty
+    global_raw_toggle = bool(viz_settings.get("show_raw_gaze"))
+    if global_raw_toggle and not trial_has_raw_gaze:
+        st.toast("Raw gaze not available for this trial.", icon="⚠️")
+
+    effective_show_raw_gaze = bool(global_raw_toggle and trial_has_raw_gaze)
+
+    effective_show_raw_gaze = bool(global_raw_toggle and trial_has_raw_gaze)
+
     figure_settings = dict(
         show_words=viz_settings["show_words"],
         show_word_labels=viz_settings["show_labels"],
@@ -716,7 +726,7 @@ def render_single_trial_tab(
         show_order=viz_settings["show_order"],
         show_saccades=viz_settings["show_saccades"],
         show_heatmap=viz_settings["show_heatmap"],
-        show_raw_gaze=viz_settings["show_raw_gaze"],
+        show_raw_gaze=effective_show_raw_gaze,
         color_by=viz_settings["color_by"],
         heatmap_metric=viz_settings["heatmap_metric"]
         if viz_settings["heatmap_metric"] != "counts"
@@ -729,7 +739,7 @@ def render_single_trial_tab(
         heatmap_range=viz_settings["heatmap_range"],
         fixation_colorscale=viz_settings["fixation_colorscale"],
         heatmap_colorscale=viz_settings["heatmap_colorscale"],
-        raw_gaze=trial_raw_gaze if not trial_raw_gaze.empty else None,
+        raw_gaze=trial_raw_gaze if trial_has_raw_gaze else None,
     )
     x_field = viz_settings["x_field"]
     y_field = viz_settings["y_field"]
