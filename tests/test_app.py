@@ -98,8 +98,8 @@ class TestComputeTrialStats:
             "trial_dwell_time_ms": [5000],
         })
         fixations = pd.DataFrame({
-            "participant_id": ["p1"],
-            "trial_id": ["t1"],
+            "participant_id": ["p1", "p1"],
+            "trial_id": ["t1", "t1"],
             "duration_ms": [200, 250],
         })
         stats = compute_trial_stats(words, fixations)
