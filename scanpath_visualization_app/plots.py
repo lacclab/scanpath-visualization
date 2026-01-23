@@ -123,7 +123,8 @@ def make_scanpath_figure(
             )
 
     # Plot raw gaze data as small dots (before heatmap and fixations so it appears in background)
-    if spatial_axes and show_raw_gaze and raw_gaze is not None and not raw_gaze.empty:
+    # Render regardless of selected axes; raw gaze always uses screen coordinates (x, y)
+    if show_raw_gaze and raw_gaze is not None and not raw_gaze.empty:
         # Color by timestamp if available, otherwise uniform color
         if "timestamp_ms" in raw_gaze.columns:
             color_vals = raw_gaze["timestamp_ms"]
