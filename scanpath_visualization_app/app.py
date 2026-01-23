@@ -7,62 +7,38 @@ from typing import Dict, Iterable, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-try:
-    from .constants import FONT_FAMILY
-    from .controls import data_dictionary_help_text, sidebar_controls
-    from .data import (
-        compute_canvas_size,
-        compute_word_metrics,
-        default_filters,
-        filter_data,
-        filter_raw_gaze,
-        infer_fix_schema,
-        infer_raw_gaze_schema,
-        infer_word_schema,
-        load_sample_data,
-        load_sample_raw_gaze,
-        normalize_fixations,
-        normalize_raw_gaze,
-        normalize_words,
-    )
-    from .plots import (
-        make_comparison_figure,
-        make_scanpath_animation,
-        make_scanpath_figure,
-    )
-except ImportError:
-    # Allow running via `streamlit run scanpath_visualization_app/app.py`
+# Allow running via `streamlit run scanpath_visualization_app/app.py` by adding the
+# repository root to sys.path when executed as a script instead of a package.
+if __package__ is None or __package__ == "":
     import sys
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from scanpath_visualization_app.constants import FONT_FAMILY
-    from scanpath_visualization_app.controls import (
-        data_dictionary_help_text,
-        sidebar_controls,
-    )
-    from scanpath_visualization_app.data import (
-        compute_canvas_size,
-        compute_word_metrics,
-        default_filters,
-        filter_data,
-        filter_raw_gaze,
-        infer_fix_schema,
-        infer_raw_gaze_schema,
-        infer_word_schema,
-        load_sample_data,
-        load_sample_raw_gaze,
-        normalize_fixations,
-        normalize_raw_gaze,
-        normalize_words,
-    )
-    from scanpath_visualization_app.plots import (
-        make_comparison_figure,
-        make_scanpath_animation,
-        make_scanpath_figure,
-    )
+
+from scanpath_visualization_app.constants import FONT_FAMILY
+from scanpath_visualization_app.controls import data_dictionary_help_text, sidebar_controls
+from scanpath_visualization_app.data import (
+    compute_canvas_size,
+    compute_word_metrics,
+    default_filters,
+    filter_data,
+    filter_raw_gaze,
+    infer_fix_schema,
+    infer_raw_gaze_schema,
+    infer_word_schema,
+    load_sample_data,
+    load_sample_raw_gaze,
+    normalize_fixations,
+    normalize_raw_gaze,
+    normalize_words,
+)
+from scanpath_visualization_app.plots import (
+    make_comparison_figure,
+    make_scanpath_animation,
+    make_scanpath_figure,
+)
 
 
 st.set_page_config(
