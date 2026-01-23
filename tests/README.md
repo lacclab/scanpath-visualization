@@ -7,11 +7,17 @@ This directory contains the test suite for the scanpath visualization Streamlit 
 ### Install test dependencies
 
 ```bash
-# Using pip
-pip install -r requirements.txt
+# Using conda/mamba (recommended)
+conda env create -f environment.yml
+conda activate scanpath-visualization
+# or with mamba (faster)
+mamba env create -f environment.yml
+mamba activate scanpath-visualization
 
-# Or using uv (recommended)
-uv sync --extra test
+# Using pip (alternative)
+pip install -r requirements.txt
+# Or install in development mode with test dependencies:
+pip install -e ".[test]"
 ```
 
 ### Run all tests

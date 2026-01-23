@@ -1,5 +1,6 @@
-## Requirements for Streamlit Cloud deployment
-## This file mirrors scanpath-visualization/requirements.txt for Streamlit Cloud compatibility
+## Dependencies for scanpath-visualization-app
+## Install with: pip install -r requirements.txt
+## Or install in development mode: pip install -e ".[test]"
 streamlit>=1.52.2
 pandas>=2.3.3
 plotly>=6.5.0
@@ -7,3 +8,5 @@ numpy>=2.3.5
 pyarrow>=22.0.0
 kaleido>=0.2.1
 watchdog>=4.0.0
+pytest>=8.0.0
+pytest-cov>=4.0.0

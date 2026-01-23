@@ -9,15 +9,22 @@ This folder contains code and resources for visualizing scanpaths.
 
 An interactive Streamlit app inspired by the 14/4 brainstorming notes (`Brainstorming with our Friends 8a7bc24f13c949db84e67807703a89d0.md`). It layers text, fixations, saccades, heatmaps, and aggregates.
 
-**Run it (uv recommended)**
+**Run it**
 
 ```bash
-cd scanpath-visualization/app
-uv sync          # creates .venv from pyproject.toml/uv.lock
-uv run streamlit run app.py
-```
+# Using conda/mamba (recommended)
+conda env create -f environment.yml
+conda activate scanpath-visualization
+# or with mamba (faster)
+mamba env create -f environment.yml
+mamba activate scanpath-visualization
 
-If you prefer pip, keep `pip install -r requirements.txt` as a fallback.
+streamlit run scanpath_visualization_app/app.py
+
+# Alternative: using pip
+pip install -e .
+streamlit run scanpath_visualization_app/app.py
+```
 
 The app loads bundled demo data from `app/sample_data/` by default so you can explore immediately.
 Sample data is stored as `ia.feather` (word layout) and `fixations.feather`.

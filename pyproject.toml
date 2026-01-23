@@ -53,6 +53,3 @@ include = ["scanpath_visualization_app"]
 
 [tool.setuptools.package-data]
 "scanpath_visualization_app" = ["sample_data/*.csv"]
-
-[tool.uv]
-# Keep installs scoped to this directory; use `uv sync` to create a local .venv.

@@ -26,14 +26,20 @@ word_id = pick_column(words, ["word_id", "IA_ID", "ia_id", "ia_index"])
 ## Development Commands
 
 ```bash
-# Setup & run (recommended: uv)
-cd scanpath-visualization
-uv sync
-uv run streamlit run scanpath_visualization_app/app.py
+# Setup & run (recommended: conda/mamba)
+conda env create -f environment.yml
+conda activate scanpath-visualization
+# or with mamba (faster)
+mamba env create -f environment.yml
+mamba activate scanpath-visualization
 
-# Alternative pip install
-pip install -e .
+streamlit run scanpath_visualization_app/app.py
+# or
 scanpath-visualization  # or: python -m scanpath_visualization_app
+
+# Alternative: using pip
+pip install -e .
+streamlit run scanpath_visualization_app/app.py
 
 # Build for PyPI
 python -m build
