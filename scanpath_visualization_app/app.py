@@ -2,6 +2,28 @@
 
 This is the main entry point for the Streamlit application that visualizes
 eye-tracking scanpaths over text.
+
+Architecture:
+    - Entry point: main() function configures Streamlit and orchestrates the UI
+    - Data flow: CSV upload → schema inference → normalization → filtering → plotting
+    - UI structure: Sidebar controls + 4 tabbed views (Interactive, Animation, Raw Data, Stats)
+    
+Data Pipeline:
+    1. Load raw CSVs (words + fixations + optional raw gaze)
+    2. Infer schema via candidate column matching
+    3. Normalize to canonical column names
+    4. Apply participant/trial/paragraph filters
+    5. Build trial combinations for selection
+    6. Render visualizations with user-controlled settings
+
+Usage:
+    # Development mode (watch for changes):
+    $ streamlit run scanpath_visualization_app/app.py
+    
+    # Package mode:
+    $ python -m scanpath_visualization_app
+    # or
+    $ scanpath-visualization
 """
 
 from __future__ import annotations
@@ -56,7 +78,21 @@ from scanpath_visualization_app.utils import (  # noqa: F401
 
 
 def clamp_canvas_size(words: pd.DataFrame, fixations: pd.DataFrame) -> Tuple[int, int]:
-    """Clamp canvas dimensions to reasonable bounds (backward compat wrapper)."""
+    """Clamp canvas dimensions to reasonable bounds (backward compatibility wrapper).
+    
+    This function ensures canvas dimensions fall within safe rendering limits.
+    
+    Args:
+        words: Normalized words dataframe with spatial coordinates
+        fixations: Normalized fixations dataframe with x, y positions
+        
+    Returns:
+        Tuple of (width, height) clamped to range [100, 10000] pixels
+        
+    Note:
+        Kept for backward compatibility with existing test code. New code should
+        use compute_canvas_size() directly and apply clamping inline if needed.
+    """
     default_canvas_w, default_canvas_h = compute_canvas_size(words, fixations)
     return (
         min(max(default_canvas_w, 100), 10000),
@@ -70,7 +106,16 @@ def clamp_canvas_size(words: pd.DataFrame, fixations: pd.DataFrame) -> Tuple[int
 
 
 def configure_page() -> None:
-    """Set up Streamlit page configuration and custom CSS."""
+    """Set up Streamlit page configuration and custom CSS.
+    
+    Configures:
+        - Page title and favicon
+        - Wide layout mode for better use of screen space
+        - Custom CSS for consistent styling across components
+        
+    Note:
+        Must be called before any other Streamlit commands.
+    """
     st.set_page_config(
         page_title="Scanpath Visualization",
         page_icon="👀",
@@ -85,7 +130,23 @@ def configure_page() -> None:
 
 
 def load_words_and_fixations(data_choice: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Return uploaded CSVs or fall back to bundled demo data."""
+    """Load word and fixation data from user uploads or bundled demo files.
+    
+    Args:
+        data_choice: Either "Upload csv tables" or "Use bundled demo"
+        
+    Returns:
+        Tuple of (words_df, fixations_df) as raw DataFrames before normalization
+        
+    UI Effects:
+        - Renders file uploaders in sidebar when data_choice is "Upload csv tables"
+        - Shows info message if uploads are incomplete
+        - Falls back to sample data if uploads missing
+        
+    Note:
+        Returned DataFrames have original column names and must be normalized
+        via prepare_data() before use in plotting.
+    """
     if data_choice == "Upload csv tables":
         uploaded_words = st.sidebar.file_uploader("Words/IA csv", type=["csv"])
         uploaded_fixations = st.sidebar.file_uploader("Fixations csv", type=["csv"])
@@ -99,7 +160,24 @@ def load_words_and_fixations(data_choice: str) -> Tuple[pd.DataFrame, pd.DataFra
 def prepare_data(
     words_df: pd.DataFrame, fixations_df: pd.DataFrame
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Infer schemas and normalize incoming dataframes."""
+    """Infer schemas and normalize incoming dataframes to canonical column names.
+    
+    Args:
+        words_df: Raw words dataframe with experiment-specific column names
+        fixations_df: Raw fixations dataframe with experiment-specific column names
+        
+    Returns:
+        Tuple of (normalized_words, normalized_fixations) with canonical columns
+        
+    Canonical Columns:
+        Words: participant_id, trial_id, paragraph_id, word_id, text, line_idx,
+               x, y, width, height
+        Fixations: participant_id, trial_id, paragraph_id, x, y, duration_ms,
+                   timestamp_ms (+ optional word_id, pass_index, saccade_type, etc.)
+                   
+    Raises:
+        Streamlit stop signal if schema inference fails (missing required columns)
+    """
     word_schema = infer_word_schema(words_df)
     fix_schema = infer_fix_schema(fixations_df)
     if not word_schema or not fix_schema:
@@ -110,7 +188,26 @@ def prepare_data(
 
 
 def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
-    """Load and normalize raw gaze data if available."""
+    """Load and normalize optional raw gaze data (millisecond-level eye positions).
+    
+    Raw gaze data provides finer temporal resolution than fixation-level data
+    and enables overlay visualizations showing continuous gaze paths.
+    
+    Args:
+        data_choice: Either "Upload csv tables" or "Use bundled demo"
+        
+    Returns:
+        Normalized raw gaze DataFrame with canonical columns, or empty DataFrame
+        if not available or schema inference fails
+        
+    Canonical Columns (raw gaze):
+        participant_id, trial_id, x, y, timestamp_ms (optional: eye, noise_flag)
+        
+    UI Effects:
+        - Renders optional file uploader for "Upload csv tables" mode
+        - Shows warning if schema inference fails
+        - Shows info message if sample data unavailable
+    """
     raw_gaze_df = pd.DataFrame()
 
     if data_choice == "Use bundled demo":
@@ -147,7 +244,16 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
 
 
 def render_sidebar_data_source() -> str:
-    """Render the data source selection in sidebar."""
+    """Render the data source selection radio button in sidebar.
+    
+    Returns:
+        Selected data source: "Use bundled demo" or "Upload csv tables"
+        
+    UI Components:
+        - Section header: "Experimental Setup"
+        - Radio button with two options and help text
+        - Help text explains expected CSV column formats
+    """
     st.sidebar.header("Experimental Setup")
     return st.sidebar.radio(
         "Data source",
@@ -160,7 +266,30 @@ def render_sidebar_data_source() -> str:
 def render_sidebar_canvas_controls(
     words_filtered: pd.DataFrame, fixations_filtered: pd.DataFrame
 ) -> Tuple[int, int, int, str]:
-    """Render canvas dimension and font controls in sidebar."""
+    """Render canvas dimension and font controls in sidebar.
+    
+    These controls allow users to match the visualization to their experimental
+    display setup, ensuring spatial accuracy and proper word box alignment.
+    
+    Args:
+        words_filtered: Filtered words dataframe (used to compute default dimensions)
+        fixations_filtered: Filtered fixations dataframe (used for coordinate ranges)
+        
+    Returns:
+        Tuple of (canvas_width, canvas_height, base_font_size, font_family)
+        
+    UI Components:
+        - Monitor width number input (100-10000 px, default from data)
+        - Monitor height number input (100-10000 px, default from data)
+        - Font size number input (6-72 px, default 16)
+        - Font family text input (default from constants.FONT_FAMILY)
+        - Divider line at end
+        
+    Note:
+        Default canvas dimensions are computed from actual word/fixation coordinates
+        to match the experimental display as closely as possible.
+    """
+    # Compute smart defaults from data
     default_canvas_w, default_canvas_h = compute_canvas_size(
         words_filtered, fixations_filtered
     )
@@ -207,25 +336,50 @@ def render_sidebar_canvas_controls(
 
 
 def main() -> None:
-    """Main application entry point."""
+    """Main application entry point.
+    
+    Orchestrates the full application workflow:
+        1. Configure Streamlit page and custom CSS
+        2. Render title and caption
+        3. Load and normalize data (words, fixations, optional raw gaze)
+        4. Apply user-selected filters (participants, trials, paragraphs)
+        5. Render sidebar controls (canvas, fonts, visualization settings)
+        6. Render tabbed UI (Interactive Plot, Animation, Raw Data, Statistics)
+        
+    Data Flow:
+        CSV upload → schema inference → normalization → filtering →
+        trial combination building → visualization rendering
+        
+    UI Structure:
+        Sidebar: Data source, filters, canvas settings, viz controls
+        Main area: 4 tabs for different views of the data
+        
+    Error Handling:
+        - Stops execution if schema inference fails
+        - Shows warning if filtering eliminates all data
+        - Handles missing raw gaze data gracefully
+    """
     configure_page()
 
+    # App header
     st.title("Scanpath Visualization")
     st.caption("Visualize eye-tracking-while-reading scanpaths!")
 
-    # Data source selection
+    # Data source selection (sidebar)
     data_choice = render_sidebar_data_source()
 
-    # Load and prepare data
+    # Load and prepare core data (words + fixations)
     words_df, fixations_df = load_words_and_fixations(data_choice)
     words_df, fixations_df = prepare_data(words_df, fixations_df)
+    
+    # Load optional raw gaze data
     raw_gaze_df = load_raw_gaze_data(data_choice)
 
-    # Apply filters
+    # Apply filters (participant/trial/paragraph selection)
     filters = default_filters(words_df, fixations_df)
     words_filtered, fixations_filtered = filter_data(words_df, fixations_df, filters)
 
-    # Filter raw gaze data
+    # Filter raw gaze data to match selected participants/trials
     if not raw_gaze_df.empty:
         raw_gaze_filtered = filter_raw_gaze(
             raw_gaze_df,
@@ -240,17 +394,17 @@ def main() -> None:
     else:
         raw_gaze_filtered = pd.DataFrame()
 
-    # Check for empty data
+    # Check for empty data after filtering
     if words_filtered.empty or fixations_filtered.empty:
         st.warning(
             "No data after filtering. Try selecting more participants or trials."
         )
         return
 
-    # Build trial combinations
+    # Build trial combinations for selection UI
     combos, _, _ = build_combo_options(fixations_filtered)
 
-    # Canvas and visualization controls
+    # Canvas and visualization controls (sidebar)
     canvas_width, canvas_height, base_font_size, font_family = (
         render_sidebar_canvas_controls(words_filtered, fixations_filtered)
     )
@@ -260,7 +414,7 @@ def main() -> None:
         fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
     )
 
-    # Render tabs
+    # Render tabbed interface
     tab_single, tab_animation, tab_raw, tab_stats = st.tabs(
         ["Interactive Plot", "Animated Scanpath", "Raw Data", "Data Statistics"]
     )
