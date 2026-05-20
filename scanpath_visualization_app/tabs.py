@@ -61,17 +61,17 @@ def _render_comparison_controls(
     selected_participant: str,
     selected_trial: str,
     selected_text: Optional[str],
-) -> tuple[Optional[str], Optional[str]]:
-    """Render comparison toggle and trial selector, return selected comparison trial."""
+) -> tuple[Optional[str], Optional[str], str]:
+    """Render comparison toggle and trial selector, return (participant, trial, layout)."""
     compare_enabled = st.checkbox(
         "Compare with another trial",
         value=False,
         key="single_compare_toggle",
-        help="Overlay another trial's scanpath for comparison.",
+        help="Overlay another trial's scanpath or view them side by side.",
     )
 
     if not compare_enabled:
-        return None, None
+        return None, None, "overlay"
 
     comparison_options = build_comparison_options(
         combos, selection_mode, selected_participant, selected_trial, selected_text
@@ -79,21 +79,33 @@ def _render_comparison_controls(
 
     if not comparison_options:
         st.info("No other trials available for comparison.")
-        return None, None
+        return None, None, "overlay"
 
     option_labels = [opt[2] for opt in comparison_options]
     label_to_trial = {opt[2]: (opt[0], opt[1]) for opt in comparison_options}
 
-    selected_compare_label = st.selectbox(
-        "Compare with trial",
-        options=option_labels,
-        key="single_compare_trial",
-        help="★ indicates same text as primary trial",
-    )
+    col_trial, col_layout = st.columns([2, 1])
+    with col_trial:
+        selected_compare_label = st.selectbox(
+            "Compare with trial",
+            options=option_labels,
+            key="single_compare_trial",
+            help="★ indicates same text as primary trial",
+        )
+    with col_layout:
+        layout_label = st.radio(
+            "View",
+            options=["Overlay", "Side by side"],
+            index=0,
+            key="single_compare_layout",
+            horizontal=True,
+        )
+    layout = "side_by_side" if layout_label == "Side by side" else "overlay"
 
     if selected_compare_label:
-        return label_to_trial[selected_compare_label]
-    return None, None
+        participant, trial = label_to_trial[selected_compare_label]
+        return participant, trial, layout
+    return None, None, layout
 
 
 def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame):
@@ -250,7 +262,7 @@ def render_single_trial_tab(
     y_field = viz_settings["y_field"]
 
     # Comparison controls
-    compare_participant, compare_trial = _render_comparison_controls(
+    compare_participant, compare_trial, compare_layout = _render_comparison_controls(
         combos, selection_mode, selected_participant, selected_trial, selected_text
     )
 
@@ -260,7 +272,8 @@ def render_single_trial_tab(
             combos, words_filtered, fixations_filtered,
             selected_participant, selected_trial, selected_text,
             compare_participant, compare_trial,
-            canvas_width, canvas_height, font_family, base_font_size, viz_settings
+            canvas_width, canvas_height, font_family, base_font_size, viz_settings,
+            layout=compare_layout,
         )
     else:
         fig = make_scanpath_figure(
@@ -314,6 +327,7 @@ def _render_comparison_figure(
     font_family: str,
     base_font_size: int,
     viz_settings: dict,
+    layout: str = "overlay",
 ):
     """Render comparison figure for two trials."""
     paragraph_field = (
@@ -353,6 +367,7 @@ def _render_comparison_figure(
         show_words=viz_settings["show_words"],
         show_word_labels=viz_settings["show_labels"],
         trial_labels=(primary_label, compare_label),
+        layout=layout,
     )
     st.plotly_chart(fig_compare, width="content", config={"responsive": False})
 

@@ -831,6 +831,225 @@ def make_scanpath_animation(
     return fig
 
 
+def _resolve_trial_display_name(
+    participant: str,
+    trial_id: str,
+    trial_words: pd.DataFrame,
+    trial_labels: Optional[Tuple[str, str]],
+    idx: int,
+) -> str:
+    if trial_labels is not None and len(trial_labels) > idx:
+        return trial_labels[idx]
+    text_id = None
+    if "paragraph_id" in trial_words.columns and not trial_words.empty:
+        text_id = trial_words["paragraph_id"].iloc[0]
+    text_str = str(text_id) if text_id is not None else ""
+    trial_str = str(trial_id)
+    contains_text = text_str and text_str.lower() in trial_str.lower()
+    if text_str:
+        display_name = f"{text_str} · {participant}"
+        if not contains_text:
+            display_name = f"{display_name} (trial {trial_str})"
+        return display_name
+    return f"{trial_str} · {participant}"
+
+
+def _make_side_by_side_comparison_figure(
+    words: pd.DataFrame,
+    fixations: pd.DataFrame,
+    trial_a: Tuple[str, str],
+    trial_b: Tuple[str, str],
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    font_family: str,
+    base_font_size: int,
+    show_words: bool,
+    show_word_labels: bool,
+    trial_labels: Optional[Tuple[str, str]],
+) -> go.Figure:
+    from plotly.subplots import make_subplots
+
+    font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
+    palette = ["#1f77b4", "#e45756"]
+
+    trial_specs = []
+    for idx, trial in enumerate([trial_a, trial_b]):
+        participant, trial_id = trial
+        trial_words = words[
+            (words["participant_id"] == participant) & (words["trial_id"] == trial_id)
+        ]
+        trial_fix = fixations[
+            (fixations["participant_id"] == participant)
+            & (fixations["trial_id"] == trial_id)
+        ].sort_values("timestamp_ms")
+        display_name = _resolve_trial_display_name(
+            participant, trial_id, trial_words, trial_labels, idx
+        )
+        trial_specs.append(
+            dict(
+                trial_words=trial_words,
+                trial_fix=trial_fix,
+                display_name=display_name,
+                color=palette[idx],
+            )
+        )
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        horizontal_spacing=0.04,
+        subplot_titles=[trial_specs[0]["display_name"], trial_specs[1]["display_name"]],
+    )
+
+    all_shapes: list = []
+    for idx, spec in enumerate(trial_specs):
+        col = idx + 1
+        axis_suffix = "" if col == 1 else str(col)
+        xref = f"x{axis_suffix}"
+        yref = f"y{axis_suffix}"
+        trial_words = spec["trial_words"]
+        trial_fix = spec["trial_fix"]
+
+        x_candidates: list = []
+        y_candidates: list = []
+        if not trial_words.empty:
+            x_candidates.extend(
+                [trial_words["x"].min(), (trial_words["x"] + trial_words["width"]).max()]
+            )
+            y_candidates.extend(
+                [trial_words["y"].min(), (trial_words["y"] + trial_words["height"]).max()]
+            )
+        if not trial_fix.empty:
+            x_candidates.extend([trial_fix["x"].min(), trial_fix["x"].max()])
+            y_candidates.extend([trial_fix["y"].min(), trial_fix["y"].max()])
+
+        x_range = [0, canvas_width]
+        y_range = [canvas_height, 0]
+        if x_candidates and y_candidates:
+            x_min = float(np.nanmin(x_candidates))
+            x_max = float(np.nanmax(x_candidates))
+            y_min = float(np.nanmin(y_candidates))
+            y_max = float(np.nanmax(y_candidates))
+            x_span = max(x_max - x_min, 1.0)
+            y_span = max(y_max - y_min, 1.0)
+            pad_x = max(20.0, 0.05 * x_span)
+            pad_y = max(20.0, 0.05 * y_span)
+            x_range = [x_min - pad_x, x_max + pad_x]
+            y_range = [y_max + pad_y, y_min - pad_y]
+
+        if show_words and not trial_words.empty:
+            for box in build_word_boxes(trial_words, color=spec["color"]):
+                box = dict(box)
+                box["xref"] = xref
+                box["yref"] = yref
+                all_shapes.append(box)
+
+        all_shapes.append(
+            dict(
+                type="rect",
+                xref=xref,
+                yref=yref,
+                x0=x_range[0],
+                y0=y_range[1],
+                x1=x_range[1],
+                y1=y_range[0],
+                line=dict(color="#000000", width=1),
+                fillcolor="rgba(0,0,0,0)",
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=trial_fix["x"],
+                y=trial_fix["y"],
+                mode="markers+lines",
+                marker=dict(
+                    size=9 + trial_fix["duration_ms"] * 0.04,
+                    color=spec["color"],
+                    line=dict(color="#111", width=0.5),
+                ),
+                line=dict(color=spec["color"], width=2, dash="solid"),
+                name=spec["display_name"],
+                text=trial_fix["order_in_trial"],
+                textposition="top center",
+                textfont=font_settings,
+                hovertemplate=(
+                    f"{spec['display_name']} "
+                    "Order %{text}<br>Time %{customdata[0]} ms<br>Duration %{customdata[1]} ms<extra></extra>"
+                ),
+                customdata=trial_fix[["timestamp_ms", "duration_ms"]],
+            ),
+            row=1,
+            col=col,
+        )
+
+        if show_word_labels and not trial_words.empty and "text" in trial_words.columns:
+            word_customdata = None
+            hover_tmpl = "Word %{text}<extra></extra>"
+            if "word_id" in trial_words.columns and "line_idx" in trial_words.columns:
+                word_customdata = trial_words[["word_id", "line_idx"]]
+                hover_tmpl = (
+                    "Word %{text}<br>Word ID %{customdata[0]}<br>Line %{customdata[1]}<extra></extra>"
+                )
+            fig.add_trace(
+                go.Scatter(
+                    x=trial_words["x"] + trial_words["width"] / 2,
+                    y=trial_words["y"] + trial_words["height"] / 2,
+                    text=trial_words["text"],
+                    mode="text",
+                    showlegend=False,
+                    textfont=dict(
+                        color="#343a40",
+                        size=base_font_size,
+                        family=font_settings["family"],
+                    ),
+                    hovertemplate=hover_tmpl,
+                    customdata=word_customdata,
+                ),
+                row=1,
+                col=col,
+            )
+
+        xaxis_key = "xaxis" if col == 1 else f"xaxis{col}"
+        yaxis_key = "yaxis" if col == 1 else f"yaxis{col}"
+        fig.update_layout(
+            **{
+                xaxis_key: dict(
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False,
+                    title=None,
+                    range=x_range,
+                    constrain="domain",
+                ),
+                yaxis_key: dict(
+                    showticklabels=False,
+                    showgrid=False,
+                    zeroline=False,
+                    title=None,
+                    range=y_range,
+                    constrain="domain",
+                    scaleanchor=xref,
+                    scaleratio=1,
+                ),
+            }
+        )
+
+    fig.update_layout(
+        height=canvas_height,
+        width=canvas_width,
+        autosize=False,
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+        template="plotly_white",
+        title="Side-by-side comparison",
+        font=font_settings,
+        shapes=all_shapes,
+    )
+    return fig
+
+
 def make_comparison_figure(
     words: pd.DataFrame,
     fixations: pd.DataFrame,
@@ -844,7 +1063,22 @@ def make_comparison_figure(
     show_words: bool = True,
     show_word_labels: bool = False,
     trial_labels: Optional[Tuple[str, str]] = None,
+    layout: str = "overlay",
 ) -> go.Figure:
+    if layout == "side_by_side":
+        return _make_side_by_side_comparison_figure(
+            words,
+            fixations,
+            trial_a,
+            trial_b,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            font_family=font_family,
+            base_font_size=base_font_size,
+            show_words=show_words,
+            show_word_labels=show_word_labels,
+            trial_labels=trial_labels,
+        )
     fig = go.Figure()
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
     palette = ["#1f77b4", "#e45756"]
