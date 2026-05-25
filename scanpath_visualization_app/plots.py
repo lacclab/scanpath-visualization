@@ -403,7 +403,9 @@ def make_scanpath_figure(
                 showlegend=False,
             )
         )
-        for category, color in category_legend:
+        legend_limit = len(_QUALITATIVE_PALETTE)
+        truncated_legend = category_legend[:legend_limit]
+        for category, color in truncated_legend:
             fig.add_trace(
                 go.Scatter(
                     x=[None],
@@ -415,6 +417,18 @@ def make_scanpath_figure(
                         line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
                     ),
                     name=f"{color_by}: {category}",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
+        if len(category_legend) > legend_limit:
+            fig.add_trace(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="markers",
+                    marker=dict(size=10, color="#cccccc"),
+                    name=f"… +{len(category_legend) - legend_limit} more",
                     showlegend=True,
                     hoverinfo="skip",
                 )

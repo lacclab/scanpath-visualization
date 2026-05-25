@@ -40,6 +40,13 @@ def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(text))
 
 
+_MIME_FOR_FORMAT = {
+    "PNG": "image/png",
+    "SVG": "image/svg+xml",
+    "PDF": "application/pdf",
+}
+
+
 def _render_save_plot_button(
     fig,
     *,
@@ -48,22 +55,41 @@ def _render_save_plot_button(
     slug: str,
     key_prefix: str,
 ) -> None:
-    """Render a download button for the currently displayed Plotly figure."""
+    """Render a Generate-then-download flow for the currently displayed figure.
+
+    Pulls width/height from the figure's own layout (so stacked / multi-panel
+    figures save at their on-screen size). Only invokes the expensive
+    `fig.to_image` call when the user clicks Generate.
+    """
     if fig is None:
         return
     file_stem = f"scanpath_{_safe_filename(slug)}"
-    fmt = st.radio(
-        "Save format",
-        options=["PNG", "SVG"],
-        index=0,
-        horizontal=True,
-        key=f"{key_prefix}_save_format",
-    )
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        fmt = st.radio(
+            "Save format",
+            options=["PNG", "SVG", "PDF"],
+            index=0,
+            horizontal=True,
+            key=f"{key_prefix}_save_format",
+        )
+    with cols[1]:
+        generate = st.button(
+            f"Render {fmt}",
+            key=f"{key_prefix}_save_generate",
+            help="Generates the file. The download button below appears once it's ready.",
+        )
+
+    if not generate:
+        return
+
+    fig_width = int(fig.layout.width or canvas_width)
+    fig_height = int(fig.layout.height or canvas_height)
     try:
         data = fig.to_image(
             format=fmt.lower(),
-            width=int(canvas_width),
-            height=int(canvas_height),
+            width=fig_width,
+            height=fig_height,
             scale=2 if fmt == "PNG" else 1,
         )
     except Exception as exc:
@@ -73,7 +99,7 @@ def _render_save_plot_button(
         f"Save plot ({fmt})",
         data=data,
         file_name=f"{file_stem}.{fmt.lower()}",
-        mime="image/png" if fmt == "PNG" else "image/svg+xml",
+        mime=_MIME_FOR_FORMAT[fmt],
         key=f"{key_prefix}_save_button",
     )
 
@@ -170,8 +196,17 @@ def _render_trial_header(
     trial_words: pd.DataFrame,
     prefix: str = "Trial:",
 ) -> None:
-    """Render a participant + trial id header with the full paragraph text."""
+    """Render a participant + trial id + text id header with the full paragraph text."""
     parts = [f"**{prefix}** `{trial_id}`", f"participant `{participant}`"]
+    text_id = None
+    for col in ("unique_paragraph_id", "paragraph_id"):
+        if col in trial_words.columns and not trial_words.empty:
+            value = trial_words[col].iloc[0]
+            if pd.notna(value):
+                text_id = value
+                break
+    if text_id is not None:
+        parts.append(f"Text: `{text_id}`")
     st.markdown(" · ".join(parts))
     if "text" in trial_words.columns and not trial_words.empty:
         full_text = " ".join(trial_words["text"].astype(str).tolist())
@@ -439,10 +474,10 @@ def _render_bulk_export(
     st.divider()
     st.markdown("### Bulk export")
     st.caption(
-        f"Export artifacts for all **{len(combos)}** currently filtered trials. "
-        "Pick which artifacts to include below."
+        f"Up to **{len(combos)}** currently filtered trials are available. "
+        "Choose a scope and which artifacts to bundle below."
     )
-    options = render_export_options(st, key_prefix="single_export")
+    options = render_export_options(st, combos, key_prefix="single_export")
     run_col, info_col = st.columns([1, 3])
     with run_col:
         run = st.button(
@@ -454,6 +489,7 @@ def _render_bulk_export(
                     [
                         options.include_png,
                         options.include_svg,
+                        options.include_pdf,
                         options.include_plot_config,
                         options.include_fixations,
                         options.include_measures,
@@ -648,6 +684,16 @@ def render_animation_tab(
         "or drag the slider to jump to any fixation. Orange highlight shows the current fixation."
     )
 
+    html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
+    st.download_button(
+        "Export animation (HTML)",
+        data=html_bytes,
+        file_name=f"animation_{_safe_filename(selected_participant)}__{_safe_filename(selected_trial)}.html",
+        mime="text/html",
+        key="anim_export_html",
+        help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
+    )
+
 
 # -----------------------------------------------------------------------------
 # Data Tables Tabs
@@ -835,8 +881,6 @@ def render_data_statistics_tab(
         help="Counts raw gaze samples if provided.",
     )
 
-    # Reading-research metrics
-    st.markdown("**Reading-research metrics**")
     rr_cols = st.columns(4)
     if not fixations_filtered.empty and "duration_ms" in fixations_filtered.columns:
         mean_fix_dur = float(fixations_filtered["duration_ms"].mean())
@@ -951,6 +995,9 @@ def render_data_statistics_tab(
 
     st.divider()
     st.subheader("Per-word measure")
+    if combos.empty:
+        st.info("No trials available — adjust the filters to pick a trial here.")
+        return
     selected_participant, selected_trial, _mode, _text = select_trial(
         combos, key_prefix="stats_measures"
     )

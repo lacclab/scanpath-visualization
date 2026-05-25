@@ -582,12 +582,16 @@ def compute_canvas_size(
     return max(width, 100), max(height, 100)
 
 
+@st.cache_data(show_spinner=False)
 def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.DataFrame:
     """Return per-word reading measures.
 
     If the words table already carries pre-aggregated measures (EyeLink IA
     export), those values are preserved. Anything missing is computed from
     fixations + bounding boxes via `measures.compute_per_word_measures`.
+
+    Cached: this function is invoked across the app on each rerun. Streamlit's
+    hash is by DataFrame identity/content, so identical inputs reuse the result.
     """
     from .measures import compute_per_word_measures
 

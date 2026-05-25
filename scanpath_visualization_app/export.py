@@ -27,7 +27,7 @@ import json
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -38,24 +38,43 @@ from .plots import make_scanpath_figure
 
 @dataclass
 class ExportOptions:
-    """User-chosen export artifacts. Default is the full bundle."""
+    """User-chosen export artifacts.
+
+    Defaults: figures on (PNG + SVG), tabular data off. The scope fields
+    narrow the set of trials when not "all".
+    """
 
     include_png: bool = True
     include_svg: bool = True
+    include_pdf: bool = False
     include_plot_config: bool = True
-    include_fixations: bool = True
-    include_measures: bool = True
-    include_mega_table: bool = True
+    include_fixations: bool = False
+    include_measures: bool = False
+    include_mega_table: bool = False
     table_format: str = "csv"  # "csv" | "parquet" | "both"
-    png_scale: int = 1
+    png_scale: int = 2
+    scope: str = "all"  # "all" | "trial" | "participant" | "text"
+    scope_participant: Optional[str] = None
+    scope_trial: Optional[str] = None
+    scope_text: Optional[str] = None
 
     def any_table(self) -> bool:
-        return self.include_fixations or self.include_measures
+        return self.include_fixations or self.include_measures or self.include_mega_table
 
     def table_formats(self) -> List[str]:
         if self.table_format == "both":
             return ["csv", "parquet"]
         return [self.table_format]
+
+    def figure_formats(self) -> List[str]:
+        formats: List[str] = []
+        if self.include_png:
+            formats.append("png")
+        if self.include_svg:
+            formats.append("svg")
+        if self.include_pdf:
+            formats.append("pdf")
+        return formats
 
 
 @dataclass
@@ -120,49 +139,87 @@ def _plot_config_dict(
     }
 
 
-def render_export_options(st_module, key_prefix: str = "export") -> ExportOptions:
-    """Render the checkbox UI and return a populated ExportOptions."""
+_SCOPE_LABELS = {
+    "all": "All filtered trials",
+    "trial": "A single trial",
+    "participant": "All trials of one participant",
+    "text": "All trials of one text",
+}
+
+
+def _render_scope_picker(
+    st, combos: pd.DataFrame, key_prefix: str
+) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """Render the scope radio + dependent selectors, return (scope, pid, trial, text)."""
+    scope_choices = list(_SCOPE_LABELS.values())
+    scope_label = st.radio(
+        "Trials to include",
+        options=scope_choices,
+        index=0,
+        key=f"{key_prefix}_scope",
+        horizontal=True,
+        help="Limit the export to a subset of the currently filtered trials.",
+    )
+    scope = next(k for k, v in _SCOPE_LABELS.items() if v == scope_label)
+
+    scope_participant: Optional[str] = None
+    scope_trial: Optional[str] = None
+    scope_text: Optional[str] = None
+    text_col = (
+        "unique_paragraph_id"
+        if "unique_paragraph_id" in combos.columns
+        else ("paragraph_id" if "paragraph_id" in combos.columns else None)
+    )
+
+    if scope == "trial" and not combos.empty:
+        participants = sorted(combos["participant_id"].dropna().astype(str).unique())
+        scope_participant = st.selectbox(
+            "Participant", options=participants, key=f"{key_prefix}_scope_pid"
+        )
+        trials_for_pid = combos.loc[
+            combos["participant_id"].astype(str) == str(scope_participant), "trial_id"
+        ].astype(str).unique()
+        scope_trial = st.selectbox(
+            "Trial", options=sorted(trials_for_pid), key=f"{key_prefix}_scope_trial"
+        )
+    elif scope == "participant" and not combos.empty:
+        participants = sorted(combos["participant_id"].dropna().astype(str).unique())
+        scope_participant = st.selectbox(
+            "Participant", options=participants, key=f"{key_prefix}_scope_pid"
+        )
+    elif scope == "text" and not combos.empty:
+        if text_col is None:
+            st.info("No text/paragraph id is available in this dataset.")
+        else:
+            texts = sorted(combos[text_col].dropna().astype(str).unique())
+            scope_text = st.selectbox(
+                "Text", options=texts, key=f"{key_prefix}_scope_text"
+            )
+
+    return scope, scope_participant, scope_trial, scope_text
+
+
+def render_export_options(
+    st_module, combos: pd.DataFrame, key_prefix: str = "export"
+) -> ExportOptions:
+    """Render the bulk-export options UI and return a populated ExportOptions."""
     st = st_module
     with st.expander("Bulk export options", expanded=False):
         st.markdown(
-            "Pick which artifacts to include for **each filtered trial**. "
-            "Everything is bundled into a single zip you can download."
+            "Choose which trials to include and which artifacts to bundle. "
+            "Everything is packaged into a single zip you can download."
         )
-        cols = st.columns(3)
-        with cols[0]:
-            st.caption("**Figures**")
+
+        st.markdown("##### Scope")
+        scope, scope_pid, scope_trial, scope_text = _render_scope_picker(
+            st, combos, key_prefix
+        )
+
+        st.markdown("##### Figures")
+        fig_cols = st.columns([1.3, 1, 1, 1.3])
+        with fig_cols[0]:
             include_png = st.checkbox(
                 "PNG (raster)", value=True, key=f"{key_prefix}_png"
-            )
-            include_svg = st.checkbox(
-                "SVG (vector, for papers)", value=True, key=f"{key_prefix}_svg"
-            )
-            include_plot_config = st.checkbox(
-                "Plot config JSON", value=True, key=f"{key_prefix}_cfg"
-            )
-        with cols[1]:
-            st.caption("**Tabular data**")
-            include_fixations = st.checkbox(
-                "Per-trial fixations", value=True, key=f"{key_prefix}_fix"
-            )
-            include_measures = st.checkbox(
-                "Per-trial word measures (FFD/FPRT/RPD/TFD/...)",
-                value=True,
-                key=f"{key_prefix}_mes",
-            )
-            include_mega_table = st.checkbox(
-                "Aggregated mega-table across all trials",
-                value=True,
-                key=f"{key_prefix}_mega",
-            )
-        with cols[2]:
-            st.caption("**Format**")
-            table_format = st.radio(
-                "Table format",
-                options=["csv", "parquet", "both"],
-                index=0,
-                key=f"{key_prefix}_fmt",
-                horizontal=False,
             )
             png_scale = st.number_input(
                 "PNG scale",
@@ -170,18 +227,89 @@ def render_export_options(st_module, key_prefix: str = "export") -> ExportOption
                 max_value=4,
                 value=2,
                 key=f"{key_prefix}_scale",
-                help="2 = retina, 4 = poster",
+                help="Higher → better quality and larger files. 1 = 1×, 2 = retina, 4 = poster.",
+                disabled=not include_png,
             )
+        with fig_cols[1]:
+            include_svg = st.checkbox(
+                "SVG (vector)", value=True, key=f"{key_prefix}_svg"
+            )
+        with fig_cols[2]:
+            include_pdf = st.checkbox(
+                "PDF (vector)", value=False, key=f"{key_prefix}_pdf"
+            )
+        with fig_cols[3]:
+            include_plot_config = st.checkbox(
+                "Plot config JSON", value=True, key=f"{key_prefix}_cfg"
+            )
+
+        st.markdown("##### Tabular data")
+        include_fixations = st.checkbox(
+            "Per-trial fixations", value=False, key=f"{key_prefix}_fix"
+        )
+        include_measures = st.checkbox(
+            "Per-trial word measures (FFD/FPRT/RPD/TFD/...)",
+            value=False,
+            key=f"{key_prefix}_mes",
+        )
+        include_mega_table = st.checkbox(
+            "Aggregated mega-table across selected trials",
+            value=False,
+            key=f"{key_prefix}_mega",
+        )
+        any_table = include_fixations or include_measures or include_mega_table
+        table_format = st.radio(
+            "Table format",
+            options=["csv", "parquet", "both"],
+            index=0,
+            key=f"{key_prefix}_fmt",
+            horizontal=True,
+            disabled=not any_table,
+            help=(
+                "Tick at least one tabular option above to enable this."
+                if not any_table
+                else None
+            ),
+        )
+
     return ExportOptions(
         include_png=include_png,
         include_svg=include_svg,
+        include_pdf=include_pdf,
         include_plot_config=include_plot_config,
         include_fixations=include_fixations,
         include_measures=include_measures,
         include_mega_table=include_mega_table,
         table_format=table_format,
         png_scale=int(png_scale),
+        scope=scope,
+        scope_participant=scope_pid,
+        scope_trial=scope_trial,
+        scope_text=scope_text,
     )
+
+
+def _apply_scope(combos: pd.DataFrame, options: ExportOptions) -> pd.DataFrame:
+    """Filter combos according to options.scope."""
+    if options.scope == "trial" and options.scope_participant and options.scope_trial:
+        return combos[
+            (combos["participant_id"].astype(str) == str(options.scope_participant))
+            & (combos["trial_id"].astype(str) == str(options.scope_trial))
+        ]
+    if options.scope == "participant" and options.scope_participant:
+        return combos[
+            combos["participant_id"].astype(str) == str(options.scope_participant)
+        ]
+    if options.scope == "text" and options.scope_text:
+        text_col = (
+            "unique_paragraph_id"
+            if "unique_paragraph_id" in combos.columns
+            else ("paragraph_id" if "paragraph_id" in combos.columns else None)
+        )
+        if text_col is None:
+            return combos
+        return combos[combos[text_col].astype(str) == str(options.scope_text)]
+    return combos
 
 
 def bulk_export(
@@ -204,6 +332,7 @@ def bulk_export(
     progress_callback (if given) is invoked with an ExportProgress after every
     trial so the UI can update a progress bar.
     """
+    combos = _apply_scope(combos, options)
     progress = ExportProgress(total_trials=len(combos))
     buf = io.BytesIO()
     zf = zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED)
@@ -257,7 +386,8 @@ def bulk_export(
                 progress_callback(progress)
             continue
 
-        if options.include_png or options.include_svg:
+        figure_formats = options.figure_formats()
+        if figure_formats:
             try:
                 fig = make_scanpath_figure(
                     trial_words,
@@ -285,15 +415,10 @@ def bulk_export(
                     fixation_colorscale=settings.get("fixation_colorscale", "Blues"),
                     heatmap_colorscale=settings.get("heatmap_colorscale", "Oranges"),
                 )
-                if options.include_png:
-                    data = _figure_bytes(
-                        fig, "png", canvas_width, canvas_height, options.png_scale
-                    )
-                    zf.writestr(f"{prefix}figure.png", data)
-                    progress.bytes_written += len(data)
-                if options.include_svg:
-                    data = _figure_bytes(fig, "svg", canvas_width, canvas_height, 1)
-                    zf.writestr(f"{prefix}figure.svg", data)
+                for fmt in figure_formats:
+                    scale = options.png_scale if fmt == "png" else 1
+                    data = _figure_bytes(fig, fmt, canvas_width, canvas_height, scale)
+                    zf.writestr(f"{prefix}figure.{fmt}", data)
                     progress.bytes_written += len(data)
             except Exception as exc:
                 progress.errors.append(f"{slug}: figure export failed ({exc})")

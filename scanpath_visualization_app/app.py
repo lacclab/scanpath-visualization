@@ -103,10 +103,10 @@ def configure_page() -> None:
 
 
 def _render_about_panel() -> None:
-    """Compact header with title + about expander."""
+    """Compact header with title + Lab/Code pill links."""
     from scanpath_visualization_app.constants import CITATION
 
-    title_col, about_col = st.columns([6, 1])
+    title_col, links_col = st.columns([5, 2])
     with title_col:
         st.title("Scanpath Visualization")
         st.caption(
@@ -114,12 +114,14 @@ def _render_about_panel() -> None:
             "scanpaths — word boxes, fixations, saccades, heatmaps, comparisons, "
             "and per-word reading measures."
         )
-    with about_col:
-        with st.expander("About"):
-            st.markdown(
-                f"**Authors:** {CITATION['authors']}\n\n"
-                f"**Code:** [{CITATION['url']}]({CITATION['url']})"
-            )
+    with links_col:
+        st.markdown(
+            f"""<div class="header-link-row">
+              <a class="header-link lab" href="https://lacclab.github.io/" target="_blank" rel="noopener">🧪 LaCC Lab</a>
+              <a class="header-link code" href="{CITATION['url']}" target="_blank" rel="noopener">💻 Code</a>
+            </div>""",
+            unsafe_allow_html=True,
+        )
 
 
 # -----------------------------------------------------------------------------
