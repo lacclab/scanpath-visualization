@@ -35,13 +35,16 @@ import pandas as pd
 
 _BIG_FILES = {
     # output subdir → source CSV.zip name
-    "ia":         "ia_Paragraph.csv.zip",
-    "fixations":  "fixations_Paragraph.csv.zip",
+    "ia": "ia_Paragraph.csv.zip",
+    "fixations": "fixations_Paragraph.csv.zip",
 }
 
 
 def _shard_one(
-    csv_path: Path, out_dir: Path, kind: str, rebuild: bool,
+    csv_path: Path,
+    out_dir: Path,
+    kind: str,
+    rebuild: bool,
 ) -> tuple[int, int, int]:
     """Read one big CSV.zip, write one Parquet per participant_id.
 
@@ -51,13 +54,14 @@ def _shard_one(
         raise FileNotFoundError(csv_path)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"  [{kind}] reading {csv_path.name} ({csv_path.stat().st_size/1e6:.0f} MB zipped)…",
-          flush=True)
+    print(
+        f"  [{kind}] reading {csv_path.name} ({csv_path.stat().st_size / 1e6:.0f} MB zipped)…",
+        flush=True,
+    )
     t0 = time.time()
     # low_memory=False so mixed-type columns don't crash the writer later.
     df = pd.read_csv(csv_path, low_memory=False)
-    print(f"  [{kind}] loaded {len(df):,} rows in {time.time()-t0:.0f}s",
-          flush=True)
+    print(f"  [{kind}] loaded {len(df):,} rows in {time.time() - t0:.0f}s", flush=True)
 
     if "participant_id" not in df.columns:
         raise ValueError(f"{csv_path.name}: no participant_id column")
@@ -75,23 +79,34 @@ def _shard_one(
         sub.to_parquet(out_path, index=False)
         written += 1
         if i % 50 == 0 or i == len(pids):
-            print(f"  [{kind}] {i}/{len(pids)} pids · "
-                  f"wrote={written} skipped={skipped}",
-                  flush=True)
+            print(
+                f"  [{kind}] {i}/{len(pids)} pids · wrote={written} skipped={skipped}",
+                flush=True,
+            )
     return written, skipped, len(pids)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--data-dir", "--data_dir", dest="data_dir", required=True, type=Path,
+        "--data-dir",
+        "--data_dir",
+        dest="data_dir",
+        required=True,
+        type=Path,
         help="OneStop lacclab export folder containing ia_Paragraph.csv.zip + "
-             "fixations_Paragraph.csv.zip. Shards land under <data_dir>/by_pid/.",
+        "fixations_Paragraph.csv.zip. Shards land under <data_dir>/by_pid/.",
     )
-    parser.add_argument("--rebuild", action="store_true",
-                        help="Rewrite shards even if they already exist.")
-    parser.add_argument("--only", choices=list(_BIG_FILES.keys()),
-                        help="Shard only one of {ia, fixations}.")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rewrite shards even if they already exist.",
+    )
+    parser.add_argument(
+        "--only",
+        choices=list(_BIG_FILES.keys()),
+        help="Shard only one of {ia, fixations}.",
+    )
     args = parser.parse_args(argv)
 
     base = args.data_dir.resolve()
@@ -115,7 +130,7 @@ def main(argv: list[str] | None = None) -> None:
         summary.append((kind, w, s, n))
 
     print()
-    print(f"done in {time.time()-t_total:.0f}s")
+    print(f"done in {time.time() - t_total:.0f}s")
     for kind, w, s, n in summary:
         print(f"  {kind:10s}: {n} pids · wrote {w} · skipped {s}")
 

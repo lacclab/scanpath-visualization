@@ -215,6 +215,7 @@ def _render_paragraph_with_spans(trial_words: pd.DataFrame) -> None:
         st.write(" ".join(ordered["text"].astype(str).tolist()))
         return
     import html as _html
+
     parts: list[str] = []
     for row in ordered.itertuples():
         word = _html.escape(str(getattr(row, "text", "")))
@@ -270,7 +271,9 @@ def _render_trial_header(
     st.markdown(" · ".join(parts))
 
 
-def _render_paragraph_panel(trial_words: pd.DataFrame, *, expanded: bool = True) -> None:
+def _render_paragraph_panel(
+    trial_words: pd.DataFrame, *, expanded: bool = True
+) -> None:
     """Render the paragraph expander with highlighted spans, question, and
     critical-/distractor-span text. Skips silently when no word text is
     available."""
@@ -290,7 +293,7 @@ def _render_paragraph_panel(trial_words: pd.DataFrame, *, expanded: bool = True)
             st.markdown(
                 f'<span style="background-color:{_CRITICAL_SPAN_BG};'
                 f'padding:0 4px;border-radius:2px;">'
-                f'<b>Critical span:</b></span> {critical_text}',
+                f"<b>Critical span:</b></span> {critical_text}",
                 unsafe_allow_html=True,
             )
         distractor_text = _span_text(trial_words, "is_in_dspan")
@@ -298,7 +301,7 @@ def _render_paragraph_panel(trial_words: pd.DataFrame, *, expanded: bool = True)
             st.markdown(
                 f'<span style="background-color:{_DISTRACTOR_SPAN_BG};'
                 f'padding:0 4px;border-radius:2px;">'
-                f'<b>Distractor span:</b></span> {distractor_text}',
+                f"<b>Distractor span:</b></span> {distractor_text}",
                 unsafe_allow_html=True,
             )
 
@@ -532,8 +535,14 @@ def render_single_trial_tab(
         _render_trial_header(selected_participant, selected_trial, trial_words)
         if global_raw_toggle and not trial_has_raw_gaze:
             st.warning("Raw gaze not available for this trial.", icon="⚠️")
-        compare_participant, compare_trial, compare_layout = _render_comparison_controls(
-            combos, selection_mode, selected_participant, selected_trial, selected_text
+        compare_participant, compare_trial, compare_layout = (
+            _render_comparison_controls(
+                combos,
+                selection_mode,
+                selected_participant,
+                selected_trial,
+                selected_text,
+            )
         )
 
     with col_main:
@@ -863,7 +872,9 @@ def render_animation_tab(
 
     with col_side:
         _render_trial_header(
-            selected_participant, selected_trial, trial_words,
+            selected_participant,
+            selected_trial,
+            trial_words,
             prefix="Animated scanpath:",
         )
         _render_paragraph_panel(trial_words, expanded=False)
@@ -1043,19 +1054,20 @@ def _render_data_provenance() -> None:
         return
 
     def _fmt_mtime(ts):
-        return (datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-                if ts else "—")
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "—"
 
     cols = st.columns(4)
-    cols[0].metric("Source",  info.get("source",  "—"))
-    cols[1].metric("Cohort",  info.get("cohort",  "—"))
-    cols[2].metric("Date",    info.get("date",    "—"))
+    cols[0].metric("Source", info.get("source", "—"))
+    cols[1].metric("Cohort", info.get("cohort", "—"))
+    cols[2].metric("Date", info.get("date", "—"))
     cols[3].metric("File mtime", _fmt_mtime(info.get("ia_shard_mtime")))
 
     with st.expander("Data provenance — full paths"):
         st.caption(f"`ONESTOP_DATA_DIR = {info.get('data_dir', '?')}`")
-        st.caption(f"loaded from: **{info.get('loaded_from', '?')}**"
-                   + (f"  ·  participant `{pid}`" if pid else ""))
+        st.caption(
+            f"loaded from: **{info.get('loaded_from', '?')}**"
+            + (f"  ·  participant `{pid}`" if pid else "")
+        )
         if "ia_shard" in info:
             st.caption(
                 f"IA file: `{info['ia_shard']}`  "

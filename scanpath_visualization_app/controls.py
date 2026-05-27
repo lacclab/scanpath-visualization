@@ -119,18 +119,22 @@ def sidebar_controls(
     trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False
 ) -> Dict:
     st.sidebar.header("Visualization controls")
-    show_words = st.sidebar.checkbox("Show word boxes", value=True,
-                                     key="global_show_words")
-    show_labels = st.sidebar.checkbox("Show word labels", value=True,
-                                      key="global_show_labels")
-    show_fix = st.sidebar.checkbox("Show fixations", value=True,
-                                   key="global_show_fix")
-    show_order = st.sidebar.checkbox("Number fixation order", value=True,
-                                     key="global_show_order")
-    show_saccades = st.sidebar.checkbox("Show saccades", value=True,
-                                        key="global_show_saccades")
-    show_heatmap = st.sidebar.checkbox("Add density heatmap", value=True,
-                                       key="global_show_heatmap")
+    show_words = st.sidebar.checkbox(
+        "Show word boxes", value=True, key="global_show_words"
+    )
+    show_labels = st.sidebar.checkbox(
+        "Show word labels", value=True, key="global_show_labels"
+    )
+    show_fix = st.sidebar.checkbox("Show fixations", value=True, key="global_show_fix")
+    show_order = st.sidebar.checkbox(
+        "Number fixation order", value=True, key="global_show_order"
+    )
+    show_saccades = st.sidebar.checkbox(
+        "Show saccades", value=True, key="global_show_saccades"
+    )
+    show_heatmap = st.sidebar.checkbox(
+        "Add density heatmap", value=True, key="global_show_heatmap"
+    )
     show_raw_gaze = st.sidebar.checkbox(
         "Show raw gaze data",
         value=False,
@@ -204,8 +208,9 @@ def sidebar_controls(
     )
 
     st.sidebar.subheader("Advanced styling")
-    advanced = st.sidebar.checkbox("Advanced styling", value=False,
-                                   key="global_advanced")
+    advanced = st.sidebar.checkbox(
+        "Advanced styling", value=False, key="global_advanced"
+    )
     order_font_color = "#111111"
     order_font_size = int(base_font_size)
     size_min, size_max = 8, 24

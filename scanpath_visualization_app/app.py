@@ -109,15 +109,15 @@ ONESTOP_CHOICE = "OneStop server bundle"
 _SELECTION_PREFIXES = ("single", "anim")
 _URL_PRESETS = {
     # viz prefs (`controls.sidebar_controls`)
-    "show_order":           ("global_show_order",        lambda v: v not in {"0", "false", "no"}),
-    "hide_fixation_numbers":("global_show_order",        lambda v: v in {"0", "false", "no"}),
-    "show_saccades":        ("global_show_saccades",     lambda v: v not in {"0", "false", "no"}),
-    "show_heatmap":         ("global_show_heatmap",      lambda v: v not in {"0", "false", "no"}),
-    "show_words":           ("global_show_words",        lambda v: v not in {"0", "false", "no"}),
-    "show_labels":          ("global_show_labels",       lambda v: v not in {"0", "false", "no"}),
-    "show_fixations":       ("global_show_fix",          lambda v: v not in {"0", "false", "no"}),
-    "heatmap_colorscale":   ("global_heatmap_colorscale", str),
-    "fixation_colorscale":  ("global_fixation_colorscale", str),
+    "show_order": ("global_show_order", lambda v: v not in {"0", "false", "no"}),
+    "hide_fixation_numbers": ("global_show_order", lambda v: v in {"0", "false", "no"}),
+    "show_saccades": ("global_show_saccades", lambda v: v not in {"0", "false", "no"}),
+    "show_heatmap": ("global_show_heatmap", lambda v: v not in {"0", "false", "no"}),
+    "show_words": ("global_show_words", lambda v: v not in {"0", "false", "no"}),
+    "show_labels": ("global_show_labels", lambda v: v not in {"0", "false", "no"}),
+    "show_fixations": ("global_show_fix", lambda v: v not in {"0", "false", "no"}),
+    "heatmap_colorscale": ("global_heatmap_colorscale", str),
+    "fixation_colorscale": ("global_fixation_colorscale", str),
 }
 
 
@@ -158,7 +158,9 @@ def _apply_url_preset() -> Optional[str]:
         for prefix in _SELECTION_PREFIXES:
             st.session_state.setdefault(f"{prefix}_select_trial_mode", "Participant")
             if "participant" in qp:
-                st.session_state.setdefault(f"{prefix}_participant", str(qp["participant"]))
+                st.session_state.setdefault(
+                    f"{prefix}_participant", str(qp["participant"])
+                )
             if "trial" in qp:
                 try:
                     st.session_state.setdefault(f"{prefix}_slider", int(qp["trial"]))
@@ -230,7 +232,8 @@ def _render_about_panel() -> None:
 
 
 def load_words_and_fixations(
-    data_choice: str, participant: Optional[str] = None,
+    data_choice: str,
+    participant: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load word and fixation data from user uploads or bundled demo files.
 
@@ -263,7 +266,9 @@ def load_words_and_fixations(
     if data_choice == ONESTOP_CHOICE:
         words, fixations = load_onestop_server_bundle(participant=participant)
         if words.empty or fixations.empty:
-            st.sidebar.warning("OneStop bundle unavailable — falling back to demo data.")
+            st.sidebar.warning(
+                "OneStop bundle unavailable — falling back to demo data."
+            )
             return load_sample_data()
         return words, fixations
     return load_sample_data()
@@ -534,7 +539,9 @@ def main() -> None:
     # Load and prepare core data (words + fixations). Pass the deep-link
     # participant so the OneStop loader can fast-path to a per-pid shard.
     deep_link_pid = st.session_state.get("single_participant")
-    words_df, fixations_df = load_words_and_fixations(data_choice, participant=deep_link_pid)
+    words_df, fixations_df = load_words_and_fixations(
+        data_choice, participant=deep_link_pid
+    )
     words_df, fixations_df = prepare_data(
         words_df, fixations_df, allow_override=(data_choice == UPLOAD_CHOICE)
     )

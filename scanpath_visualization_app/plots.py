@@ -211,7 +211,9 @@ def build_word_boxes(words: pd.DataFrame, color: str = WORD_BOX_COLOR) -> list:
 # boxes only when the trial was shown with a preview question (Hunting condition).
 _CRITICAL_FRAME_COLOR = "#000000"  # black — high-contrast frame, readable over heatmaps
 _CRITICAL_FRAME_WIDTH = 2
-_CRITICAL_TEXT_COLOR = "#C8097C"  # dark pink — used when critical_span_style="Mark text"
+_CRITICAL_TEXT_COLOR = (
+    "#C8097C"  # dark pink — used when critical_span_style="Mark text"
+)
 
 
 def build_critical_span_overlay(words: pd.DataFrame) -> list:
@@ -373,7 +375,10 @@ def make_scanpath_figure(
             fig.update_layout(shapes=shapes)
         if show_word_labels:
             _add_word_label_trace(
-                fig, words, base_font_size, font_settings["family"],
+                fig,
+                words,
+                base_font_size,
+                font_settings["family"],
                 highlight_critical_text=highlight_critical_text,
             )
 

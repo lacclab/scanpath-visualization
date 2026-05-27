@@ -38,8 +38,10 @@ def onestop_data_dir() -> Optional[Path]:
 def _onestop_shard_paths(base: Path, pid: str) -> Tuple[Path, Path]:
     """Resolved per-participant shard paths under `<base>/by_pid/`."""
     pid = pid.strip().lower()
-    return (base / "by_pid" / "ia" / f"{pid}.parquet",
-            base / "by_pid" / "fixations" / f"{pid}.parquet")
+    return (
+        base / "by_pid" / "ia" / f"{pid}.parquet",
+        base / "by_pid" / "fixations" / f"{pid}.parquet",
+    )
 
 
 def onestop_data_provenance(participant: Optional[str] = None) -> dict:
@@ -65,8 +67,8 @@ def onestop_data_provenance(participant: Optional[str] = None) -> dict:
     try:
         # Look for "reports" anchor and grab source/date after it.
         i = parts.index("reports")
-        info["source"] = parts[i + 1]    # lacclab / public / osf
-        info["date"] = parts[i + 2]      # YYYYMMDD
+        info["source"] = parts[i + 1]  # lacclab / public / osf
+        info["date"] = parts[i + 2]  # YYYYMMDD
     except (ValueError, IndexError):
         pass
     for p in parts:
@@ -99,7 +101,9 @@ def onestop_data_provenance(participant: Optional[str] = None) -> dict:
 
 
 @st.cache_data(show_spinner="Loading OneStop lacclab export…")
-def load_onestop_server_bundle(participant: Optional[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_onestop_server_bundle(
+    participant: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load OneStop lacclab IA + fixation reports from `$ONESTOP_DATA_DIR`.
 
     Fast path — when `participant` is given and per-pid shards exist under
@@ -127,7 +131,11 @@ def load_onestop_server_bundle(participant: Optional[str] = None) -> Tuple[pd.Da
         # to discover the pid still has no data is pure waste. Surface a clear
         # error and stop. Common cause: pid was excluded from the IA report
         # (no exported reading data), or shards haven't been generated yet.
-        missing = [p.name for p, ok in [(ia_shard, ia_present), (fix_shard, fix_present)] if not ok]
+        missing = [
+            p.name
+            for p, ok in [(ia_shard, ia_present), (fix_shard, fix_present)]
+            if not ok
+        ]
         st.error(
             f"No scanpath data for participant {participant!r}. "
             f"Missing shards: {', '.join(missing)}. "
@@ -485,9 +493,7 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         "unique_trial_id" if "unique_trial_id" in words.columns else schema["trial"]
     )
     df["trial_id"] = words[trial_col].astype(str)
-    df = _disambiguate_repeated_readings(
-        df, words, schema["participant"], trial_col
-    )
+    df = _disambiguate_repeated_readings(df, words, schema["participant"], trial_col)
     if "unique_trial_id" in words.columns:
         df["unique_trial_id"] = words["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in words.columns:
@@ -544,7 +550,12 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         "is_in_aspan",
         "is_in_dspan",
     ]
-    _bool_cols = {"repeated_reading_trial", "question_preview", "is_in_aspan", "is_in_dspan"}
+    _bool_cols = {
+        "repeated_reading_trial",
+        "question_preview",
+        "is_in_aspan",
+        "is_in_dspan",
+    }
     for col in extra_meta:
         if col in words.columns:
             if col in _bool_cols:
