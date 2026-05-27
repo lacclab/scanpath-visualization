@@ -28,7 +28,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -91,13 +91,107 @@ from scanpath_visualization_app.utils import (  # noqa: F401
 UPLOAD_CHOICE = "Upload tables"
 DEMO_CHOICE = "Use bundled demo"
 
+# URL query-param → session_state key map for the deep-link API. Used by
+# `_apply_url_preset()` to preset widgets when the page is opened from an
+# external tool with a deep link.
+#
+# Selection prefixes — every selectable tab (Interactive Plot, Animated
+# Scanpath, …) renders its own `select_trial` with a different `key_prefix`,
+# so a URL deep link has to seed all of them or only the first tab lands on
+# the requested trial. Keep this list in sync with the `key_prefix=` values
+# passed to `select_trial` in tabs.py.
+_SELECTION_PREFIXES = ("single", "anim")
+_URL_PRESETS = {
+    # viz prefs (`controls.sidebar_controls`)
+    "show_order":           ("global_show_order",        lambda v: v not in {"0", "false", "no"}),
+    "hide_fixation_numbers":("global_show_order",        lambda v: v in {"0", "false", "no"}),
+    "show_saccades":        ("global_show_saccades",     lambda v: v not in {"0", "false", "no"}),
+    "show_heatmap":         ("global_show_heatmap",      lambda v: v not in {"0", "false", "no"}),
+    "show_words":           ("global_show_words",        lambda v: v not in {"0", "false", "no"}),
+    "show_labels":          ("global_show_labels",       lambda v: v not in {"0", "false", "no"}),
+    "show_fixations":       ("global_show_fix",          lambda v: v not in {"0", "false", "no"}),
+    "heatmap_colorscale":   ("global_heatmap_colorscale", str),
+    "fixation_colorscale":  ("global_fixation_colorscale", str),
+}
+
+
+def _apply_url_preset() -> Optional[str]:
+    """Read `st.query_params` and preset Streamlit session state for deep links.
+
+    Returns the URL-requested `source` ("demo"/"upload") or `None`.
+    Call this at the very top of `main()` — before any widgets render — so
+    session_state values are picked up as the widgets' initial values.
+
+    URL schema (all params optional):
+        ?source=demo             → force "Use bundled demo" data source
+        &participant=p001        → preselect participant (Participant mode)
+        &trial=37                → preselect trial_index slider
+        &tab=animation           → land on Animated Scanpath tab
+        &heatmap_colorscale=Greens
+        &hide_fixation_numbers=1
+        &show_saccades=1
+        &show_heatmap=1
+        ...etc — see _URL_PRESETS above
+
+    Bonus side-effect: when any colorscale is set via URL, also forces the
+    "Advanced styling" sidebar expander open so the value is visible/editable.
+
+    External tools can deep-link into this app via the URL schema above to
+    land on a specific trial with the reviewer's preferred viz settings.
+    """
+    qp = st.query_params
+    if not qp:
+        return None
+
+    # Seed selection state for every tab that exposes a `select_trial` widget.
+    # `?participant=` + `?trial=` map onto Participant mode with the matching
+    # participant / slider value. Without this loop the Animated Scanpath tab
+    # (key_prefix="anim") would default to "None" mode and land on the
+    # alphabetically-first trial instead of the deep-linked one.
+    if "participant" in qp or "trial" in qp:
+        for prefix in _SELECTION_PREFIXES:
+            st.session_state.setdefault(f"{prefix}_select_trial_mode", "Participant")
+            if "participant" in qp:
+                st.session_state.setdefault(f"{prefix}_participant", str(qp["participant"]))
+            if "trial" in qp:
+                try:
+                    st.session_state.setdefault(f"{prefix}_slider", int(qp["trial"]))
+                except (ValueError, TypeError):
+                    st.warning(f"Ignored bad URL param ?trial={qp['trial']!r}")
+
+    for url_key, (state_key, coerce) in _URL_PRESETS.items():
+        if url_key not in qp:
+            continue
+        raw = qp[url_key]
+        try:
+            value = coerce(raw)
+        except (ValueError, TypeError):
+            st.warning(f"Ignored bad URL param ?{url_key}={raw!r}")
+            continue
+        st.session_state.setdefault(state_key, value)
+
+    # Heatmap / fixation colorscale only render under the Advanced expander —
+    # auto-open it so the URL value is exposed in the sidebar.
+    if "heatmap_colorscale" in qp or "fixation_colorscale" in qp:
+        st.session_state.setdefault("global_advanced", True)
+
+    source = qp.get("source")
+    return source.lower() if source else None
+
 
 def configure_page() -> None:
-    """Streamlit page config + custom CSS."""
+    """Streamlit page config + custom CSS.
+
+    When loaded from an iframe with `?embed=true`, Streamlit's built-in embed
+    mode already hides the header/menu — we additionally collapse the sidebar
+    so the iframe is mostly the plot.
+    """
+    is_embed = (st.query_params.get("embed") or "").lower() in {"true", "1"}
     st.set_page_config(
         page_title="Scanpath Visualization",
         page_icon="👀",
         layout="wide",
+        initial_sidebar_state="collapsed" if is_embed else "auto",
     )
     st.markdown(get_app_css(), unsafe_allow_html=True)
 
@@ -290,11 +384,18 @@ def render_sidebar_data_source() -> str:
         - Help text explains expected CSV column formats
     """
     st.sidebar.header("Experimental Setup")
+    options = [DEMO_CHOICE, UPLOAD_CHOICE]
+    # Default to whatever the deep-link forced via session_state; otherwise
+    # the first option in the list.
+    default = st.session_state.get("data_source_choice", options[0])
+    if default not in options:
+        default = options[0]
     return st.sidebar.radio(
         "Data source",
-        [DEMO_CHOICE, UPLOAD_CHOICE],
-        index=0,
+        options,
+        index=options.index(default),
         help=data_dictionary_help_text(),
+        key="data_source_choice",
     )
 
 
@@ -397,6 +498,16 @@ def main() -> None:
     configure_page()
     _render_about_panel()
 
+    # Apply deep-link presets BEFORE any widget renders — see _apply_url_preset
+    # for the full URL schema. External tools can deep-link into this app with
+    # `?source=...&participant=...&trial=...&...` to land on a specific trial
+    # with the reviewer's preferred viz settings.
+    url_source = _apply_url_preset()
+    if url_source == "demo":
+        st.session_state.setdefault("data_source_choice", DEMO_CHOICE)
+    elif url_source == "upload":
+        st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
+
     # Data source selection (sidebar)
     data_choice = render_sidebar_data_source()
 
@@ -447,6 +558,12 @@ def main() -> None:
     viz_settings = sidebar_controls(
         fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
     )
+
+    # Tab pre-selection isn't supported by st.tabs (Streamlit limitation), so
+    # when the deep link asks for animation we surface a banner pointing to it.
+    requested_tab = (st.query_params.get("tab") or "").lower()
+    if requested_tab == "animation":
+        st.info("🎬 For the animated view, click the **Animated Scanpath** tab below.")
 
     # Render tabbed interface
     tab_single, tab_animation, tab_raw, tab_stats = st.tabs(

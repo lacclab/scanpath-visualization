@@ -196,7 +196,11 @@ def _render_trial_header(
     trial_words: pd.DataFrame,
     prefix: str = "Trial:",
 ) -> None:
-    """Render a participant + trial id + text id header with the full paragraph text."""
+    """Render the one-line participant + trial id + text id header.
+
+    The paragraph text lives in `_render_paragraph_panel` so it can sit under
+    the figure (single tab) while the header stays in the side panel.
+    """
     parts = [f"**{prefix}** `{trial_id}`", f"participant `{participant}`"]
     text_id = None
     for col in ("unique_paragraph_id", "paragraph_id"):
@@ -208,10 +212,16 @@ def _render_trial_header(
     if text_id is not None:
         parts.append(f"Text: `{text_id}`")
     st.markdown(" · ".join(parts))
-    if "text" in trial_words.columns and not trial_words.empty:
+
+
+def _render_paragraph_panel(trial_words: pd.DataFrame, *, expanded: bool = True) -> None:
+    """Render the paragraph-text expander. Skips silently when no word text
+    is available."""
+    if "text" not in trial_words.columns or trial_words.empty:
+        return
+    with st.expander("Paragraph text", expanded=expanded):
         full_text = " ".join(trial_words["text"].astype(str).tolist())
-        with st.expander("Paragraph text", expanded=False):
-            st.write(full_text)
+        st.write(full_text)
 
 
 def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame):
@@ -323,6 +333,16 @@ def _render_plot_config_expander(
         st.json(plot_config)
 
 
+def _ordered_trial_ids(combos: pd.DataFrame) -> list[str]:
+    """Stable trial_id ordering used by the under-image Prev/Next buttons.
+
+    Mirrors `_select_trial_none_mode`'s sort so the under-image nav lands on
+    the same trial as the side-panel Prev/Next when both are present.
+    """
+    trial_col = "unique_trial_id" if "unique_trial_id" in combos.columns else "trial_id"
+    return sorted(combos[trial_col].dropna().astype(str).unique().tolist())
+
+
 def render_single_trial_tab(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
@@ -335,14 +355,28 @@ def render_single_trial_tab(
     viz_settings: dict,
     raw_gaze: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Render the single trial visualization tab."""
-    selected_participant, selected_trial, selection_mode, selected_text = select_trial(
-        combos, key_prefix="single"
-    )
+    """Render the single trial visualization tab.
+
+    Layout: 30 / 70 split — every per-trial control (selectors, paragraph
+    text, compare toggle, save button, stats, metadata, plot config) sits in
+    the left side panel, the plot dominates the right column. Bulk export
+    sits below full-width because its progress bar / artifact dropdowns need
+    the room.
+    """
+    col_side, col_main = st.columns([3, 7], gap="medium")
+
+    with col_side:
+        # Stats render at the very top of the side panel so reviewers see the
+        # trial's totals before scrolling into the picker / metadata. The slot
+        # is reserved here and filled later once `trial_words` / `trial_fixations`
+        # are available (they depend on the picker selection).
+        stats_slot = st.container()
+        selected_participant, selected_trial, selection_mode, selected_text = (
+            select_trial(combos, key_prefix="single")
+        )
     if not (selected_participant and selected_trial):
         return
 
-    # Filter data for selected trial
     trial_words = words_filtered[
         (words_filtered["participant_id"] == selected_participant)
         & (words_filtered["trial_id"] == selected_trial)
@@ -351,8 +385,6 @@ def render_single_trial_tab(
         (fixations_filtered["participant_id"] == selected_participant)
         & (fixations_filtered["trial_id"] == selected_trial)
     ]
-
-    # Handle raw gaze data
     trial_raw_gaze = pd.DataFrame()
     if raw_gaze is not None and not raw_gaze.empty:
         trial_raw_gaze = raw_gaze[
@@ -360,88 +392,101 @@ def render_single_trial_tab(
             & (raw_gaze["trial_id"] == selected_trial)
         ]
 
-    _render_trial_header(selected_participant, selected_trial, trial_words)
-
-    # Check raw gaze availability
     trial_has_raw_gaze = not trial_raw_gaze.empty
     global_raw_toggle = bool(viz_settings.get("show_raw_gaze"))
-    if global_raw_toggle and not trial_has_raw_gaze:
-        st.warning("Raw gaze not available for this trial.", icon="⚠️")
     effective_show_raw_gaze = bool(global_raw_toggle and trial_has_raw_gaze)
-
-    # Build settings
     figure_settings = _build_figure_settings(viz_settings, effective_show_raw_gaze)
     figure_settings["raw_gaze"] = trial_raw_gaze if trial_has_raw_gaze else None
     x_field = viz_settings["x_field"]
     y_field = viz_settings["y_field"]
 
-    # Comparison controls
-    compare_participant, compare_trial, compare_layout = _render_comparison_controls(
-        combos, selection_mode, selected_participant, selected_trial, selected_text
-    )
+    with col_side:
+        _render_trial_header(selected_participant, selected_trial, trial_words)
+        if global_raw_toggle and not trial_has_raw_gaze:
+            st.warning("Raw gaze not available for this trial.", icon="⚠️")
+        compare_participant, compare_trial, compare_layout = _render_comparison_controls(
+            combos, selection_mode, selected_participant, selected_trial, selected_text
+        )
 
-    # Render figure
-    if compare_participant is not None and compare_trial is not None:
-        displayed_fig = _render_comparison_figure(
-            combos,
-            words_filtered,
-            fixations_filtered,
-            selected_participant,
-            selected_trial,
-            selected_text,
-            compare_participant,
-            compare_trial,
-            canvas_width,
-            canvas_height,
-            font_family,
-            base_font_size,
-            viz_settings,
-            layout=compare_layout,
-        )
-        save_slug = (
-            f"{selected_participant}__{selected_trial}__vs__"
-            f"{compare_participant}__{compare_trial}"
-        )
-    else:
-        displayed_fig = make_scanpath_figure(
-            trial_words,
-            trial_fixations,
+    with col_main:
+        if compare_participant is not None and compare_trial is not None:
+            displayed_fig = _render_comparison_figure(
+                combos,
+                words_filtered,
+                fixations_filtered,
+                selected_participant,
+                selected_trial,
+                selected_text,
+                compare_participant,
+                compare_trial,
+                canvas_width,
+                canvas_height,
+                font_family,
+                base_font_size,
+                viz_settings,
+                layout=compare_layout,
+            )
+            save_slug = (
+                f"{selected_participant}__{selected_trial}__vs__"
+                f"{compare_participant}__{compare_trial}"
+            )
+        else:
+            displayed_fig = make_scanpath_figure(
+                trial_words,
+                trial_fixations,
+                canvas_width=int(canvas_width),
+                canvas_height=int(canvas_height),
+                base_font_size=int(base_font_size),
+                font_family=font_family,
+                x_field=x_field,
+                y_field=y_field,
+                **figure_settings,
+            )
+            st.plotly_chart(
+                displayed_fig, width="stretch", config={"responsive": False}
+            )
+            save_slug = f"{selected_participant}__{selected_trial}"
+
+        # Save format / Render-PNG button lives directly under the plot so
+        # the export action is right where the eye is when reviewers want it.
+        _render_save_plot_button(
+            displayed_fig,
             canvas_width=int(canvas_width),
             canvas_height=int(canvas_height),
-            base_font_size=int(base_font_size),
-            font_family=font_family,
-            x_field=x_field,
-            y_field=y_field,
-            **figure_settings,
+            slug=save_slug,
+            key_prefix="single",
         )
-        st.plotly_chart(displayed_fig, width="content", config={"responsive": False})
-        save_slug = f"{selected_participant}__{selected_trial}"
 
-    _render_save_plot_button(
-        displayed_fig,
-        canvas_width=int(canvas_width),
-        canvas_height=int(canvas_height),
-        slug=save_slug,
-        key_prefix="single",
-    )
+        # Paragraph text sits below the figure so reviewers can read it while
+        # comparing to the scanpath right above.
+        _render_paragraph_panel(trial_words, expanded=True)
 
-    # Stats, metadata, config
-    _render_trial_stats(trial_words, trial_fixations)
-    _render_metadata_selector(
-        words_filtered, fixations_filtered, trial_words, trial_fixations
-    )
-    _render_plot_config_expander(
-        selected_participant,
-        selected_trial,
-        canvas_width,
-        canvas_height,
-        x_field,
-        y_field,
-        figure_settings,
-        viz_settings,
-        base_font_size,
-        trial_raw_gaze,
-    )
+    # Publish the single-tab's selection so the Animation tab can mirror it.
+    # Read by `render_animation_tab` (one-way sync; anim can still be moved
+    # independently — see `_sync_anim_from_single`).
+    st.session_state["shared_selected_pid"] = selected_participant
+    st.session_state["shared_selected_trial_id"] = selected_trial
+
+    # Fill the reserved stats slot now that the trial data is in hand.
+    with stats_slot:
+        _render_trial_stats(trial_words, trial_fixations)
+
+    with col_side:
+        _render_metadata_selector(
+            words_filtered, fixations_filtered, trial_words, trial_fixations
+        )
+        _render_plot_config_expander(
+            selected_participant,
+            selected_trial,
+            canvas_width,
+            canvas_height,
+            x_field,
+            y_field,
+            figure_settings,
+            viz_settings,
+            base_font_size,
+            trial_raw_gaze,
+        )
 
     _render_bulk_export(
         combos,
@@ -597,13 +642,38 @@ def _render_comparison_figure(
         trial_labels=(primary_label, compare_label),
         layout=layout,
     )
-    st.plotly_chart(fig_compare, width="content", config={"responsive": False})
+    st.plotly_chart(fig_compare, width="stretch", config={"responsive": False})
     return fig_compare
 
 
 # -----------------------------------------------------------------------------
 # Animation Tab
 # -----------------------------------------------------------------------------
+
+
+def _sync_anim_from_single(combos: pd.DataFrame) -> None:
+    """Pre-set anim tab's selector state to mirror the single tab's selection.
+
+    Fires only when the single tab's selection changed since the last run
+    (tracked via `_prev_shared_trial`). This means user changes inside the
+    anim tab are preserved across reruns — anim only "snaps" back to single
+    when the single tab is the active driver. One-way sync by design.
+    """
+    shared_pid = st.session_state.get("shared_selected_pid")
+    shared_trial = st.session_state.get("shared_selected_trial_id")
+    if not (shared_pid and shared_trial):
+        return
+    current = (shared_pid, shared_trial)
+    if st.session_state.get("_prev_shared_trial") == current:
+        return
+    trial_options = _ordered_trial_ids(combos)
+    try:
+        idx = trial_options.index(str(shared_trial))
+    except ValueError:
+        return
+    st.session_state["anim_select_trial_mode"] = "None"
+    st.session_state["anim_trial_index"] = idx
+    st.session_state["_prev_shared_trial"] = current
 
 
 def render_animation_tab(
@@ -617,10 +687,22 @@ def render_animation_tab(
     font_family: str,
     viz_settings: dict,
 ) -> None:
-    """Render the animated scanpath tab."""
-    selected_participant, selected_trial, _mode, _text = select_trial(
-        combos, key_prefix="anim"
-    )
+    """Render the animated scanpath tab.
+
+    Layout mirrors the Interactive Plot tab: 30 / 70 split, selectors / info /
+    export controls in the left side panel and the animation plot on the
+    right.
+    """
+    # Sync trial selection from the single tab BEFORE the picker widgets
+    # render, so they pick up the seeded state as their initial value.
+    _sync_anim_from_single(combos)
+
+    col_side, col_main = st.columns([3, 7], gap="medium")
+
+    with col_side:
+        selected_participant, selected_trial, _mode, _text = select_trial(
+            combos, key_prefix="anim"
+        )
     if not (selected_participant and selected_trial):
         return
 
@@ -633,33 +715,44 @@ def render_animation_tab(
         & (fixations_filtered["trial_id"] == selected_trial)
     ]
 
-    _render_trial_header(
-        selected_participant, selected_trial, trial_words, prefix="Animated scanpath:"
-    )
+    # Playback speed — rendered on the right (next to the animation plot)
+    # because that's where the eye actually goes when adjusting playback.
+    # Frame durations are floor-clamped at 50 ms (see `make_scanpath_animation`),
+    # so higher speeds aren't more expensive to render than lower ones; they
+    # just cap there for the shortest fixations.
+    speed_options = [0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 8.0]
+    speed_labels = ["×0.25", "×0.5", "×1", "×1.5", "×2", "×2.5", "×3", "×4", "×8"]
+    with col_main:
+        playback_speed = st.select_slider(
+            "Playback speed",
+            options=speed_options,
+            value=3.0,
+            format_func=lambda x: speed_labels[speed_options.index(x)],
+            help="Controls playback speed relative to actual fixation durations.",
+            key="anim_playback_speed",
+        )
 
-    # Playback speed
-    speed_options = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0]
-    speed_labels = ["×0.25", "×0.5", "×1", "×1.5", "×2", "×4", "×8"]
-    playback_speed = st.select_slider(
-        "Playback speed",
-        options=speed_options,
-        value=1.0,
-        format_func=lambda x: speed_labels[speed_options.index(x)],
-        help="Controls playback speed relative to actual fixation durations.",
-        key="anim_playback_speed",
-    )
+    with col_side:
+        _render_trial_header(
+            selected_participant, selected_trial, trial_words,
+            prefix="Animated scanpath:",
+        )
+        _render_paragraph_panel(trial_words, expanded=False)
+
+        if trial_fixations.empty:
+            st.warning("No fixations available for this trial.")
+        else:
+            n_fixations = len(trial_fixations)
+            total_duration_ms = trial_fixations["duration_ms"].sum()
+            playback_duration_s = total_duration_ms / playback_speed / 1000
+            st.info(
+                f"**{n_fixations} fixations** · Total duration: "
+                f"{total_duration_ms / 1000:.1f}s · Playback time at "
+                f"×{playback_speed}: {playback_duration_s:.1f}s"
+            )
 
     if trial_fixations.empty:
-        st.warning("No fixations available for this trial.")
         return
-
-    n_fixations = len(trial_fixations)
-    total_duration_ms = trial_fixations["duration_ms"].sum()
-    playback_duration_s = total_duration_ms / playback_speed / 1000
-    st.info(
-        f"**{n_fixations} fixations** · Total duration: {total_duration_ms / 1000:.1f}s "
-        f"· Playback time at ×{playback_speed}: {playback_duration_s:.1f}s"
-    )
 
     fig = make_scanpath_animation(
         trial_words,
@@ -677,22 +770,24 @@ def render_animation_tab(
         order_font_size=viz_settings["order_font_size"],
         order_font_color=viz_settings["order_font_color"],
     )
-    st.plotly_chart(fig, width="content", config={"responsive": False})
+    with col_main:
+        st.plotly_chart(fig, width="stretch", config={"responsive": False})
 
-    st.caption(
-        "**Controls:** Use ▶ Play to auto-advance through fixations, ⏸ Pause to stop, "
-        "or drag the slider to jump to any fixation. Orange highlight shows the current fixation."
-    )
-
-    html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
-    st.download_button(
-        "Export animation (HTML)",
-        data=html_bytes,
-        file_name=f"animation_{_safe_filename(selected_participant)}__{_safe_filename(selected_trial)}.html",
-        mime="text/html",
-        key="anim_export_html",
-        help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
-    )
+    with col_side:
+        st.caption(
+            "**Controls:** Use ▶ Play to auto-advance through fixations, "
+            "⏸ Pause to stop, or drag the slider to jump to any fixation. "
+            "Orange highlight shows the current fixation."
+        )
+        html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
+        st.download_button(
+            "Export animation (HTML)",
+            data=html_bytes,
+            file_name=f"animation_{_safe_filename(selected_participant)}__{_safe_filename(selected_trial)}.html",
+            mime="text/html",
+            key="anim_export_html",
+            help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
+        )
 
 
 # -----------------------------------------------------------------------------

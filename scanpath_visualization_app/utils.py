@@ -91,23 +91,24 @@ def _select_trial_none_mode(
     current_idx = max(0, min(current_idx, len(trial_options) - 1))
     st.session_state[state_key] = current_idx
 
-    # Navigation buttons
+    # Navigation buttons — compact (no `width="stretch"`) so they don't wrap
+    # to 3 lines inside the narrow 30% side panel.
     nav_col1, nav_col2, select_col = st.columns([1, 1, 4])
     with nav_col1:
         if st.button(
-            "← Prev",
+            "◀",
             key=f"{key_prefix}_prev_btn" if key_prefix else "prev_btn",
             disabled=current_idx <= 0,
-            width="stretch",
+            help="Previous trial",
         ):
             st.session_state[state_key] = current_idx - 1
             st.rerun()
     with nav_col2:
         if st.button(
-            "Next →",
+            "▶",
             key=f"{key_prefix}_next_btn" if key_prefix else "next_btn",
             disabled=current_idx >= len(trial_options) - 1,
-            width="stretch",
+            help="Next trial",
         ):
             st.session_state[state_key] = current_idx + 1
             st.rerun()
@@ -233,11 +234,52 @@ def _select_trial_participant_mode(
     if not slider_options:
         return None, None, None
 
-    slider_value = st.select_slider(
-        slider_label,
-        options=slider_options,
-        key=f"{key_prefix}_slider" if key_prefix else None,
-    )
+    # Prev/Next buttons flank the slider so reviewers can step through trials
+    # without dragging. Mutations live in an `on_click` callback (the slider's
+    # session-state key can't be mutated after the widget instantiates).
+    state_key = f"{key_prefix}_slider" if key_prefix else "slider"
+
+    def _step_slider(direction: int) -> None:
+        opts = slider_options
+        current = st.session_state.get(state_key)
+        try:
+            idx = opts.index(current) if current is not None else 0
+        except ValueError:
+            idx = 0
+        new_idx = max(0, min(idx + direction, len(opts) - 1))
+        st.session_state[state_key] = opts[new_idx]
+
+    current_val = st.session_state.get(state_key, slider_options[0])
+    try:
+        current_pos = slider_options.index(current_val)
+    except ValueError:
+        current_pos = 0
+
+    nav_prev, slider_col, nav_next = st.columns([1, 8, 1])
+    with nav_prev:
+        st.button(
+            "◀",
+            key=f"{key_prefix}_slider_prev" if key_prefix else "slider_prev",
+            disabled=current_pos <= 0,
+            help=f"Previous {slider_label.lower()}",
+            on_click=_step_slider,
+            args=(-1,),
+        )
+    with nav_next:
+        st.button(
+            "▶",
+            key=f"{key_prefix}_slider_next" if key_prefix else "slider_next",
+            disabled=current_pos >= len(slider_options) - 1,
+            help=f"Next {slider_label.lower()}",
+            on_click=_step_slider,
+            args=(+1,),
+        )
+    with slider_col:
+        slider_value = st.select_slider(
+            slider_label,
+            options=slider_options,
+            key=state_key,
+        )
     if slider_value is None:
         return None, None, None
 
@@ -437,6 +479,16 @@ def friendly_trial_label(
         base = f"{text_str} · {participant_id}"
         if not trial_contains_text:
             base = f"{base} (trial {trial_str})" if trial_str else base
+        elif trial_str != text_str:
+            # Surface any trial_id suffix beyond the paragraph id (e.g. a
+            # repeat-reading "_r2" tag added during normalization). Without
+            # this the primary and compare titles look identical when a
+            # participant re-read the same paragraph.
+            extra = trial_str
+            if extra.lower().startswith(text_str.lower()):
+                extra = extra[len(text_str):].lstrip("_- ")
+            if extra:
+                base = f"{text_str} ({extra}) · {participant_id}"
     else:
         base = f"{trial_str} · {participant_id}" if trial_str else participant_id
 

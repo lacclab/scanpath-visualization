@@ -77,6 +77,48 @@ def _compute_axis_ranges(
     return x_range, y_range, x_min, x_max, y_min, y_max
 
 
+# Cap the figure render size so the plot fits inside a typical reviewer
+# viewport (~1080p screen, minus header / controls). Aspect ratio is
+# preserved when shrinking — both dims scale together so words don't squish.
+# Sized to fill the 70%-wide main column in the side-by-side layout (tabs.py).
+_DISPLAY_MAX_HEIGHT = 750
+_DISPLAY_MAX_WIDTH = 2200
+
+
+def _fit_display_size(
+    canvas_width: int,
+    canvas_height: int,
+    x_range: list,
+    y_range: list,
+    spatial_axes: bool,
+) -> Tuple[int, int]:
+    """Return (width, height) for `fig.update_layout` so the plot fits onscreen.
+
+    With `scaleanchor="x", scaleratio=1` the plot domain shrinks to the data
+    aspect ratio, leaving large blank vertical strips when the figure box is
+    the full monitor height. We match the figure box to the actual plot
+    domain — and additionally clamp both dims so the whole plot fits in one
+    viewport without scrolling. Falls back to (canvas_w, canvas_h) when axes
+    aren't spatial or the data range is degenerate.
+    """
+    if not spatial_axes:
+        return canvas_width, canvas_height
+    x_span = x_range[1] - x_range[0]
+    y_span = y_range[0] - y_range[1]  # y_range is inverted [y_max, y_min]
+    if x_span <= 0 or y_span <= 0:
+        return canvas_width, canvas_height
+    aspect = x_span / y_span
+    w, h = canvas_width, int(round(canvas_width / aspect))
+    # Shrink (preserving aspect) until both dims fit the viewport caps.
+    if h > _DISPLAY_MAX_HEIGHT:
+        h = _DISPLAY_MAX_HEIGHT
+        w = int(round(h * aspect))
+    if w > _DISPLAY_MAX_WIDTH:
+        w = _DISPLAY_MAX_WIDTH
+        h = int(round(w / aspect))
+    return max(w, 100), max(h, 100)
+
+
 _QUALITATIVE_PALETTE = [
     "#1f77b4",
     "#ff7f0e",
@@ -463,9 +505,12 @@ def make_scanpath_figure(
             )
         )
 
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes
+    )
     fig.update_layout(
-        height=canvas_height,
-        width=canvas_width,
+        height=fitted_h,
+        width=fitted_w,
         autosize=False,
         margin=dict(l=0, r=0, t=0, b=0),
         xaxis=xaxis_cfg,
@@ -802,7 +847,7 @@ def make_scanpath_animation(
     sliders = [
         dict(
             active=0,
-            yanchor="top",
+            yanchor="bottom",
             xanchor="left",
             currentvalue=dict(
                 font=dict(size=14),
@@ -811,10 +856,10 @@ def make_scanpath_animation(
                 xanchor="right",
             ),
             transition=dict(duration=avg_frame_duration // 2, easing="cubic-in-out"),
-            pad=dict(b=10, t=50),
+            pad=dict(b=10, t=10),
             len=0.9,
             x=0.1,
-            y=0,
+            y=1.0,
             steps=[
                 dict(
                     args=[
@@ -839,11 +884,11 @@ def make_scanpath_animation(
         dict(
             type="buttons",
             showactive=False,
-            y=0,
+            y=1.0,
             x=0.05,
             xanchor="right",
-            yanchor="top",
-            pad=dict(t=50, r=10),
+            yanchor="bottom",
+            pad=dict(b=10, r=10),
             buttons=[
                 dict(
                     label="▶ Play",
@@ -888,11 +933,16 @@ def make_scanpath_animation(
         )
     ]
 
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
+    )
+    # Sliders + play/pause buttons sit in the top margin now (yanchor="bottom",
+    # y=1.0) so they're visible without scrolling past the plot.
     fig.update_layout(
-        height=canvas_height + 80,
-        width=canvas_width,
+        height=fitted_h + 80,
+        width=fitted_w,
         autosize=False,
-        margin=dict(l=0, r=0, t=0, b=80),
+        margin=dict(l=0, r=0, t=80, b=0),
         xaxis=dict(
             showticklabels=False,
             showgrid=False,
@@ -1137,10 +1187,24 @@ def _make_split_comparison_figure(
             }
         )
 
-    total_height = canvas_height * 2 + 40 if is_stacked else canvas_height
+    # Fit the figure to the data aspect just like the single-trial plot.
+    # `x_range` / `y_range` from the inner loop are per-trial; the two trials
+    # being compared usually share the paragraph (same canvas), so re-using
+    # the last loop iteration's range is fine. Per-panel width is half the
+    # canvas for side-by-side and the full canvas for stacked.
+    per_panel_w = canvas_width if is_stacked else canvas_width // 2
+    panel_w, panel_h = _fit_display_size(
+        per_panel_w, canvas_height, x_range, y_range, spatial_axes=True
+    )
+    if is_stacked:
+        total_width = panel_w
+        total_height = panel_h * 2 + 40
+    else:  # side-by-side
+        total_width = panel_w * 2
+        total_height = panel_h
     fig.update_layout(
         height=total_height,
-        width=canvas_width,
+        width=total_width,
         autosize=False,
         margin=dict(l=0, r=0, t=40, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
@@ -1253,9 +1317,12 @@ def make_comparison_figure(
         )
     )
 
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
+    )
     fig.update_layout(
-        height=canvas_height,
-        width=canvas_width,
+        height=fitted_h,
+        width=fitted_w,
         autosize=False,
         margin=dict(l=0, r=0, t=0, b=0),
         xaxis=dict(
