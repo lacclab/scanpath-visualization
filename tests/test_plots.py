@@ -58,8 +58,10 @@ class TestMakeScanpathFigure:
             heatmap_range=None,
         )
         assert isinstance(fig, go.Figure)
-        assert fig.layout.width == 800
-        assert fig.layout.height == 600
+        # Figure now shrinks to the data's aspect ratio (see _fit_display_size);
+        # dimensions are capped at the requested canvas, not pinned to it.
+        assert 0 < fig.layout.width <= 800
+        assert 0 < fig.layout.height <= 600
 
     def test_make_scanpath_figure_with_heatmap(
         self, normalized_words_df, normalized_fixations_df

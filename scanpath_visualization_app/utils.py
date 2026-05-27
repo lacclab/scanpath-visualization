@@ -486,7 +486,7 @@ def friendly_trial_label(
             # participant re-read the same paragraph.
             extra = trial_str
             if extra.lower().startswith(text_str.lower()):
-                extra = extra[len(text_str):].lstrip("_- ")
+                extra = extra[len(text_str) :].lstrip("_- ")
             if extra:
                 base = f"{text_str} ({extra}) · {participant_id}"
     else:

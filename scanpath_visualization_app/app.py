@@ -60,11 +60,13 @@ from scanpath_visualization_app.data import (
     infer_fix_schema,
     infer_raw_gaze_schema,
     infer_word_schema,
+    load_onestop_server_bundle,
     load_sample_data,
     load_sample_raw_gaze,
     normalize_fixations,
     normalize_raw_gaze,
     normalize_words,
+    onestop_data_dir,
     propose_fix_schema,
     propose_raw_gaze_schema,
     propose_word_schema,
@@ -90,6 +92,10 @@ from scanpath_visualization_app.utils import (  # noqa: F401
 
 UPLOAD_CHOICE = "Upload tables"
 DEMO_CHOICE = "Use bundled demo"
+# Server-side OneStop lacclab bundle. Only offered when $ONESTOP_DATA_DIR is
+# set; selected automatically when the page is opened with `?source=onestop`
+# in the URL. See data.load_onestop_server_bundle().
+ONESTOP_CHOICE = "OneStop server bundle"
 
 # URL query-param → session_state key map for the deep-link API. Used by
 # `_apply_url_preset()` to preset widgets when the page is opened from an
@@ -103,27 +109,27 @@ DEMO_CHOICE = "Use bundled demo"
 _SELECTION_PREFIXES = ("single", "anim")
 _URL_PRESETS = {
     # viz prefs (`controls.sidebar_controls`)
-    "show_order":           ("global_show_order",        lambda v: v not in {"0", "false", "no"}),
-    "hide_fixation_numbers":("global_show_order",        lambda v: v in {"0", "false", "no"}),
-    "show_saccades":        ("global_show_saccades",     lambda v: v not in {"0", "false", "no"}),
-    "show_heatmap":         ("global_show_heatmap",      lambda v: v not in {"0", "false", "no"}),
-    "show_words":           ("global_show_words",        lambda v: v not in {"0", "false", "no"}),
-    "show_labels":          ("global_show_labels",       lambda v: v not in {"0", "false", "no"}),
-    "show_fixations":       ("global_show_fix",          lambda v: v not in {"0", "false", "no"}),
-    "heatmap_colorscale":   ("global_heatmap_colorscale", str),
-    "fixation_colorscale":  ("global_fixation_colorscale", str),
+    "show_order": ("global_show_order", lambda v: v not in {"0", "false", "no"}),
+    "hide_fixation_numbers": ("global_show_order", lambda v: v in {"0", "false", "no"}),
+    "show_saccades": ("global_show_saccades", lambda v: v not in {"0", "false", "no"}),
+    "show_heatmap": ("global_show_heatmap", lambda v: v not in {"0", "false", "no"}),
+    "show_words": ("global_show_words", lambda v: v not in {"0", "false", "no"}),
+    "show_labels": ("global_show_labels", lambda v: v not in {"0", "false", "no"}),
+    "show_fixations": ("global_show_fix", lambda v: v not in {"0", "false", "no"}),
+    "heatmap_colorscale": ("global_heatmap_colorscale", str),
+    "fixation_colorscale": ("global_fixation_colorscale", str),
 }
 
 
 def _apply_url_preset() -> Optional[str]:
     """Read `st.query_params` and preset Streamlit session state for deep links.
 
-    Returns the URL-requested `source` ("demo"/"upload") or `None`.
+    Returns the URL-requested `source` ("onestop"/"demo"/"upload") or `None`.
     Call this at the very top of `main()` — before any widgets render — so
     session_state values are picked up as the widgets' initial values.
 
     URL schema (all params optional):
-        ?source=demo             → force "Use bundled demo" data source
+        ?source=onestop          → force "OneStop server bundle" data source
         &participant=p001        → preselect participant (Participant mode)
         &trial=37                → preselect trial_index slider
         &tab=animation           → land on Animated Scanpath tab
@@ -152,7 +158,9 @@ def _apply_url_preset() -> Optional[str]:
         for prefix in _SELECTION_PREFIXES:
             st.session_state.setdefault(f"{prefix}_select_trial_mode", "Participant")
             if "participant" in qp:
-                st.session_state.setdefault(f"{prefix}_participant", str(qp["participant"]))
+                st.session_state.setdefault(
+                    f"{prefix}_participant", str(qp["participant"])
+                )
             if "trial" in qp:
                 try:
                     st.session_state.setdefault(f"{prefix}_slider", int(qp["trial"]))
@@ -223,11 +231,18 @@ def _render_about_panel() -> None:
 # -----------------------------------------------------------------------------
 
 
-def load_words_and_fixations(data_choice: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_words_and_fixations(
+    data_choice: str,
+    participant: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load word and fixation data from user uploads or bundled demo files.
 
     Args:
-        data_choice: Either "Upload csv tables" or "Use bundled demo"
+        data_choice: Either "Upload csv tables" / "Use bundled demo" / "OneStop server bundle"
+        participant: Lowercased participant_id from the URL deep link. When set
+            AND `data_choice == ONESTOP_CHOICE`, the OneStop loader fast-paths
+            to just that pid's Parquet shard — sub-second instead of ~3 min.
+            Ignored for the other data sources.
 
     Returns:
         Tuple of (words_df, fixations_df) as raw DataFrames before normalization
@@ -236,10 +251,6 @@ def load_words_and_fixations(data_choice: str) -> Tuple[pd.DataFrame, pd.DataFra
         - Renders file uploaders in sidebar when data_choice is "Upload csv tables"
         - Shows info message if uploads are incomplete
         - Falls back to sample data if uploads missing
-
-    Note:
-        Returned DataFrames have original column names and must be normalized
-        via prepare_data() before use in plotting.
     """
     if data_choice == UPLOAD_CHOICE:
         uploaded_words = st.sidebar.file_uploader(
@@ -252,6 +263,14 @@ def load_words_and_fixations(data_choice: str) -> Tuple[pd.DataFrame, pd.DataFra
             return read_table(uploaded_words), read_table(uploaded_fixations)
         st.sidebar.info("Upload both files or switch to demo data.")
         return load_sample_data()
+    if data_choice == ONESTOP_CHOICE:
+        words, fixations = load_onestop_server_bundle(participant=participant)
+        if words.empty or fixations.empty:
+            st.sidebar.warning(
+                "OneStop bundle unavailable — falling back to demo data."
+            )
+            return load_sample_data()
+        return words, fixations
     return load_sample_data()
 
 
@@ -384,9 +403,13 @@ def render_sidebar_data_source() -> str:
         - Help text explains expected CSV column formats
     """
     st.sidebar.header("Experimental Setup")
+    # Only offer the OneStop bundle when $ONESTOP_DATA_DIR is set on the
+    # server. Outside that context the choice would be a dead-end, so we hide it.
     options = [DEMO_CHOICE, UPLOAD_CHOICE]
-    # Default to whatever the deep-link forced via session_state; otherwise
-    # the first option in the list.
+    if onestop_data_dir() is not None:
+        options.insert(0, ONESTOP_CHOICE)
+    # Default to OneStop when it's available AND a deep-link forced it via
+    # session_state; otherwise the first option in the list.
     default = st.session_state.get("data_source_choice", options[0])
     if default not in options:
         default = options[0]
@@ -400,7 +423,9 @@ def render_sidebar_data_source() -> str:
 
 
 def render_sidebar_canvas_controls(
-    words_filtered: pd.DataFrame, fixations_filtered: pd.DataFrame
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    data_choice: Optional[str] = None,
 ) -> Tuple[int, int, int, str]:
     """Render canvas dimension and font controls in sidebar.
 
@@ -410,25 +435,23 @@ def render_sidebar_canvas_controls(
     Args:
         words_filtered: Filtered words dataframe (used to compute default dimensions)
         fixations_filtered: Filtered fixations dataframe (used for coordinate ranges)
+        data_choice: Currently selected data source. When it's the OneStop server
+            bundle or the bundled demo (a OneStop subset), defaults to the
+            OneStop monitor resolution (2560x1440, Dell U2715H — OneStopL1 paper
+            §Monitor). Otherwise defaults are derived from data extents.
 
     Returns:
         Tuple of (canvas_width, canvas_height, base_font_size, font_family)
-
-    UI Components:
-        - Monitor width number input (100-10000 px, default from data)
-        - Monitor height number input (100-10000 px, default from data)
-        - Font size number input (6-72 px, default 16)
-        - Font family text input (default from constants.FONT_FAMILY)
-        - Divider line at end
-
-    Note:
-        Default canvas dimensions are computed from actual word/fixation coordinates
-        to match the experimental display as closely as possible.
     """
-    # Compute smart defaults from data
-    default_canvas_w, default_canvas_h = compute_canvas_size(
-        words_filtered, fixations_filtered
-    )
+    # OneStop server bundle + bundled demo share the same experimental setup
+    # (Dell U2715H, 2560x1440). Data-derived extents undershoot — text only
+    # fills part of the screen — so hard-default to the real monitor here.
+    if data_choice in (ONESTOP_CHOICE, DEMO_CHOICE):
+        default_canvas_w, default_canvas_h = 2560, 1440
+    else:
+        default_canvas_w, default_canvas_h = compute_canvas_size(
+            words_filtered, fixations_filtered
+        )
     canvas_width = min(max(default_canvas_w, 100), 10000)
     canvas_height = min(max(default_canvas_h, 100), 10000)
 
@@ -503,7 +526,9 @@ def main() -> None:
     # `?source=...&participant=...&trial=...&...` to land on a specific trial
     # with the reviewer's preferred viz settings.
     url_source = _apply_url_preset()
-    if url_source == "demo":
+    if url_source == "onestop" and onestop_data_dir() is not None:
+        st.session_state.setdefault("data_source_choice", ONESTOP_CHOICE)
+    elif url_source == "demo":
         st.session_state.setdefault("data_source_choice", DEMO_CHOICE)
     elif url_source == "upload":
         st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
@@ -511,8 +536,12 @@ def main() -> None:
     # Data source selection (sidebar)
     data_choice = render_sidebar_data_source()
 
-    # Load and prepare core data (words + fixations)
-    words_df, fixations_df = load_words_and_fixations(data_choice)
+    # Load and prepare core data (words + fixations). Pass the deep-link
+    # participant so the OneStop loader can fast-path to a per-pid shard.
+    deep_link_pid = st.session_state.get("single_participant")
+    words_df, fixations_df = load_words_and_fixations(
+        data_choice, participant=deep_link_pid
+    )
     words_df, fixations_df = prepare_data(
         words_df, fixations_df, allow_override=(data_choice == UPLOAD_CHOICE)
     )
@@ -551,7 +580,7 @@ def main() -> None:
 
     # Canvas and visualization controls (sidebar)
     canvas_width, canvas_height, base_font_size, font_family = (
-        render_sidebar_canvas_controls(words_filtered, fixations_filtered)
+        render_sidebar_canvas_controls(words_filtered, fixations_filtered, data_choice)
     )
 
     has_raw_gaze = not raw_gaze_filtered.empty

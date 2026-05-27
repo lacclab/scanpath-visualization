@@ -128,6 +128,7 @@ def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) ->
         heatmap_range=viz_settings["heatmap_range"],
         fixation_colorscale=viz_settings["fixation_colorscale"],
         heatmap_colorscale=viz_settings["heatmap_colorscale"],
+        critical_span_style=viz_settings.get("critical_span_style", "Mark text"),
     )
 
 
@@ -190,6 +191,61 @@ def _render_comparison_controls(
     return None, None, layout
 
 
+_CRITICAL_SPAN_BG = "#FCE7F3"  # light pink — critical-span words
+_DISTRACTOR_SPAN_BG = "#E5E7EB"  # light grey — distractor-span words
+
+
+def _ordered_words(trial_words: pd.DataFrame) -> pd.DataFrame:
+    """Return trial_words sorted into reading order."""
+    for col in ("word_id", "IA_ID"):
+        if col in trial_words.columns:
+            return trial_words.sort_values(col)
+    return trial_words
+
+
+def _render_paragraph_with_spans(trial_words: pd.DataFrame) -> None:
+    """Render paragraph text with critical-span (green) and distractor (orange)
+    word backgrounds. Falls back to plain text when span columns are absent."""
+    if "text" not in trial_words.columns or trial_words.empty:
+        return
+    ordered = _ordered_words(trial_words)
+    has_critical = "is_in_aspan" in ordered.columns
+    has_distractor = "is_in_dspan" in ordered.columns
+    if not (has_critical or has_distractor):
+        st.write(" ".join(ordered["text"].astype(str).tolist()))
+        return
+    import html as _html
+
+    parts: list[str] = []
+    for row in ordered.itertuples():
+        word = _html.escape(str(getattr(row, "text", "")))
+        bg = ""
+        if has_critical and bool(getattr(row, "is_in_aspan", False)):
+            bg = _CRITICAL_SPAN_BG
+        elif has_distractor and bool(getattr(row, "is_in_dspan", False)):
+            bg = _DISTRACTOR_SPAN_BG
+        if bg:
+            parts.append(
+                f'<span style="background-color:{bg};padding:0 2px;border-radius:2px;">{word}</span>'
+            )
+        else:
+            parts.append(word)
+    html_body = " ".join(parts)
+    st.markdown(
+        f'<div style="line-height:1.6;">{html_body}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _span_text(trial_words: pd.DataFrame, mask_col: str) -> str:
+    """Return the joined text of words where mask_col is True."""
+    if mask_col not in trial_words.columns or "text" not in trial_words.columns:
+        return ""
+    ordered = _ordered_words(trial_words)
+    mask = ordered[mask_col].fillna(False).astype(bool)
+    return " ".join(ordered.loc[mask, "text"].astype(str).tolist())
+
+
 def _render_trial_header(
     participant: str,
     trial_id: str,
@@ -198,8 +254,9 @@ def _render_trial_header(
 ) -> None:
     """Render the one-line participant + trial id + text id header.
 
-    The paragraph text lives in `_render_paragraph_panel` so it can sit under
-    the figure (single tab) while the header stays in the side panel.
+    The paragraph text / question / spans live in
+    `_render_paragraph_panel` so they can sit under the figure (single tab)
+    while the header stays in the side panel.
     """
     parts = [f"**{prefix}** `{trial_id}`", f"participant `{participant}`"]
     text_id = None
@@ -214,14 +271,39 @@ def _render_trial_header(
     st.markdown(" · ".join(parts))
 
 
-def _render_paragraph_panel(trial_words: pd.DataFrame, *, expanded: bool = True) -> None:
-    """Render the paragraph-text expander. Skips silently when no word text
-    is available."""
+def _render_paragraph_panel(
+    trial_words: pd.DataFrame, *, expanded: bool = True
+) -> None:
+    """Render the paragraph expander with highlighted spans, question, and
+    critical-/distractor-span text. Skips silently when no word text is
+    available."""
     if "text" not in trial_words.columns or trial_words.empty:
         return
     with st.expander("Paragraph text", expanded=expanded):
-        full_text = " ".join(trial_words["text"].astype(str).tolist())
-        st.write(full_text)
+        _render_paragraph_with_spans(trial_words)
+        question_val = None
+        if "question" in trial_words.columns:
+            qs = trial_words["question"].dropna()
+            if not qs.empty:
+                question_val = str(qs.iloc[0])
+        if question_val:
+            st.markdown(f"**Question:** {question_val}")
+        critical_text = _span_text(trial_words, "is_in_aspan")
+        if critical_text:
+            st.markdown(
+                f'<span style="background-color:{_CRITICAL_SPAN_BG};'
+                f'padding:0 4px;border-radius:2px;">'
+                f"<b>Critical span:</b></span> {critical_text}",
+                unsafe_allow_html=True,
+            )
+        distractor_text = _span_text(trial_words, "is_in_dspan")
+        if distractor_text:
+            st.markdown(
+                f'<span style="background-color:{_DISTRACTOR_SPAN_BG};'
+                f'padding:0 4px;border-radius:2px;">'
+                f"<b>Distractor span:</b></span> {distractor_text}",
+                unsafe_allow_html=True,
+            )
 
 
 def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame):
@@ -233,6 +315,39 @@ def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame
     )
     stat_cols[1].metric("Number of words", f"{stats['word_count']:,}")
     stat_cols[2].metric("Number of fixations", f"{stats['fixation_count']:,}")
+
+
+# Row-wise palette for the trial-metadata table. Picked light so the text
+# stays readable. `is_correct` keeps the row background neutral but tints
+# the value text green/red — adding a background there clashed with the
+# ✓ / ✗ color.
+_DIFFICULTY_COLORS = {"ele": "#d4edda", "adv": "#fff3cd"}
+_REPEAT_COLOR = "#cfe2ff"  # light blue — clearly distinct from the Ele/Adv tints
+_PREVIEW_COLOR = "#DBEAFE"  # light blue — Hunting/preview trials
+
+
+def _style_metadata_row(row: pd.Series) -> list[str]:
+    field = str(row.get("Field", ""))
+    value = str(row.get("Value", ""))
+    bg = ""
+    if field == "difficulty_level":
+        for prefix, color in _DIFFICULTY_COLORS.items():
+            if value.lower().startswith(prefix):
+                bg = f"background-color: {color};"
+                break
+    elif field == "repeated_reading_trial" and value.lower().startswith("true"):
+        bg = f"background-color: {_REPEAT_COLOR};"
+    elif field == "question_preview" and value.lower().startswith("true"):
+        bg = f"background-color: {_PREVIEW_COLOR};"
+
+    field_style = bg
+    value_style = bg
+    if field == "is_correct":
+        if value.startswith("✓"):
+            value_style = "color: #198754; font-weight: 600;"
+        elif value.startswith("✗"):
+            value_style = "color: #dc3545; font-weight: 600;"
+    return [field_style, value_style]
 
 
 def _render_metadata_selector(
@@ -252,11 +367,16 @@ def _render_metadata_selector(
         for field in [
             "difficulty_level",
             "repeated_reading_trial",
+            "question_preview",
             "selected_answer",
             "is_correct",
         ]
         if field in metadata_candidates
     ]
+    # Reserve the table slot first; the multiselect renders below it so the
+    # filter chips sit under the data they configure. Streamlit fills the
+    # container later in the same run, preserving the visual order.
+    table_slot = st.container()
     selected_metadata = st.multiselect(
         "Trial metadata fields",
         options=metadata_candidates,
@@ -267,7 +387,18 @@ def _render_metadata_selector(
             trial_words, trial_fixations, selected_metadata
         )
         if not metadata_df.empty:
-            st.dataframe(metadata_df, hide_index=True, width="stretch")
+            # Prefix is_correct with ✓ / ✗ so reviewers can scan the table
+            # without parsing the True/False text.
+            mask = metadata_df["Field"] == "is_correct"
+            if mask.any():
+                val = str(metadata_df.loc[mask, "Value"].iloc[0])
+                if val.lower().startswith("true"):
+                    metadata_df.loc[mask, "Value"] = f"✓ {val}"
+                elif val.lower().startswith("false"):
+                    metadata_df.loc[mask, "Value"] = f"✗ {val}"
+            styled = metadata_df.style.apply(_style_metadata_row, axis=1)
+            with table_slot:
+                st.dataframe(styled, hide_index=True, width="stretch")
 
 
 def _render_plot_config_expander(
@@ -404,8 +535,14 @@ def render_single_trial_tab(
         _render_trial_header(selected_participant, selected_trial, trial_words)
         if global_raw_toggle and not trial_has_raw_gaze:
             st.warning("Raw gaze not available for this trial.", icon="⚠️")
-        compare_participant, compare_trial, compare_layout = _render_comparison_controls(
-            combos, selection_mode, selected_participant, selected_trial, selected_text
+        compare_participant, compare_trial, compare_layout = (
+            _render_comparison_controls(
+                combos,
+                selection_mode,
+                selected_participant,
+                selected_trial,
+                selected_text,
+            )
         )
 
     with col_main:
@@ -457,8 +594,9 @@ def render_single_trial_tab(
             key_prefix="single",
         )
 
-        # Paragraph text sits below the figure so reviewers can read it while
-        # comparing to the scanpath right above.
+        # Paragraph text (with question + critical/distractor span overlays)
+        # sits below the figure so reviewers can read the text while
+        # comparing it to the scanpath right above.
         _render_paragraph_panel(trial_words, expanded=True)
 
     # Publish the single-tab's selection so the Animation tab can mirror it.
@@ -734,7 +872,9 @@ def render_animation_tab(
 
     with col_side:
         _render_trial_header(
-            selected_participant, selected_trial, trial_words,
+            selected_participant,
+            selected_trial,
+            trial_words,
             prefix="Animated scanpath:",
         )
         _render_paragraph_panel(trial_words, expanded=False)
@@ -897,12 +1037,56 @@ def render_raw_gaze_tab(raw_gaze_filtered: pd.DataFrame) -> None:
     )
 
 
+def _render_data_provenance() -> None:
+    """Show a 'source / cohort / date / file mtime' banner above the Raw Data
+    sub-tabs so reviewers can verify which OneStop export they're looking at.
+
+    Only renders when ONESTOP_DATA_DIR is set (i.e. OneStop server bundle is
+    the active data source). For uploads / bundled demo, falls through silently.
+    """
+    from datetime import datetime
+    from .data import onestop_data_provenance
+
+    # Honour the deep-link participant so the per-pid shard's mtime is shown.
+    pid = st.session_state.get("single_participant")
+    info = onestop_data_provenance(participant=pid)
+    if not info:
+        return
+
+    def _fmt_mtime(ts):
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "—"
+
+    cols = st.columns(4)
+    cols[0].metric("Source", info.get("source", "—"))
+    cols[1].metric("Cohort", info.get("cohort", "—"))
+    cols[2].metric("Date", info.get("date", "—"))
+    cols[3].metric("File mtime", _fmt_mtime(info.get("ia_shard_mtime")))
+
+    with st.expander("Data provenance — full paths"):
+        st.caption(f"`ONESTOP_DATA_DIR = {info.get('data_dir', '?')}`")
+        st.caption(
+            f"loaded from: **{info.get('loaded_from', '?')}**"
+            + (f"  ·  participant `{pid}`" if pid else "")
+        )
+        if "ia_shard" in info:
+            st.caption(
+                f"IA file: `{info['ia_shard']}`  "
+                f"·  mtime `{_fmt_mtime(info.get('ia_shard_mtime'))}`"
+            )
+        if "fix_shard" in info:
+            st.caption(
+                f"Fixations file: `{info['fix_shard']}`  "
+                f"·  mtime `{_fmt_mtime(info.get('fix_shard_mtime'))}`"
+            )
+
+
 def render_raw_data_tab(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
     raw_gaze_filtered: pd.DataFrame,
 ) -> None:
     """Render the raw data tab with sub-tabs."""
+    _render_data_provenance()
     word_tab, fixation_tab, raw_gaze_tab = st.tabs(
         ["Word-level", "Fixation-level", "Raw gaze"]
     )

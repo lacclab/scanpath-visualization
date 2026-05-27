@@ -207,6 +207,60 @@ def build_word_boxes(words: pd.DataFrame, color: str = WORD_BOX_COLOR) -> list:
     return shapes
 
 
+# Bold-frame overlay for critical-span words; rendered on top of regular word
+# boxes only when the trial was shown with a preview question (Hunting condition).
+_CRITICAL_FRAME_COLOR = "#000000"  # black — high-contrast frame, readable over heatmaps
+_CRITICAL_FRAME_WIDTH = 2
+_CRITICAL_TEXT_COLOR = (
+    "#C8097C"  # dark pink — used when critical_span_style="Mark text"
+)
+
+
+def build_critical_span_overlay(words: pd.DataFrame) -> list:
+    """Return outline shapes for the critical span (`is_in_aspan`).
+
+    Each visual line that contains critical-span words gets its own outline
+    rectangle, going from the *first* to the *last* critical word on that
+    line (not the whole line). Returns [] when the column is missing or no
+    words match.
+    """
+    if "is_in_aspan" not in words.columns:
+        return []
+    mask = words["is_in_aspan"].fillna(False).astype(bool)
+    if not mask.any():
+        return []
+    span = words[mask].copy()
+
+    # Cluster words into visual lines by y. `line_idx` upstream is often a
+    # constant (no real per-word line numbers in OneStop IA exports), so we
+    # group by y with a tolerance of ~half a word-height: rows whose y jumps
+    # by more than that are on a new line.
+    typical_h = float(span["height"].median() or 1.0)
+    y_sorted = span["y"].sort_values()
+    line_ids = (y_sorted.diff().fillna(0) > typical_h * 0.5).cumsum()
+    span["_line_id"] = line_ids.reindex(span.index)
+
+    shapes = []
+    for _, group in span.groupby("_line_id"):
+        x0 = float(group["x"].min())
+        x1 = float((group["x"] + group["width"]).max())
+        y0 = float(group["y"].min())
+        y1 = float((group["y"] + group["height"]).max())
+        shapes.append(
+            dict(
+                type="rect",
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                line=dict(color=_CRITICAL_FRAME_COLOR, width=_CRITICAL_FRAME_WIDTH),
+                fillcolor="rgba(0,0,0,0)",
+                layer="above",
+            )
+        )
+    return shapes
+
+
 def _add_word_label_trace(
     fig: go.Figure,
     words: pd.DataFrame,
@@ -214,6 +268,7 @@ def _add_word_label_trace(
     font_family: str,
     row: Optional[int] = None,
     col: Optional[int] = None,
+    highlight_critical_text: bool = False,
 ) -> None:
     if words.empty or "text" not in words.columns:
         return
@@ -225,13 +280,23 @@ def _add_word_label_trace(
             "Word %{text}<br>Word ID %{customdata[0]}"
             "<br>Line %{customdata[1]}<extra></extra>"
         )
+    # Per-word text color: dark pink for critical-span words when the caller
+    # asks for "Mark text", default label color otherwise.
+    if highlight_critical_text and "is_in_aspan" in words.columns:
+        critical_mask = words["is_in_aspan"].fillna(False).astype(bool)
+        text_color = [
+            _CRITICAL_TEXT_COLOR if is_crit else WORD_LABEL_COLOR
+            for is_crit in critical_mask
+        ]
+    else:
+        text_color = WORD_LABEL_COLOR
     trace = go.Scatter(
         x=words["x"] + words["width"] / 2,
         y=words["y"] + words["height"] / 2,
         text=words["text"],
         mode="text",
         showlegend=False,
-        textfont=dict(color=WORD_LABEL_COLOR, size=base_font_size, family=font_family),
+        textfont=dict(color=text_color, size=base_font_size, family=font_family),
         hovertemplate=hover,
         customdata=customdata,
         name="words",
@@ -270,6 +335,7 @@ def make_scanpath_figure(
     heatmap_colorscale: str = DEFAULT_HEATMAP_COLORSCALE,
     raw_gaze: Optional[pd.DataFrame] = None,
     show_raw_gaze: bool = False,
+    critical_span_style: str = "Mark text",
 ) -> go.Figure:
     fig = go.Figure()
     spatial_axes = x_field == "x" and y_field == "y"
@@ -291,11 +357,30 @@ def make_scanpath_figure(
         y_range = [canvas_height, 0]
         x_min_data = x_max_data = y_min_data = y_max_data = None
 
+    # Hunting/preview trials get the critical span marked one of two ways:
+    #   - "Mark text": color the critical-span words dark pink (no border).
+    #   - "Mark border": draw a thin black outline around the span.
+    has_preview = (
+        "question_preview" in words.columns
+        and not words.empty
+        and bool(words["question_preview"].fillna(False).astype(bool).iloc[0])
+    )
+    highlight_critical_text = has_preview and critical_span_style == "Mark text"
+
     if spatial_axes and not words.empty:
         if show_words:
-            fig.update_layout(shapes=build_word_boxes(words))
+            shapes = build_word_boxes(words)
+            if has_preview and critical_span_style == "Mark border":
+                shapes = shapes + build_critical_span_overlay(words)
+            fig.update_layout(shapes=shapes)
         if show_word_labels:
-            _add_word_label_trace(fig, words, base_font_size, font_settings["family"])
+            _add_word_label_trace(
+                fig,
+                words,
+                base_font_size,
+                font_settings["family"],
+                highlight_critical_text=highlight_critical_text,
+            )
 
     if show_raw_gaze and raw_gaze is not None and not raw_gaze.empty:
         if "timestamp_ms" in raw_gaze.columns:
