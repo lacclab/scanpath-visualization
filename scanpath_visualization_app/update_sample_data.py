@@ -69,6 +69,20 @@ IA_KEEP_COLUMNS = [
     "distance_to_head",
     "morphological_features",
     "entity_type",
+    # Critical-/distractor-span columns enable the Hunting-condition overlay
+    # in plots.py / tabs.py. Bool flags drive the per-word coloring; the
+    # ind_* + indices columns are normalized through but not yet read by the
+    # app — they're kept for parity with the OneStop server bundle so reviewers
+    # comparing demo vs production see the same metadata table.
+    "question_preview",
+    "is_in_aspan",
+    "is_in_dspan",
+    "aspan_ind_start",
+    "aspan_ind_end",
+    "dspan_ind_start",
+    "dspan_ind_end",
+    "critical_span_indices",
+    "distractor_span_indices",
 ]
 
 FIXATION_KEEP_COLUMNS = [
@@ -96,12 +110,25 @@ FIXATION_KEEP_COLUMNS = [
     "NEXT_SAC_DIRECTION",
     "NEXT_SAC_AMPLITUDE",
     "EYE_TRACKED",
+    "question_preview",  # needed by normalize_fixations so trial-level Hunting flag survives
 ]
+
+
+def _resolve_csv_path(source_csv: Path) -> Path:
+    """Accept either `foo.csv` or `foo.csv.zip` — fall back to the zipped
+    variant when the plain CSV isn't on disk. Lacclab exports ship zipped."""
+    if source_csv.exists():
+        return source_csv
+    zipped = source_csv.with_suffix(source_csv.suffix + ".zip")
+    if zipped.exists():
+        return zipped
+    raise FileNotFoundError(f"Neither {source_csv} nor {zipped} found.")
 
 
 def load_subset(
     source_csv: Path, preferred_columns: Iterable[str], max_rows: int
 ) -> pd.DataFrame:
+    source_csv = _resolve_csv_path(source_csv)
     available_cols = pd.read_csv(source_csv, nrows=0, low_memory=False).columns
     use_cols = [col for col in preferred_columns if col in available_cols]
     missing_core = [
@@ -183,6 +210,17 @@ def pick_demo_slice(
     # Greedy search: try random participant samples, pick the one whose joint
     # article coverage spans both difficulties on the most articles.
     candidates = sorted(first_reading["participant_id"].astype(str).unique())
+    # Prefer participants who have at least one Hunting (preview) trial — the
+    # demo is the only way for someone without OneStop access to exercise the
+    # critical-span overlay, and only Hunting trials trigger it. ~43% of L2
+    # pids have Hunting, so this leaves plenty of search room. Falls back to
+    # the full candidate pool if `question_preview` isn't in the data.
+    if "question_preview" in first_reading.columns:
+        hunters = set(
+            first_reading[first_reading["question_preview"].fillna(False).astype(bool)]
+            ["participant_id"].astype(str).unique()
+        )
+        candidates = [c for c in candidates if c in hunters] or candidates
     if len(candidates) < n_participants:
         raise RuntimeError(
             f"Only {len(candidates)} participants in slice; need {n_participants}."

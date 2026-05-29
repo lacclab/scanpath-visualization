@@ -793,9 +793,13 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
     """Pre-set anim tab's selector state to mirror the single tab's selection.
 
     Fires only when the single tab's selection changed since the last run
-    (tracked via `_prev_shared_trial`). This means user changes inside the
-    anim tab are preserved across reruns — anim only "snaps" back to single
-    when the single tab is the active driver. One-way sync by design.
+    (tracked via `_prev_shared_trial`). One-way sync by design — user
+    changes inside the anim tab are preserved across reruns until the
+    single tab moves again.
+
+    Respects whichever selection mode (None/Text/Participant) the anim tab
+    is currently in and writes to the matching state key, so the user's
+    mode choice isn't reset every time the single tab advances.
     """
     shared_pid = st.session_state.get("shared_selected_pid")
     shared_trial = st.session_state.get("shared_selected_trial_id")
@@ -804,13 +808,50 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
     current = (shared_pid, shared_trial)
     if st.session_state.get("_prev_shared_trial") == current:
         return
-    trial_options = _ordered_trial_ids(combos)
-    try:
-        idx = trial_options.index(str(shared_trial))
-    except ValueError:
+
+    # Find the row in `combos` so we can read trial_index / paragraph_id —
+    # needed by the slider (Participant mode) and the text selectbox (Text
+    # mode), which key off a different field than `trial_id`.
+    match = combos[
+        (combos["participant_id"] == shared_pid)
+        & (combos["trial_id"].astype(str) == str(shared_trial))
+    ]
+    if match.empty:
         return
-    st.session_state["anim_select_trial_mode"] = "None"
-    st.session_state["anim_trial_index"] = idx
+    row = match.iloc[0]
+
+    mode = st.session_state.get("anim_select_trial_mode", "None")
+
+    if mode == "None":
+        trial_options = _ordered_trial_ids(combos)
+        try:
+            idx = trial_options.index(str(shared_trial))
+        except ValueError:
+            return
+        st.session_state["anim_trial_index"] = idx
+    elif mode == "Participant":
+        # Slider value is TRIAL_INDEX (int) when present, else paragraph_id
+        # (str) — matches `_select_trial_participant_mode`'s preference.
+        st.session_state["anim_participant"] = shared_pid
+        slider_value = None
+        for field in ("TRIAL_INDEX", "trial_index"):
+            if field in row.index and pd.notna(row[field]):
+                slider_value = row[field]
+                break
+        if slider_value is None:
+            for field in ("unique_paragraph_id", "paragraph_id"):
+                if field in row.index and pd.notna(row[field]):
+                    slider_value = str(row[field])
+                    break
+        if slider_value is not None:
+            st.session_state["anim_slider"] = slider_value
+    elif mode == "Text":
+        for field in ("unique_paragraph_id", "paragraph_id"):
+            if field in row.index and pd.notna(row[field]):
+                st.session_state["anim_text_id"] = str(row[field])
+                break
+        st.session_state["anim_participant_text"] = shared_pid
+
     st.session_state["_prev_shared_trial"] = current
 
 
