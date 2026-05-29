@@ -199,14 +199,3 @@ used here under its original license. The corpus documentation is at
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-
-
-Great. Please:
-1. Reading measures tab - remove it.
-1.1 Remove the Scarf plot
-1.2 For the Per-word measure plot add horizontal mean dotted line.
-1.3 move the per-word measure plot and fixation distribution to the data statistics tab
-2.  Color-fixations dropdown  - I don't think this works.
-3. Trial header - this is onestop specific. Each dataset has different info. How about focusing on a trial_id field, and dataset specific like existing Column mapping 
-
