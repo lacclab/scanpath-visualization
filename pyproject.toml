@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scanpath-visualization-app"
-version = "0.9.0"
+version = "0.9.1"
 description = "Interactive Streamlit workbench for visualizing eye-tracking-while-reading scanpaths, computing reading measures, and exporting figures and tabular data."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Framework :: Streamlit",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Visualization",
 ]

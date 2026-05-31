@@ -1,5 +1,10 @@
 # Scanpath Visualization
 
+[![PyPI](https://img.shields.io/pypi/v/scanpath-visualization-app.svg)](https://pypi.org/project/scanpath-visualization-app/)
+[![Live demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://scanpath-visualization.streamlit.app)
+[![CI](https://github.com/lacclab/scanpath-visualization/actions/workflows/ci.yml/badge.svg)](https://github.com/lacclab/scanpath-visualization/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Interactive Streamlit workbench for exploring **eye-tracking-while-reading**
 scanpaths. The tool renders word boxes, fixations, saccades, density heatmaps,
 side-by-side trial comparisons, scarf plots, and per-word reading measures.
@@ -23,8 +28,8 @@ word frequency, POS) shipped with the OneStop corpus.
 
 ### Try the live demo
 
-A hosted instance is available on Streamlit Community Cloud (deployment URL
-to be filled in once the GitHub repo is public).
+A hosted instance is available on Streamlit Community Cloud:
+**<https://scanpath-visualization.streamlit.app>**
 
 ### Install from PyPI
 
