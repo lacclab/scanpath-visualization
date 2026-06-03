@@ -421,6 +421,9 @@ def bulk_export(
                     heatmap_range=settings.get("heatmap_range"),
                     fixation_colorscale=settings.get("fixation_colorscale", "Blues"),
                     heatmap_colorscale=settings.get("heatmap_colorscale", "Oranges"),
+                    background_color=settings.get("background_color"),
+                    color_by_line=settings.get("color_by_line", False),
+                    highlight_out_of_text=settings.get("highlight_out_of_text", False),
                 )
                 for fmt in figure_formats:
                     scale = options.png_scale if fmt == "png" else 1

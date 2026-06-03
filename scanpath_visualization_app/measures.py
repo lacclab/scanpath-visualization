@@ -147,6 +147,138 @@ def enrich_fixations(fixations: pd.DataFrame, words: pd.DataFrame) -> pd.DataFra
     return out
 
 
+# ---------------------------------------------------------------------------
+# Geometry helpers: line clustering, in-text test, fixation -> line.
+#
+# These power the "highlight out-of-text fixations" and "color fixations by
+# line" plot options. They are deliberately pure (no Streamlit, no plotting)
+# so they can be unit-tested against a known synthetic layout.
+# ---------------------------------------------------------------------------
+
+
+def _box_bounds(
+    words: pd.DataFrame,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (x0, y0, x1, y1) arrays for a words frame's bounding boxes."""
+    x0 = words["x"].to_numpy(dtype=float)
+    y0 = words["y"].to_numpy(dtype=float)
+    x1 = x0 + words["width"].to_numpy(dtype=float)
+    y1 = y0 + words["height"].to_numpy(dtype=float)
+    return x0, y0, x1, y1
+
+
+def _in_any_box(fix_chunk: pd.DataFrame, word_chunk: pd.DataFrame) -> np.ndarray:
+    """Boolean array (aligned to fix_chunk order): is each fixation inside any box?"""
+    x0, y0, x1, y1 = _box_bounds(word_chunk)
+    fx = pd.to_numeric(fix_chunk["x"], errors="coerce").to_numpy(dtype=float)
+    fy = pd.to_numeric(fix_chunk["y"], errors="coerce").to_numpy(dtype=float)
+    inside = (
+        (fx[:, None] >= x0[None, :])
+        & (fx[:, None] <= x1[None, :])
+        & (fy[:, None] >= y0[None, :])
+        & (fy[:, None] <= y1[None, :])
+    )
+    return inside.any(axis=1)
+
+
+def cluster_word_lines(words: pd.DataFrame, tol_frac: float = 0.5) -> pd.Series:
+    """Assign each word a 0-based line id by clustering on vertical position.
+
+    OneStop IA exports rarely carry a real per-word line number (the
+    normalized ``line_idx`` is often a constant), so we infer visual lines from
+    word-box geometry: words are sorted by vertical center and a new line
+    starts whenever the center jumps by more than ``tol_frac`` of the median
+    word height. Lines are numbered top-to-bottom starting at 0.
+
+    Returns an int Series aligned to ``words.index`` (empty when ``words`` is
+    empty). Mirrors the line clustering used by ``plots.build_critical_span_overlay``.
+    """
+    if words.empty:
+        return pd.Series([], dtype="int64", index=words.index)
+    heights = pd.to_numeric(words["height"], errors="coerce")
+    typical_h = float(heights.median()) if heights.notna().any() else 1.0
+    typical_h = typical_h if typical_h > 0 else 1.0
+    y_center = pd.to_numeric(words["y"], errors="coerce") + heights.fillna(0) / 2.0
+    order = y_center.sort_values(kind="stable")
+    line_of_sorted = (
+        (order.diff().fillna(0) > typical_h * tol_frac).cumsum().astype(int)
+    )
+    return line_of_sorted.reindex(words.index)
+
+
+def _groupwise(fixations: pd.DataFrame, words: pd.DataFrame, fn) -> pd.Series:
+    """Apply ``fn(fix_chunk, word_chunk)`` per (participant, trial), aligning
+    the per-chunk result back onto a Series indexed like ``fixations``.
+
+    Falls back to a single group when the id columns are absent (e.g. the
+    figure builders pass already-sliced single-trial frames)."""
+    keys = ["participant_id", "trial_id"]
+    # object dtype so a chunk fn may return bools (in-text) or floats (line ids)
+    # without triggering a dtype-incompatibility cast; callers coerce the result.
+    out = pd.Series(np.nan, index=fixations.index, dtype=object)
+    has_groups = set(keys).issubset(fixations.columns) and set(keys).issubset(
+        words.columns
+    )
+    if not has_groups:
+        out.loc[:] = fn(fixations, words)
+        return out
+    word_groups = words.groupby(keys, sort=False)
+    for key, fix_chunk in fixations.groupby(keys, sort=False):
+        try:
+            word_chunk = word_groups.get_group(key)
+        except KeyError:
+            continue
+        if word_chunk.empty:
+            continue
+        out.loc[fix_chunk.index] = fn(fix_chunk, word_chunk)
+    return out
+
+
+def fixation_in_text_mask(fixations: pd.DataFrame, words: pd.DataFrame) -> pd.Series:
+    """Boolean Series: True where a fixation falls inside any word box.
+
+    "Out-of-text" fixations are simply ``~fixation_in_text_mask(...)``. Works
+    on multi-trial frames (grouped by participant/trial) or on a single
+    already-sliced trial. Fixations with non-finite coordinates count as
+    out-of-text (mask = False)."""
+    if fixations.empty:
+        return pd.Series([], dtype=bool, index=fixations.index)
+    if words.empty:
+        return pd.Series(False, index=fixations.index)
+    res = _groupwise(fixations, words, _in_any_box)
+    return res.where(res.notna(), other=False).astype(bool)
+
+
+def assign_fixation_lines(fixations: pd.DataFrame, words: pd.DataFrame) -> pd.Series:
+    """Assign each fixation the 0-based line id of the nearest text line.
+
+    Lines are derived from word geometry via :func:`cluster_word_lines`; each
+    fixation is mapped to the line whose mean vertical center is closest to the
+    fixation's y. Returns a float Series (NaN where unmappable) aligned to
+    ``fixations.index`` so it can be used as a categorical color field."""
+    if fixations.empty:
+        return pd.Series([], dtype="float64", index=fixations.index)
+    if words.empty:
+        return pd.Series(np.nan, index=fixations.index, dtype="float64")
+
+    def _nearest_line(fix_chunk: pd.DataFrame, word_chunk: pd.DataFrame) -> np.ndarray:
+        lines = cluster_word_lines(word_chunk)
+        y_center = (
+            pd.to_numeric(word_chunk["y"], errors="coerce")
+            + pd.to_numeric(word_chunk["height"], errors="coerce").fillna(0) / 2.0
+        )
+        centers = y_center.groupby(lines).mean()
+        line_ids = centers.index.to_numpy(dtype=float)
+        line_cy = centers.to_numpy(dtype=float)
+        fy = pd.to_numeric(fix_chunk["y"], errors="coerce").to_numpy(dtype=float)
+        dist = np.abs(fy[:, None] - line_cy[None, :])
+        nearest = np.where(np.isnan(fy), -1, dist.argmin(axis=1))
+        result = np.where(nearest >= 0, line_ids[np.clip(nearest, 0, None)], np.nan)
+        return result
+
+    return pd.to_numeric(_groupwise(fixations, words, _nearest_line), errors="coerce")
+
+
 def compute_per_word_measures(
     fixations: pd.DataFrame, words: pd.DataFrame
 ) -> pd.DataFrame:

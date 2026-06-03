@@ -748,6 +748,57 @@ def filter_data(
     return words_filtered, fixations_filtered
 
 
+def filter_trials(
+    words: pd.DataFrame,
+    fixations: pd.DataFrame,
+    participants: Optional[list] = None,
+    metadata: Optional[Dict[str, set]] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Narrow words + fixations by participant and categorical trial metadata.
+
+    ``metadata`` maps a column name to the set of allowed values. Only columns
+    present on a frame are applied, so a condition like ``question_preview``
+    (Hunting/Gathering) narrows both words and fixations — the column is copied
+    onto both during normalization. A falsy selection means "no constraint".
+    """
+    w, f = words, fixations
+    if participants:
+        keep = set(map(str, participants))
+        w = w[w["participant_id"].astype(str).isin(keep)]
+        f = f[f["participant_id"].astype(str).isin(keep)]
+    for col, allowed in (metadata or {}).items():
+        if not allowed:
+            continue
+        allowed = set(allowed)
+        if col in w.columns:
+            w = w[w[col].isin(allowed)]
+        if col in f.columns:
+            f = f[f[col].isin(allowed)]
+    return w, f
+
+
+def filter_to_keys(
+    words: pd.DataFrame,
+    fixations: pd.DataFrame,
+    keys: set,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep only rows whose (participant_id, trial_id) is in ``keys``.
+
+    ``keys`` is a set of ``(str, str)`` tuples. Used to apply annotation-based
+    filtering (favorites / tags). Vectorized via a MultiIndex membership test so
+    it stays fast on large fixation tables."""
+
+    def _restrict(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        idx = pd.MultiIndex.from_arrays(
+            [df["participant_id"].astype(str), df["trial_id"].astype(str)]
+        )
+        return df[idx.isin(keys)]
+
+    return _restrict(words), _restrict(fixations)
+
+
 def filter_raw_gaze(
     raw_gaze: pd.DataFrame,
     participants: list,

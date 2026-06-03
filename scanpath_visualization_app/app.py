@@ -43,6 +43,10 @@ if __package__ is None or __package__ == "":
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
+from scanpath_visualization_app.annotations import (
+    filter_keys,
+    render_annotations_sidebar,
+)
 from scanpath_visualization_app.constants import FONT_FAMILY
 from scanpath_visualization_app.controls import (
     FIX_FIELD_SPECS,
@@ -51,12 +55,15 @@ from scanpath_visualization_app.controls import (
     column_mapping_ui,
     data_dictionary_help_text,
     sidebar_controls,
+    sidebar_trial_filters,
 )
 from scanpath_visualization_app.data import (
     compute_canvas_size,
     default_filters,
     filter_data,
     filter_raw_gaze,
+    filter_to_keys,
+    filter_trials,
     infer_fix_schema,
     infer_raw_gaze_schema,
     infer_word_schema,
@@ -92,6 +99,10 @@ from scanpath_visualization_app.utils import (  # noqa: F401
 
 UPLOAD_CHOICE = "Upload tables"
 DEMO_CHOICE = "Use bundled demo"
+# A tiny, fully-specified synthetic trial (scanpath_visualization_app.synthetic)
+# with known ground-truth reading measures — handy for sanity-checking the viz
+# against documented expected values.
+SYNTHETIC_CHOICE = "Synthetic test trial"
 # Server-side OneStop lacclab bundle. Only offered when $ONESTOP_DATA_DIR is
 # set; selected automatically when the page is opened with `?source=onestop`
 # in the URL. See data.load_onestop_server_bundle().
@@ -252,6 +263,10 @@ def load_words_and_fixations(
         - Shows info message if uploads are incomplete
         - Falls back to sample data if uploads missing
     """
+    if data_choice == SYNTHETIC_CHOICE:
+        from scanpath_visualization_app.synthetic import load_synthetic_data
+
+        return load_synthetic_data()
     if data_choice == UPLOAD_CHOICE:
         uploaded_words = st.sidebar.file_uploader(
             "Words/IA table", type=["csv", "parquet", "feather"]
@@ -349,6 +364,10 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
     """
     raw_gaze_df = pd.DataFrame()
 
+    if data_choice == SYNTHETIC_CHOICE:
+        # The synthetic trial has no raw gaze; skip the uploader entirely.
+        return raw_gaze_df
+
     if data_choice == DEMO_CHOICE:
         raw_gaze_df = load_sample_raw_gaze()
         if not raw_gaze_df.empty:
@@ -405,7 +424,7 @@ def render_sidebar_data_source() -> str:
     st.sidebar.header("Experimental Setup")
     # Only offer the OneStop bundle when $ONESTOP_DATA_DIR is set on the
     # server. Outside that context the choice would be a dead-end, so we hide it.
-    options = [DEMO_CHOICE, UPLOAD_CHOICE]
+    options = [DEMO_CHOICE, SYNTHETIC_CHOICE, UPLOAD_CHOICE]
     if onestop_data_dir() is not None:
         options.insert(0, ONESTOP_CHOICE)
     # Default to OneStop when it's available AND a deep-link forced it via
@@ -480,9 +499,10 @@ def render_sidebar_canvas_controls(
         help="Match the font size used in your experiment to keep bounding boxes aligned.",
     )
     font_family = st.sidebar.text_input(
-        "Word label font family",
+        "Text font",
         value=FONT_FAMILY,
-        help="Use the exact font from the experiment (e.g., 'Arial' or a fall-back stack).",
+        help="Font for the word labels. Use the exact font from your experiment "
+        "(e.g. 'Courier New') or a CSS fallback stack.",
     )
     st.sidebar.divider()
 
@@ -549,6 +569,36 @@ def main() -> None:
     # Load optional raw gaze data
     raw_gaze_df = load_raw_gaze_data(data_choice)
 
+    # Trial-level filtering / grouping (sidebar): narrow by participant, by
+    # condition (Hunting/Gathering, difficulty, first/repeated reading,
+    # correctness), and by annotation state (favorites / tags) before anything
+    # downstream sees the data.
+    trial_filters = sidebar_trial_filters(words_df, fixations_df)
+    words_df, fixations_df = filter_trials(
+        words_df,
+        fixations_df,
+        participants=trial_filters["participants"],
+        metadata=trial_filters["metadata"],
+    )
+    if (
+        trial_filters["favorites_only"]
+        or trial_filters["required_tags"]
+        or trial_filters["excluded_tags"]
+    ) and not fixations_df.empty:
+        present_keys = {
+            (str(p), str(t))
+            for p, t in zip(fixations_df["participant_id"], fixations_df["trial_id"])
+        }
+        kept = set(
+            filter_keys(
+                list(present_keys),
+                favorites_only=trial_filters["favorites_only"],
+                required_tags=trial_filters["required_tags"],
+                excluded_tags=trial_filters["excluded_tags"],
+            )
+        )
+        words_df, fixations_df = filter_to_keys(words_df, fixations_df, kept)
+
     # Apply filters (participant/trial/paragraph selection)
     filters = default_filters(words_df, fixations_df)
     words_filtered, fixations_filtered = filter_data(words_df, fixations_df, filters)
@@ -561,9 +611,13 @@ def main() -> None:
             filters.get("trials", []),
         )
         if raw_gaze_filtered.empty:
-            st.sidebar.warning(
-                f"Raw gaze data was filtered out. "
-                f"Original: {len(raw_gaze_df)} rows, After filter: 0 rows"
+            # Informational, not an error: the loaded raw-gaze samples just
+            # don't cover any trial in the current filter (raw gaze typically
+            # exists for only a subset of trials). The overlay is optional.
+            st.sidebar.caption(
+                f"ℹ️ The loaded raw-gaze samples ({len(raw_gaze_df):,} rows) don't "
+                "overlap the current trial filter, so the raw-gaze overlay is "
+                "unavailable here."
             )
     else:
         raw_gaze_filtered = pd.DataFrame()
@@ -571,7 +625,8 @@ def main() -> None:
     # Check for empty data after filtering
     if words_filtered.empty or fixations_filtered.empty:
         st.warning(
-            "No data after filtering. Try selecting more participants or trials."
+            "No data after filtering. Loosen the **Filter trials** panel "
+            "(participants, condition, or annotation filters) in the sidebar."
         )
         return
 
@@ -587,6 +642,10 @@ def main() -> None:
     viz_settings = sidebar_controls(
         fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
     )
+
+    # Sidebar Annotations panel (download/restore JSON + count). The per-trial
+    # star/tags/notes editor lives in the Interactive Plot tab.
+    render_annotations_sidebar()
 
     # Tab pre-selection isn't supported by st.tabs (Streamlit limitation), so
     # when the deep link asks for animation we surface a banner pointing to it.

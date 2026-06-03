@@ -21,13 +21,15 @@ docs at <https://lacclab.github.io/OneStop-Eye-Movements/>), shipped under
 
 ```text
 scanpath_visualization_app/
-├─ app.py            entry point: page config, data load, filter, dispatch to tabs
+├─ app.py            entry point: page config, data load, trial filters, dispatch to tabs
 ├─ tabs.py           tab implementations (Interactive, Reading Measures, Animation, Raw Data, Statistics)
-├─ controls.py       sidebar control widgets + column-mapping override UI
-├─ data.py           schema inference, normalization, filtering, sample loaders
-├─ measures.py       canonical reading measures from first principles (FFD, FPRT, RPD, TFD, regressions)
-├─ plots.py          Plotly figure builders (scanpath, animation, comparison, scarf, bar, histogram)
+├─ controls.py       sidebar viz controls + column-mapping override UI + trial-filter panel
+├─ data.py           schema inference, normalization, filtering (incl. condition/annotation trial filters), sample loaders
+├─ measures.py       canonical reading measures (FFD, FPRT, RPD, TFD, regressions) + geometry helpers (line clustering, in-text test)
+├─ plots.py          Plotly figure builders (scanpath, animation, comparison, bar, histogram); background color, out-of-text + by-line fixation options
 ├─ export.py         configurable bulk-export module (PNG/SVG/JSON/CSV/Parquet/mega-table)
+├─ annotations.py    per-trial favorites/tags/notes (session state) + JSON import/export
+├─ synthetic.py      hand-built ground-truth trial (shared by tests + the "Synthetic test trial" data source)
 ├─ utils.py          trial-combo construction, trial-selection UI, comparison helpers
 ├─ constants.py      palette, defaults, citation metadata
 ├─ styles.py         injected CSS
@@ -66,6 +68,28 @@ After `normalize_words` / `normalize_fixations`:
 `saccade_amplitude`, `progression`, `is_regression`. Pre-computed IA values on
 the words table take precedence over computed ones.
 
+### Areas of interest (AOIs)
+
+AOIs (word interest areas) are **not computed** by the app — they come directly
+from the data's word bounding boxes, supplied either as `(x, y, width, height)`
+or as EyeLink's `(IA_LEFT, IA_RIGHT, IA_TOP, IA_BOTTOM)` (which `normalize_words`
+converts to `x/y/width/height`). The only thing derived from geometry is the
+**fixation→word assignment** in `measures.assign_fixations_to_words`: bounding-box
+containment, then nearest word-center within 50 px, else `word_id = NaN`. That
+assignment feeds the reading measures and the "out-of-text" flag
+(`measures.fixation_in_text_mask`); "color by line" derives visual lines from
+word-box `y` clustering (`measures.cluster_word_lines`) because `line_idx` is
+often a constant in IA exports.
+
+### Trial annotations & filtering
+
+`annotations.py` keeps per-trial favorites / tags / notes in session state
+(keyed by `(participant_id, trial_id)`), with a pure serialize/deserialize core
+and JSON download/restore in the sidebar. `controls.sidebar_trial_filters` +
+`data.filter_trials` / `data.filter_to_keys` narrow the trial pool by condition
+(Hunting/Gathering via `question_preview`, difficulty, repeated reading,
+correctness) and by annotation state (favorites / tags) before `build_combo_options`.
+
 ## Build / Lint / Test
 
 ```bash
@@ -77,7 +101,7 @@ streamlit run streamlit_app.py
 uv run streamlit run streamlit_app.py
 
 # Tests
-pytest                              # all 86 tests
+pytest                              # all 114 tests
 pytest tests/test_measures.py       # one file
 pytest --cov=scanpath_visualization_app --cov-report=term
 
@@ -116,6 +140,11 @@ checks on every push/PR.
   `normalized_words_df`, `normalized_fixations_df`, `sample_raw_gaze_df`.
 - `tests/test_measures.py` covers FFD, FPRT, RPD, TFD, skip, regressions on a
   synthetic 4-word layout.
+- `tests/synthetic_data.py` is a fully-specified 6-word / 2-line trial with
+  hand-traced `EXPECTED` values (incl. a regression and one out-of-text
+  fixation); `tests/test_synthetic.py` asserts every measure and geometry
+  helper exactly. `tests/test_annotations.py` / `tests/test_filters.py` cover
+  the annotation core and trial filtering.
 - `tests/test_smoke.py` exercises the full pipeline (load → infer → normalize
   → plot) against the bundled sample, including a perf regression that asserts
   saccades collapse to a single trace.

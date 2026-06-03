@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_MARKER_SIZE_RANGE,
     FIX_MARKER_OUTLINE,
     FONT_FAMILY,
+    OUT_OF_TEXT_COLOR,
     SACCADE_COLOR,
     WORD_BOX_COLOR,
     WORD_LABEL_COLOR,
@@ -336,6 +337,9 @@ def make_scanpath_figure(
     raw_gaze: Optional[pd.DataFrame] = None,
     show_raw_gaze: bool = False,
     critical_span_style: str = "Mark text",
+    background_color: Optional[str] = None,
+    color_by_line: bool = False,
+    highlight_out_of_text: bool = False,
 ) -> go.Figure:
     fig = go.Figure()
     spatial_axes = x_field == "x" and y_field == "y"
@@ -472,10 +476,25 @@ def make_scanpath_figure(
 
     if show_fixations and not fixations.empty:
         ordered = fixations.sort_values("timestamp_ms")
-        color_data = ordered[color_by] if color_by in ordered.columns else None
-        is_numeric_color = color_data is not None and pd.api.types.is_numeric_dtype(
-            color_data
-        )
+        # "Color by line" overrides the chosen color field: each fixation is
+        # tinted by the text line it lands on (lines inferred from word
+        # geometry). Rendered as discrete categories so the legend reads
+        # "line: Line 1", "line: Line 2", …
+        if color_by_line and spatial_axes and not words.empty:
+            from .measures import assign_fixation_lines
+
+            line_ids = assign_fixation_lines(ordered, words)
+            color_data = line_ids.map(
+                lambda v: f"Line {int(v) + 1}" if pd.notna(v) else "(off-text)"
+            )
+            color_label = "line"
+            is_numeric_color = False
+        else:
+            color_data = ordered[color_by] if color_by in ordered.columns else None
+            color_label = color_by
+            is_numeric_color = color_data is not None and pd.api.types.is_numeric_dtype(
+                color_data
+            )
         marker_color, category_legend = _resolve_marker_colors(
             color_data, is_numeric_color
         )
@@ -491,7 +510,7 @@ def make_scanpath_figure(
                     colorscale=fixation_colorscale if is_numeric_color else None,
                     showscale=show_colorbars and is_numeric_color,
                     colorbar=dict(
-                        title=color_by.replace("_", " ").title(),
+                        title=color_label.replace("_", " ").title(),
                         x=1.12,
                         lenmode="fraction",
                         len=COLORBAR_LEN_FRACTION,
@@ -543,7 +562,7 @@ def make_scanpath_figure(
                         color=color,
                         line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
                     ),
-                    name=f"{color_by}: {category}",
+                    name=f"{color_label}: {category}",
                     showlegend=True,
                     hoverinfo="skip",
                 )
@@ -560,6 +579,34 @@ def make_scanpath_figure(
                     hoverinfo="skip",
                 )
             )
+
+        # Out-of-text overlay: mark fixations falling outside every word box
+        # with a red ✕ on top of the regular marker. Requires word boxes +
+        # spatial axes to define "in text".
+        if highlight_out_of_text and spatial_axes and not words.empty:
+            from .measures import fixation_in_text_mask
+
+            off = ordered[~fixation_in_text_mask(ordered, words)]
+            if not off.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=off[x_field],
+                        y=off[y_field],
+                        mode="markers",
+                        marker=dict(
+                            symbol="x",
+                            size=13,
+                            color=OUT_OF_TEXT_COLOR,
+                            line=dict(color="#ffffff", width=1),
+                        ),
+                        name="Out-of-text",
+                        showlegend=True,
+                        hovertemplate=(
+                            "Out-of-text fixation<br>x %{x:.0f}, y %{y:.0f}"
+                            "<extra></extra>"
+                        ),
+                    )
+                )
 
     xaxis_cfg = dict(showticklabels=False, showgrid=False, zeroline=False, title=None)
     yaxis_cfg = dict(showticklabels=False, showgrid=False, zeroline=False, title=None)
@@ -602,6 +649,10 @@ def make_scanpath_figure(
         yaxis=yaxis_cfg,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         template="plotly_white",
+        # None leaves the template's default white; a hex value paints both the
+        # plotting area and the surrounding paper (e.g. a neutral gray).
+        plot_bgcolor=background_color,
+        paper_bgcolor=background_color,
         font=font_settings,
         shapes=shapes,
     )
@@ -750,6 +801,7 @@ def make_scanpath_animation(
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     order_font_size: int = 10,
     order_font_color: str = "#000000",
+    background_color: Optional[str] = None,
 ) -> go.Figure:
     """Frame-by-frame animation with per-fixation frame durations.
 
@@ -1047,6 +1099,8 @@ def make_scanpath_animation(
             scaleratio=1,
         ),
         template="plotly_white",
+        plot_bgcolor=background_color,
+        paper_bgcolor=background_color,
         font=font_settings,
         shapes=shapes,
         sliders=sliders,
@@ -1134,6 +1188,7 @@ def _make_split_comparison_figure(
     trial_labels: Optional[Tuple[str, str]],
     orientation: str,
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
+    background_color: Optional[str] = None,
 ) -> go.Figure:
     """Two-panel comparison, either horizontal (side-by-side) or vertical (stacked)."""
     from plotly.subplots import make_subplots
@@ -1294,6 +1349,8 @@ def _make_split_comparison_figure(
         margin=dict(l=0, r=0, t=40, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
         template="plotly_white",
+        plot_bgcolor=background_color,
+        paper_bgcolor=background_color,
         title="Stacked comparison" if is_stacked else "Side-by-side comparison",
         font=font_settings,
         shapes=all_shapes,
@@ -1316,6 +1373,7 @@ def make_comparison_figure(
     trial_labels: Optional[Tuple[str, str]] = None,
     layout: str = "overlay",
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
+    background_color: Optional[str] = None,
 ) -> go.Figure:
     if layout in {"side_by_side", "stacked"}:
         return _make_split_comparison_figure(
@@ -1332,6 +1390,7 @@ def make_comparison_figure(
             trial_labels=trial_labels,
             orientation=layout,
             marker_size_range=marker_size_range,
+            background_color=background_color,
         )
 
     fig = go.Figure()
@@ -1430,6 +1489,8 @@ def make_comparison_figure(
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         template="plotly_white",
+        plot_bgcolor=background_color,
+        paper_bgcolor=background_color,
         title="Overlay comparison",
         font=font_settings,
         shapes=shapes,

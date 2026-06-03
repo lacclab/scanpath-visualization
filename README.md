@@ -49,7 +49,8 @@ On top of the layered view:
 - **Animated replay** — watch the scanpath unfold fixation by fixation, at real or scaled speed.
 - **Compare two trials** — overlaid on one canvas or side-by-side (e.g. ordinary vs. information-seeking reading, first vs. repeated reading, L1 vs. L2).
 - **Critical-span highlight** — mark a region of interest (e.g. an answer span) by color or border to see at a glance whether it was read.
-- **Fully customizable** — map any field to color, size, or axes; every toggle, palette, and scale is independent.
+- **Out-of-text & by-line** — flag fixations that land outside every word box, or color fixations by the text line they fall on.
+- **Fully customizable** — map any field to color, size, or axes; set the plot background (white or a neutral gray); every toggle, palette, and scale is independent.
 
 ---
 
@@ -82,12 +83,28 @@ Definitions follow Rayner (1998) and Inhoff & Radach (1998).
 
 ---
 
+## Triage your trials
+
+Filter the trial pool by **condition** — information-seeking *Hunting* vs.
+ordinary *Gathering* reading, difficulty, first vs. repeated reading, answer
+correctness — or by your own annotations. **Star** favorites, **tag** trials
+(e.g. "To exclude"), and jot per-trial **notes**; download everything as a JSON
+sidecar and restore it in a later session.
+
+---
+
 ## Your data
 
 Upload **CSV, Parquet, or Feather** tables for words/AoIs, fixations, and
 (optionally) raw gaze. Columns are auto-detected from common EyeLink,
 Gazepoint, and snake-case conventions; a sidebar **Column mapping** panel lets
 you override any guess.
+
+**Areas of interest** come straight from your word boxes — given as
+`(x, y, width, height)` or EyeLink's `IA_LEFT/RIGHT/TOP/BOTTOM` — the app never
+invents them. Fixations are tied to words by bounding-box containment (with a
+small nearest-word fallback); fixations that miss every box are flagged
+*out-of-text*.
 
 ## Bulk export
 

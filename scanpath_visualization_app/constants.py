@@ -4,9 +4,10 @@ from __future__ import annotations
 
 PACKAGE_NAME = "scanpath_visualization_app"
 
-# Default monospace stack. Lucida Sans Typewriter is common on Windows; we list
-# generic monospace last so any platform falls back gracefully.
-FONT_FAMILY = "Lucida Sans Typewriter, Lucida Console, Courier New, monospace"
+# Default text font. A single generic family that renders (monospaced) on every
+# platform including the Streamlit Cloud demo; the sidebar field accepts any CSS
+# font name or stack if you want the exact experiment font.
+FONT_FAMILY = "monospace"
 
 DEFAULT_FIGURE_SIZE = (2560, 1440)
 
@@ -45,6 +46,19 @@ CURRENT_FIX_COLOR = "rgba(255, 127, 14, 0.6)"
 CURRENT_FIX_OUTLINE = "#ff7f0e"
 FIX_MARKER_OUTLINE = "#111"
 COMPARISON_PALETTE = ["#1f77b4", "#e45756"]
+
+# Distinct mark for fixations that fall outside every word box ("out of text").
+OUT_OF_TEXT_COLOR = "#d62728"  # red
+
+# Plot background. Default white; some analyses prefer a neutral gray.
+# A "Custom…" entry in the sidebar reveals a free color picker.
+DEFAULT_BACKGROUND_COLOR = "#ffffff"
+BACKGROUND_PRESETS = {
+    "White": "#ffffff",
+    "Light gray": "#e9ecef",
+    "Gray": "#bdbdbd",
+    "Black": "#000000",
+}
 
 CANVAS_PAD_MIN_PX = 20.0
 CANVAS_PAD_FRACTION = 0.05

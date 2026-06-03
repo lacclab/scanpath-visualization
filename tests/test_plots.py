@@ -273,3 +273,72 @@ class TestMakeComparisonFigure:
         )
         assert isinstance(fig, go.Figure)
         assert len(fig.data) == 2  # Two traces for two trials
+
+
+class TestPlotEnhancements:
+    """Background color, out-of-text highlight, and color-by-line options."""
+
+    def _figure(self, words, fixations, **overrides):
+        kwargs = dict(
+            canvas_width=500,
+            canvas_height=300,
+            base_font_size=12,
+            font_family="Arial",
+            x_field="x",
+            y_field="y",
+            show_words=True,
+            show_word_labels=True,
+            show_fixations=True,
+            show_order=True,
+            show_saccades=True,
+            show_heatmap=False,
+            color_by="duration_ms",
+            heatmap_metric=None,
+            marker_size_range=(8, 24),
+            order_font_size=10,
+            order_font_color="#000000",
+            show_colorbars=False,
+            fixation_color_range=None,
+            heatmap_range=None,
+        )
+        kwargs.update(overrides)
+        return make_scanpath_figure(words, fixations, **kwargs)
+
+    def test_background_color_applied(self, synthetic_words_df, synthetic_fixations_df):
+        fig = self._figure(
+            synthetic_words_df, synthetic_fixations_df, background_color="#bdbdbd"
+        )
+        assert fig.layout.plot_bgcolor == "#bdbdbd"
+        assert fig.layout.paper_bgcolor == "#bdbdbd"
+
+    def test_background_color_default_is_none(
+        self, synthetic_words_df, synthetic_fixations_df
+    ):
+        # Default leaves the template's background untouched.
+        fig = self._figure(synthetic_words_df, synthetic_fixations_df)
+        assert fig.layout.plot_bgcolor is None
+
+    def test_out_of_text_overlay_trace(
+        self, synthetic_words_df, synthetic_fixations_df
+    ):
+        # The synthetic trial has exactly one out-of-text fixation.
+        fig = self._figure(
+            synthetic_words_df, synthetic_fixations_df, highlight_out_of_text=True
+        )
+        oot = [t for t in fig.data if t.name == "Out-of-text"]
+        assert len(oot) == 1
+        assert len(oot[0].x) == 1  # one off-text fixation
+
+    def test_out_of_text_overlay_absent_by_default(
+        self, synthetic_words_df, synthetic_fixations_df
+    ):
+        fig = self._figure(synthetic_words_df, synthetic_fixations_df)
+        assert not any(t.name == "Out-of-text" for t in fig.data)
+
+    def test_color_by_line_legend(self, synthetic_words_df, synthetic_fixations_df):
+        # Two lines in the layout -> two "line:" legend entries.
+        fig = self._figure(
+            synthetic_words_df, synthetic_fixations_df, color_by_line=True
+        )
+        line_traces = [t for t in fig.data if str(t.name).startswith("line:")]
+        assert len(line_traces) == 2

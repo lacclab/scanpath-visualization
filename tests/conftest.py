@@ -3,6 +3,24 @@
 import pandas as pd
 import pytest
 
+from tests.synthetic_data import make_synthetic_fixations, make_synthetic_words
+
+
+@pytest.fixture
+def synthetic_words_df():
+    """Normalized words for the fully-specified synthetic trial.
+
+    See ``tests/synthetic_data.py`` for the layout and the hand-traced
+    ``EXPECTED`` measure values.
+    """
+    return make_synthetic_words()
+
+
+@pytest.fixture
+def synthetic_fixations_df():
+    """Normalized fixations for the synthetic trial (word_id left NaN)."""
+    return make_synthetic_fixations()
+
 
 @pytest.fixture
 def sample_words_df():

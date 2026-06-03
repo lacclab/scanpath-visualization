@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(__file__).parent
@@ -287,6 +288,138 @@ def write_outputs(df: pd.DataFrame, base: Path) -> None:
         print(f"Parquet write failed for {base}: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# Raw-gaze sample synthesis.
+#
+# OneStop's exports are IA/fixation reports only — there are no raw, sample-
+# level (ms) gaze recordings. To still let the bundled demo exercise the
+# "Show raw gaze data" overlay, we synthesize an illustrative gaze path for ONE
+# real bundled trial: a small jittered cloud around each fixation for its
+# duration, joined by short interpolated saccade segments. It's keyed to a
+# (participant, trial) present in BOTH the ia and fixation samples so it lines
+# up with that trial's scanpath and isn't dropped by the trial filter.
+# ---------------------------------------------------------------------------
+
+RAW_GAZE_SAMPLE_DT_MS = 10  # ~100 Hz effective sampling
+RAW_GAZE_JITTER_PX = 4.0
+RAW_GAZE_SACCADE_POINTS = 6
+RAW_GAZE_MAX_POINTS = 2500
+
+_RAW_GAZE_COLUMNS = ["participant_id", "unique_trial_id", "x", "y", "timestamp_ms"]
+
+
+def synthesize_raw_gaze(
+    fixations: pd.DataFrame, ia: pd.DataFrame, *, seed: int = 20260520
+) -> pd.DataFrame:
+    """Build an illustrative ms-level gaze path for one real bundled trial.
+
+    Returns an empty frame (with the canonical columns) if the required
+    ``CURRENT_FIX_*`` columns are missing or no trial is shared between the two
+    tables.
+    """
+    empty = pd.DataFrame(columns=_RAW_GAZE_COLUMNS)
+    needed = {
+        "participant_id",
+        "unique_trial_id",
+        "CURRENT_FIX_X",
+        "CURRENT_FIX_Y",
+        "CURRENT_FIX_DURATION",
+        "CURRENT_FIX_START",
+    }
+    if fixations.empty or ia.empty or not needed.issubset(fixations.columns):
+        return empty
+
+    fix = fixations.assign(
+        _p=fixations["participant_id"].astype(str),
+        _t=fixations["unique_trial_id"].astype(str),
+    )
+    ia_keys = set(
+        zip(ia["participant_id"].astype(str), ia["unique_trial_id"].astype(str))
+    )
+    sizes = fix.groupby(["_p", "_t"]).size().reset_index(name="n")
+    sizes = sizes[[(p, t) in ia_keys for p, t in zip(sizes["_p"], sizes["_t"])]]
+    if sizes.empty:
+        return empty
+    # Deterministic pick: most fixations, then lexicographic id tie-break.
+    sizes = sizes.sort_values(["n", "_p", "_t"], ascending=[False, True, True])
+    pid, tid = str(sizes.iloc[0]["_p"]), str(sizes.iloc[0]["_t"])
+
+    trial = fix[(fix["_p"] == pid) & (fix["_t"] == tid)].sort_values(
+        "CURRENT_FIX_START"
+    )
+    xs = pd.to_numeric(trial["CURRENT_FIX_X"], errors="coerce").to_numpy(float)
+    ys = pd.to_numeric(trial["CURRENT_FIX_Y"], errors="coerce").to_numpy(float)
+    durs = (
+        pd.to_numeric(trial["CURRENT_FIX_DURATION"], errors="coerce")
+        .fillna(0)
+        .to_numpy(float)
+    )
+    starts = (
+        pd.to_numeric(trial["CURRENT_FIX_START"], errors="coerce")
+        .fillna(0)
+        .to_numpy(float)
+    )
+
+    rng = np.random.default_rng(seed)
+    px: list[float] = []
+    py: list[float] = []
+    pt: list[float] = []
+    n = len(trial)
+    for i in range(n):
+        n_dwell = max(1, int(round(durs[i] / RAW_GAZE_SAMPLE_DT_MS)))
+        px.extend(xs[i] + rng.normal(0.0, RAW_GAZE_JITTER_PX, n_dwell))
+        py.extend(ys[i] + rng.normal(0.0, RAW_GAZE_JITTER_PX, n_dwell))
+        pt.extend(starts[i] + np.linspace(0.0, durs[i], n_dwell))
+        if i < n - 1:
+            seg = np.linspace(0.0, 1.0, RAW_GAZE_SACCADE_POINTS + 2)[1:-1]
+            px.extend(xs[i] + seg * (xs[i + 1] - xs[i]))
+            py.extend(ys[i] + seg * (ys[i + 1] - ys[i]))
+            t0 = starts[i] + durs[i]
+            t1 = starts[i + 1] if starts[i + 1] > t0 else t0 + RAW_GAZE_SACCADE_POINTS
+            pt.extend(t0 + seg * (t1 - t0))
+
+    out = pd.DataFrame(
+        {
+            "participant_id": pid,
+            "unique_trial_id": tid,
+            "x": np.round(px, 1),
+            "y": np.round(py, 1),
+            "timestamp_ms": np.round(pt).astype(int),
+        }
+    )
+    if len(out) > RAW_GAZE_MAX_POINTS:
+        step = int(np.ceil(len(out) / RAW_GAZE_MAX_POINTS))
+        out = out.iloc[::step].reset_index(drop=True)
+    return out
+
+
+def _read_bundle(output_dir: Path, name: str) -> pd.DataFrame:
+    """Load a bundled sample table, preferring Parquet over CSV."""
+    parquet = output_dir / f"{name}.parquet"
+    csv = output_dir / f"{name}.csv"
+    if parquet.exists():
+        return pd.read_parquet(parquet)
+    if csv.exists():
+        return pd.read_csv(csv, low_memory=False)
+    raise FileNotFoundError(f"Neither {parquet} nor {csv} found.")
+
+
+def regenerate_raw_gaze_from_bundle(output_dir: Path, *, seed: int = 20260520) -> None:
+    """(Re)build raw_gaze.{csv,parquet} from the already-written ia/fixation
+    samples — no access to the multi-GB source CSVs required."""
+    ia = _read_bundle(output_dir, "ia")
+    fix = _read_bundle(output_dir, "fixations")
+    raw_gaze = synthesize_raw_gaze(fix, ia, seed=seed)
+    if raw_gaze.empty:
+        print("Raw-gaze synthesis produced no rows (no shared ia/fixation trial).")
+        return
+    write_outputs(raw_gaze, output_dir / "raw_gaze")
+    print(
+        f"Raw-gaze sample written: {len(raw_gaze)} pts for "
+        f"{raw_gaze['participant_id'].iloc[0]} / {raw_gaze['unique_trial_id'].iloc[0]}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -307,7 +440,17 @@ def main() -> None:
     )
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--raw-gaze-only",
+        action="store_true",
+        help="Skip the source rebuild; only regenerate raw_gaze.{csv,parquet} "
+        "from the already-bundled ia/fixation samples.",
+    )
     args = parser.parse_args()
+
+    if args.raw_gaze_only:
+        regenerate_raw_gaze_from_bundle(args.output_dir, seed=args.seed)
+        return
 
     ia_full = add_unique_ids(
         load_subset(
@@ -331,6 +474,9 @@ def main() -> None:
 
     write_outputs(ia_sample, args.output_dir / "ia")
     write_outputs(fix_sample, args.output_dir / "fixations")
+
+    # Synthesize a raw-gaze overlay sample tied to one of these trials.
+    regenerate_raw_gaze_from_bundle(args.output_dir, seed=args.seed)
 
     # Drop the legacy *_full CSVs so they don't bloat the wheel.
     for legacy in [

@@ -5,6 +5,9 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+from .annotations import known_tags
+from .constants import BACKGROUND_PRESETS, DEFAULT_BACKGROUND_COLOR
+
 NONE_OPTION = "(none)"
 
 
@@ -111,7 +114,10 @@ def data_dictionary_help_text() -> str:
         "Each row represents one timepoint.\n"
         "If your columns are named differently, after uploading expand the "
         "*Column mapping* sections in the sidebar to map each field to your column.\n"
-        "Only fields present in your data are used for filters, coloring, and tooltips."
+        "Only fields present in your data are used for filters, coloring, and tooltips.\n"
+        "Areas of interest (word boxes) are taken from your data, not computed; "
+        "fixations are tied to words by bounding-box containment with a small "
+        "nearest-word fallback, and fixations outside every box are flagged out-of-text."
     )
 
 
@@ -144,16 +150,50 @@ def sidebar_controls(
         key="global_show_raw_gaze",
     )
     critical_span_style = st.sidebar.radio(
-        "Critical-span mark (Hunting trials)",
-        options=["Mark text", "Mark border"],
+        "Critical-span mark",
+        options=["Mark text", "Mark border", "None"],
         index=0,
         horizontal=True,
         key="global_critical_span_style",
         help=(
             "Mark text: color the critical-span words in dark pink. "
-            "Mark border: draw a thin black outline around the span."
+            "Mark border: draw a thin black outline around the span. "
+            "None: don't mark the critical span."
         ),
     )
+    color_by_line = st.sidebar.checkbox(
+        "Color fixations by line",
+        value=False,
+        key="global_color_by_line",
+        help=(
+            "Tint each fixation by the text line it lands on (lines inferred "
+            "from word positions). Overrides 'Color fixations by'."
+        ),
+    )
+    highlight_out_of_text = st.sidebar.checkbox(
+        "Mark out-of-text fixations",
+        value=False,
+        key="global_highlight_out_of_text",
+        help="Draw a red ✕ on fixations that fall outside every word box.",
+    )
+
+    # Plot background. White by default; some analyses prefer a neutral gray.
+    bg_options = list(BACKGROUND_PRESETS.keys()) + ["Custom…"]
+    bg_choice = st.sidebar.selectbox(
+        "Plot background",
+        options=bg_options,
+        index=0,
+        key="global_bg_choice",
+        help="Background of the plotting area (and exported figures).",
+    )
+    if bg_choice == "Custom…":
+        background_color = st.sidebar.color_picker(
+            "Custom background color",
+            value=DEFAULT_BACKGROUND_COLOR,
+            key="global_bg_custom",
+        )
+    else:
+        background_color = BACKGROUND_PRESETS[bg_choice]
 
     preferred_color_fields = [
         "duration_ms",
@@ -207,10 +247,6 @@ def sidebar_controls(
         "Y axis field", options=numeric_fields, index=numeric_fields.index(y_default)
     )
 
-    st.sidebar.subheader("Advanced styling")
-    advanced = st.sidebar.checkbox(
-        "Advanced styling", value=False, key="global_advanced"
-    )
     order_font_color = "#111111"
     order_font_size = int(base_font_size)
     size_min, size_max = 8, 24
@@ -219,39 +255,39 @@ def sidebar_controls(
     heatmap_range = None
     fixation_colorscale = "Blues"
     heatmap_colorscale = "Oranges"
-    if advanced:
+    # Collapsible panel (like "Filter trials"). Its widgets always render, so
+    # deep-linked colorscale presets apply even while collapsed; the URL handler
+    # sets `global_advanced` to auto-open it (see app._apply_url_preset).
+    advanced_open = bool(st.session_state.get("global_advanced", False))
+    with st.sidebar.expander("Advanced styling", expanded=advanced_open):
         from .constants import (
             COLORSCALES,
             DEFAULT_FIXATION_COLORSCALE,
             DEFAULT_HEATMAP_COLORSCALE,
         )
 
-        order_font_color = st.sidebar.color_picker("Order label color", value="#111111")
-        order_font_size = st.sidebar.slider(
-            "Order label size", 6, 72, int(base_font_size)
-        )
-        size_min, size_max = st.sidebar.slider(
-            "Fixation marker size (px)", 4, 40, (8, 24)
-        )
-        fixation_colorscale = st.sidebar.selectbox(
+        order_font_color = st.color_picker("Order label color", value="#111111")
+        order_font_size = st.slider("Order label size", 6, 72, int(base_font_size))
+        size_min, size_max = st.slider("Fixation marker size (px)", 4, 40, (8, 24))
+        fixation_colorscale = st.selectbox(
             "Fixation colorscale",
             options=COLORSCALES,
             index=COLORSCALES.index(DEFAULT_FIXATION_COLORSCALE),
             help="Color palette for fixation markers when coloring by numeric values.",
             key="global_fixation_colorscale",
         )
-        heatmap_colorscale = st.sidebar.selectbox(
+        heatmap_colorscale = st.selectbox(
             "Heatmap colorscale",
             options=COLORSCALES,
             index=COLORSCALES.index(DEFAULT_HEATMAP_COLORSCALE),
             help="Color palette for the density heatmap overlay.",
             key="global_heatmap_colorscale",
         )
-        show_colorbars = st.sidebar.checkbox("Show color bars", value=False)
+        show_colorbars = st.checkbox("Show color bars", value=False)
         if show_colorbars and pd.api.types.is_numeric_dtype(trial_fixations[color_by]):
             cmin = float(trial_fixations[color_by].min())
             cmax = float(trial_fixations[color_by].max())
-            fixation_color_range = st.sidebar.slider(
+            fixation_color_range = st.slider(
                 "Fixation color range",
                 min_value=cmin,
                 max_value=cmax if cmax > cmin else cmin + 1.0,
@@ -267,15 +303,13 @@ def sidebar_controls(
             if heat_data is not None and len(heat_data) > 0:
                 hmin = float(heat_data.min())
                 hmax = float(heat_data.max())
-                heatmap_range = st.sidebar.slider(
+                heatmap_range = st.slider(
                     "Heatmap color range",
                     min_value=hmin,
                     max_value=hmax if hmax > hmin else hmin + 1.0,
                     value=(hmin, hmax if hmax > hmin else hmin + 1.0),
                     step=(hmax - hmin) / 100 if hmax > hmin else 1.0,
                 )
-    else:
-        show_colorbars = False
 
     return dict(
         show_words=show_words,
@@ -298,4 +332,125 @@ def sidebar_controls(
         fixation_colorscale=fixation_colorscale,
         heatmap_colorscale=heatmap_colorscale,
         critical_span_style=critical_span_style,
+        color_by_line=color_by_line,
+        highlight_out_of_text=highlight_out_of_text,
+        background_color=background_color,
     )
+
+
+def _bool_metadata_filter(
+    label: str,
+    col: str,
+    df: pd.DataFrame,
+    true_label: str,
+    false_label: str,
+    key: str,
+) -> Optional[set]:
+    """Friendly multiselect for a boolean metadata column.
+
+    Returns the set of raw bool values to keep, or None when the column is
+    absent, has fewer than two classes, or the user kept everything (no
+    narrowing)."""
+    if col not in df.columns:
+        return None
+    present = set(pd.Series(df[col]).dropna().astype(bool).unique())
+    label_to_val = {true_label: True, false_label: False}
+    options = [lbl for lbl, val in label_to_val.items() if val in present]
+    if len(options) < 2:
+        return None
+    chosen = st.multiselect(label, options=options, default=options, key=key)
+    if not chosen or set(chosen) == set(options):
+        return None
+    return {label_to_val[c] for c in chosen}
+
+
+def sidebar_trial_filters(words: pd.DataFrame, fixations: pd.DataFrame) -> Dict:
+    """Render the 'Filter trials' sidebar panel and return the selections.
+
+    Lets the user narrow the trial pool by participant and by categorical
+    condition (Hunting/Gathering, difficulty, first/repeated reading,
+    correctness) as well as by annotation state (favorites / tags). Only
+    *narrowing* selections are returned; an untouched field is omitted so
+    downstream filtering is a no-op for it.
+    """
+    result: Dict = {
+        "participants": None,
+        "metadata": {},
+        "favorites_only": False,
+        "required_tags": [],
+        "excluded_tags": [],
+    }
+    with st.sidebar.expander("Filter trials", expanded=False):
+        st.caption("Narrow the trial pool shown in every tab.")
+
+        parts = sorted(words["participant_id"].dropna().astype(str).unique())
+        if len(parts) > 1:
+            chosen = st.multiselect(
+                "Participants", options=parts, default=parts, key="filter_participants"
+            )
+            if chosen and len(chosen) < len(parts):
+                result["participants"] = chosen
+
+        # Hunting (question previewed) vs Gathering (ordinary reading).
+        regime = _bool_metadata_filter(
+            "Reading regime",
+            "question_preview",
+            words,
+            "Hunting",
+            "Gathering",
+            "filter_regime",
+        )
+        if regime is not None:
+            result["metadata"]["question_preview"] = regime
+
+        if "difficulty_level" in words.columns:
+            diffs = sorted(words["difficulty_level"].dropna().astype(str).unique())
+            if len(diffs) > 1:
+                chosen = st.multiselect(
+                    "Difficulty", options=diffs, default=diffs, key="filter_difficulty"
+                )
+                if chosen and len(chosen) < len(diffs):
+                    result["metadata"]["difficulty_level"] = set(chosen)
+
+        repeat = _bool_metadata_filter(
+            "Reading number",
+            "repeated_reading_trial",
+            words,
+            "Repeated",
+            "First",
+            "filter_repeat",
+        )
+        if repeat is not None:
+            result["metadata"]["repeated_reading_trial"] = repeat
+
+        correct = _bool_metadata_filter(
+            "Answer",
+            "is_correct",
+            words,
+            "Correct",
+            "Incorrect",
+            "filter_correct",
+        )
+        if correct is not None:
+            result["metadata"]["is_correct"] = correct
+
+        st.markdown("**By annotation**")
+        result["favorites_only"] = st.checkbox(
+            "⭐ Favorites only", value=False, key="filter_favorites"
+        )
+        tags = known_tags()
+        if tags:
+            result["required_tags"] = st.multiselect(
+                "With any of these tags",
+                options=tags,
+                default=[],
+                key="filter_req_tags",
+            )
+            result["excluded_tags"] = st.multiselect(
+                "Excluding tags",
+                options=tags,
+                default=[],
+                key="filter_exc_tags",
+                help="e.g. hide everything tagged 'To exclude'.",
+            )
+    return result

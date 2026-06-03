@@ -30,3 +30,24 @@ class TestAppLaunches:
         at = _make_apptest()
         at.run(timeout=30)
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+
+    def test_synthetic_data_source_renders(self):
+        # The "Synthetic test trial" source should load + render without error.
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["data_source_choice"] = "Synthetic test trial"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+
+    def test_new_viz_toggles_build_without_error(self):
+        # Flip the new plot options (color-by-line, out-of-text, gray
+        # background) and re-run the whole app to exercise those code paths.
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["global_color_by_line"] = True
+        at.session_state["global_highlight_out_of_text"] = True
+        at.session_state["global_bg_choice"] = "Gray"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"

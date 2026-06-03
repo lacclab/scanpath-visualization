@@ -7,6 +7,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+from scanpath_visualization_app.annotations import render_trial_annotations
 from scanpath_visualization_app.data import compute_word_metrics
 
 from scanpath_visualization_app.plots import (
@@ -44,6 +45,7 @@ _MIME_FOR_FORMAT = {
     "PNG": "image/png",
     "SVG": "image/svg+xml",
     "PDF": "application/pdf",
+    "HTML": "text/html",
 }
 
 
@@ -68,10 +70,14 @@ def _render_save_plot_button(
     with cols[0]:
         fmt = st.radio(
             "Save format",
-            options=["PNG", "SVG", "PDF"],
+            # HTML is a browser-free fallback (no Kaleido/Chrome) — useful on
+            # Streamlit Cloud where static image export needs a Chromium binary.
+            options=["PNG", "SVG", "PDF", "HTML"],
             index=0,
             horizontal=True,
             key=f"{key_prefix}_save_format",
+            help="PNG/SVG/PDF need a Chrome/Chromium browser (Kaleido). HTML "
+            "is interactive and needs no browser.",
         )
     with cols[1]:
         generate = st.button(
@@ -83,18 +89,27 @@ def _render_save_plot_button(
     if not generate:
         return
 
-    fig_width = int(fig.layout.width or canvas_width)
-    fig_height = int(fig.layout.height or canvas_height)
-    try:
-        data = fig.to_image(
-            format=fmt.lower(),
-            width=fig_width,
-            height=fig_height,
-            scale=2 if fmt == "PNG" else 1,
-        )
-    except Exception as exc:
-        st.warning(f"Could not render {fmt} for download: {exc}")
-        return
+    if fmt == "HTML":
+        # Self-contained interactive HTML — never touches Kaleido/Chrome.
+        data = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
+    else:
+        fig_width = int(fig.layout.width or canvas_width)
+        fig_height = int(fig.layout.height or canvas_height)
+        try:
+            data = fig.to_image(
+                format=fmt.lower(),
+                width=fig_width,
+                height=fig_height,
+                scale=2 if fmt == "PNG" else 1,
+            )
+        except Exception as exc:
+            st.warning(
+                f"Could not render {fmt}: {exc}\n\n"
+                "Static image export (PNG/SVG/PDF) needs a Chrome/Chromium browser "
+                "for Kaleido. On Streamlit Cloud this is installed via `packages.txt`; "
+                "if it still fails, choose the **HTML** format above — it needs no browser."
+            )
+            return
     st.download_button(
         f"Save plot ({fmt})",
         data=data,
@@ -129,6 +144,9 @@ def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) ->
         fixation_colorscale=viz_settings["fixation_colorscale"],
         heatmap_colorscale=viz_settings["heatmap_colorscale"],
         critical_span_style=viz_settings.get("critical_span_style", "Mark text"),
+        color_by_line=viz_settings.get("color_by_line", False),
+        highlight_out_of_text=viz_settings.get("highlight_out_of_text", False),
+        background_color=viz_settings.get("background_color"),
     )
 
 
@@ -246,6 +264,53 @@ def _span_text(trial_words: pd.DataFrame, mask_col: str) -> str:
     return " ".join(ordered.loc[mask, "text"].astype(str).tolist())
 
 
+def _first_str(df: pd.DataFrame, col: str) -> Optional[str]:
+    """First non-null value of ``col`` as a string, or None."""
+    if col in df.columns:
+        vals = df[col].dropna()
+        if not vals.empty:
+            return str(vals.iloc[0])
+    return None
+
+
+def _first_bool(df: pd.DataFrame, col: str) -> Optional[bool]:
+    """First non-null value of ``col`` as a bool, or None when absent/empty."""
+    if col in df.columns:
+        vals = df[col].dropna()
+        if not vals.empty:
+            return bool(vals.iloc[0])
+    return None
+
+
+def _span_fixated_note(
+    trial_words: pd.DataFrame,
+    trial_fixations: Optional[pd.DataFrame],
+    mask_col: str,
+) -> str:
+    """Inline HTML note: was the span fixated, and for how long?
+
+    Counts fixations falling inside any of the span's word boxes — a quick
+    "did the reader actually look at the answer?" check tying the scanpath to
+    comprehension. Returns "" when fixations or the span column are absent."""
+    if (
+        trial_fixations is None
+        or trial_fixations.empty
+        or mask_col not in trial_words.columns
+    ):
+        return ""
+    span_words = trial_words[trial_words[mask_col].fillna(False).astype(bool)]
+    if span_words.empty:
+        return ""
+    from scanpath_visualization_app.measures import fixation_in_text_mask
+
+    mask = fixation_in_text_mask(trial_fixations, span_words)
+    n = int(mask.sum())
+    if n == 0:
+        return ' <span style="color:#dc3545;">— not fixated</span>'
+    dwell = float(pd.to_numeric(trial_fixations.loc[mask, "duration_ms"]).sum())
+    return f' <span style="color:#198754;">— {n} fixations, {dwell:.0f} ms</span>'
+
+
 def _render_trial_header(
     participant: str,
     trial_id: str,
@@ -272,36 +337,67 @@ def _render_trial_header(
 
 
 def _render_paragraph_panel(
-    trial_words: pd.DataFrame, *, expanded: bool = True
+    trial_words: pd.DataFrame,
+    *,
+    trial_fixations: Optional[pd.DataFrame] = None,
+    expanded: bool = True,
 ) -> None:
-    """Render the paragraph expander with highlighted spans, question, and
-    critical-/distractor-span text. Skips silently when no word text is
-    available."""
+    """Render the paragraph + comprehension-question panel.
+
+    Shows the paragraph with highlighted spans, the reading regime
+    (Hunting/Gathering), the question, the participant's selected answer and
+    correctness, and the answer (critical) / distractor span texts — each
+    annotated with whether it was fixated when ``trial_fixations`` is given.
+    Skips silently when no word text is available."""
     if "text" not in trial_words.columns or trial_words.empty:
         return
-    with st.expander("Paragraph text", expanded=expanded):
+    with st.expander("Paragraph & question", expanded=expanded):
         _render_paragraph_with_spans(trial_words)
-        question_val = None
-        if "question" in trial_words.columns:
-            qs = trial_words["question"].dropna()
-            if not qs.empty:
-                question_val = str(qs.iloc[0])
+
+        # Reading regime: in OneStop, question_preview=True means the reader saw
+        # the question before the text ("Hunting"); False is ordinary reading
+        # ("Gathering").
+        preview = _first_bool(trial_words, "question_preview")
+        if preview is not None:
+            regime = (
+                "Hunting (question previewed)"
+                if preview
+                else "Gathering (ordinary reading)"
+            )
+            st.caption(f"Reading regime: **{regime}**")
+
+        question_val = _first_str(trial_words, "question")
         if question_val:
             st.markdown(f"**Question:** {question_val}")
+
+        # Participant's answer + correctness. The data carries the chosen option
+        # (e.g. 'A'/'B') and a correctness flag, but not the option texts.
+        answer_val = _first_str(trial_words, "selected_answer")
+        correct = _first_bool(trial_words, "is_correct")
+        if answer_val or correct is not None:
+            bits = []
+            if answer_val:
+                bits.append(f"selected **{answer_val}**")
+            if correct is not None:
+                bits.append("✓ correct" if correct else "✗ incorrect")
+            st.markdown("**Answer:** " + " · ".join(bits))
+
         critical_text = _span_text(trial_words, "is_in_aspan")
         if critical_text:
+            note = _span_fixated_note(trial_words, trial_fixations, "is_in_aspan")
             st.markdown(
                 f'<span style="background-color:{_CRITICAL_SPAN_BG};'
                 f'padding:0 4px;border-radius:2px;">'
-                f"<b>Critical span:</b></span> {critical_text}",
+                f"<b>Answer (critical) span:</b></span> {critical_text}{note}",
                 unsafe_allow_html=True,
             )
         distractor_text = _span_text(trial_words, "is_in_dspan")
         if distractor_text:
+            note = _span_fixated_note(trial_words, trial_fixations, "is_in_dspan")
             st.markdown(
                 f'<span style="background-color:{_DISTRACTOR_SPAN_BG};'
                 f'padding:0 4px;border-radius:2px;">'
-                f"<b>Distractor span:</b></span> {distractor_text}",
+                f"<b>Distractor span:</b></span> {distractor_text}{note}",
                 unsafe_allow_html=True,
             )
 
@@ -315,6 +411,29 @@ def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame
     )
     stat_cols[1].metric("Number of words", f"{stats['word_count']:,}")
     stat_cols[2].metric("Number of fixations", f"{stats['fixation_count']:,}")
+
+
+def _render_out_of_text_caption(
+    trial_words: pd.DataFrame, trial_fixations: pd.DataFrame
+) -> None:
+    """Caption the count of fixations that fell outside every word box."""
+    if trial_words.empty or trial_fixations.empty:
+        return
+    from scanpath_visualization_app.measures import fixation_in_text_mask
+
+    mask = fixation_in_text_mask(trial_fixations, trial_words)
+    n_total = len(mask)
+    if n_total == 0:
+        return
+    n_out = int((~mask).sum())
+    if n_out:
+        pct = 100.0 * n_out / n_total
+        st.caption(
+            f"⚠ {n_out} of {n_total} fixations ({pct:.0f}%) fell outside every "
+            "word box (out-of-text). Toggle **Mark out-of-text fixations** to see them."
+        )
+    else:
+        st.caption(f"All {n_total} fixations landed inside word boxes.")
 
 
 # Row-wise palette for the trial-metadata table. Picked light so the text
@@ -350,13 +469,31 @@ def _style_metadata_row(row: pd.Series) -> list[str]:
     return [field_style, value_style]
 
 
+def _prefix_is_correct(metadata_df: pd.DataFrame) -> pd.DataFrame:
+    """Prefix the is_correct row's Value with ✓ / ✗ for at-a-glance scanning."""
+    mask = metadata_df["Field"] == "is_correct"
+    if mask.any():
+        val = str(metadata_df.loc[mask, "Value"].iloc[0])
+        if val.lower().startswith("true"):
+            metadata_df.loc[mask, "Value"] = f"✓ {val}"
+        elif val.lower().startswith("false"):
+            metadata_df.loc[mask, "Value"] = f"✗ {val}"
+    return metadata_df
+
+
 def _render_metadata_selector(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
     trial_words: pd.DataFrame,
     trial_fixations: pd.DataFrame,
+    compare: Optional[dict] = None,
 ):
-    """Render metadata field selector and display table."""
+    """Render metadata field selector and display table.
+
+    When ``compare`` is given (keys: ``words``, ``fixations``,
+    ``label_primary``, ``label_compare``), the table shows one value column per
+    trial so the two compared trials can be read side by side.
+    """
     metadata_candidates = []
     for col in list(words_filtered.columns) + list(fixations_filtered.columns):
         if col not in metadata_candidates:
@@ -373,32 +510,45 @@ def _render_metadata_selector(
         ]
         if field in metadata_candidates
     ]
-    # Reserve the table slot first; the multiselect renders below it so the
-    # filter chips sit under the data they configure. Streamlit fills the
-    # container later in the same run, preserving the visual order.
-    table_slot = st.container()
-    selected_metadata = st.multiselect(
-        "Trial metadata fields",
-        options=metadata_candidates,
-        default=default_metadata or metadata_candidates,
-    )
-    if selected_metadata:
-        metadata_df = gather_trial_metadata(
-            trial_words, trial_fixations, selected_metadata
+    # Field picker lives in a collapsed toggle so the chips don't crowd the
+    # side panel; the table renders below it.
+    with st.expander("Trial metadata fields", expanded=False):
+        selected_metadata = st.multiselect(
+            "Fields to show",
+            options=metadata_candidates,
+            default=default_metadata or metadata_candidates,
+            key="trial_metadata_fields",
+        )
+    if not selected_metadata:
+        return
+
+    if compare is None:
+        metadata_df = _prefix_is_correct(
+            gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
         )
         if not metadata_df.empty:
-            # Prefix is_correct with ✓ / ✗ so reviewers can scan the table
-            # without parsing the True/False text.
-            mask = metadata_df["Field"] == "is_correct"
-            if mask.any():
-                val = str(metadata_df.loc[mask, "Value"].iloc[0])
-                if val.lower().startswith("true"):
-                    metadata_df.loc[mask, "Value"] = f"✓ {val}"
-                elif val.lower().startswith("false"):
-                    metadata_df.loc[mask, "Value"] = f"✗ {val}"
             styled = metadata_df.style.apply(_style_metadata_row, axis=1)
-            with table_slot:
-                st.dataframe(styled, hide_index=True, width="stretch")
+            st.dataframe(styled, hide_index=True, width="stretch")
+        return
+
+    # Comparison mode: one value column per trial, merged on Field.
+    label_a = compare["label_primary"]
+    label_b = compare["label_compare"]
+    primary = _prefix_is_correct(
+        gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
+    ).rename(columns={"Value": label_a})
+    other = _prefix_is_correct(
+        gather_trial_metadata(compare["words"], compare["fixations"], selected_metadata)
+    ).rename(columns={"Value": label_b})
+    merged = primary.merge(other, on="Field", how="outer")
+    order = {field: i for i, field in enumerate(selected_metadata)}
+    merged = (
+        merged.assign(_o=merged["Field"].map(order))
+        .sort_values("_o")
+        .drop(columns="_o")
+    )
+    if not merged.empty:
+        st.dataframe(merged, hide_index=True, width="stretch")
 
 
 def _render_plot_config_expander(
@@ -413,8 +563,8 @@ def _render_plot_config_expander(
     base_font_size: int,
     trial_raw_gaze: pd.DataFrame,
 ):
-    """Render the plot configuration expander."""
-    with st.expander("Plot configuration"):
+    """Render the plot configuration expander in the sidebar."""
+    with st.sidebar.expander("Plot configuration"):
         plot_config = {
             "selection": {
                 "participant_id": selected_participant,
@@ -582,6 +732,7 @@ def render_single_trial_tab(
             st.plotly_chart(
                 displayed_fig, width="stretch", config={"responsive": False}
             )
+            _render_out_of_text_caption(trial_words, trial_fixations)
             save_slug = f"{selected_participant}__{selected_trial}"
 
         # Save format / Render-PNG button lives directly under the plot so
@@ -597,7 +748,9 @@ def render_single_trial_tab(
         # Paragraph text (with question + critical/distractor span overlays)
         # sits below the figure so reviewers can read the text while
         # comparing it to the scanpath right above.
-        _render_paragraph_panel(trial_words, expanded=True)
+        _render_paragraph_panel(
+            trial_words, trial_fixations=trial_fixations, expanded=True
+        )
 
     # Publish the single-tab's selection so the Animation tab can mirror it.
     # Read by `render_animation_tab` (one-way sync; anim can still be moved
@@ -610,21 +763,53 @@ def render_single_trial_tab(
         _render_trial_stats(trial_words, trial_fixations)
 
     with col_side:
+        render_trial_annotations(selected_participant, selected_trial)
+        compare_meta = None
+        if compare_participant is not None and compare_trial is not None:
+            compare_words = words_filtered[
+                (words_filtered["participant_id"] == compare_participant)
+                & (words_filtered["trial_id"] == compare_trial)
+            ]
+            compare_fix = fixations_filtered[
+                (fixations_filtered["participant_id"] == compare_participant)
+                & (fixations_filtered["trial_id"] == compare_trial)
+            ]
+            # Short, distinct column headers: participant ids when comparing
+            # different participants (the common same-text case), else the
+            # trial ids — the long ids otherwise overflow the narrow panel.
+            if str(selected_participant) != str(compare_participant):
+                label_primary = str(selected_participant)
+                label_compare = str(compare_participant)
+            else:
+                label_primary = str(selected_trial)
+                label_compare = str(compare_trial)
+            compare_meta = {
+                "words": compare_words,
+                "fixations": compare_fix,
+                "label_primary": label_primary,
+                "label_compare": label_compare,
+            }
         _render_metadata_selector(
-            words_filtered, fixations_filtered, trial_words, trial_fixations
+            words_filtered,
+            fixations_filtered,
+            trial_words,
+            trial_fixations,
+            compare=compare_meta,
         )
-        _render_plot_config_expander(
-            selected_participant,
-            selected_trial,
-            canvas_width,
-            canvas_height,
-            x_field,
-            y_field,
-            figure_settings,
-            viz_settings,
-            base_font_size,
-            trial_raw_gaze,
-        )
+
+    # Plot configuration renders into the sidebar (see _render_plot_config_expander).
+    _render_plot_config_expander(
+        selected_participant,
+        selected_trial,
+        canvas_width,
+        canvas_height,
+        x_field,
+        y_field,
+        figure_settings,
+        viz_settings,
+        base_font_size,
+        trial_raw_gaze,
+    )
 
     _render_bulk_export(
         combos,
@@ -779,6 +964,7 @@ def _render_comparison_figure(
         show_word_labels=viz_settings["show_labels"],
         trial_labels=(primary_label, compare_label),
         layout=layout,
+        background_color=viz_settings.get("background_color"),
     )
     st.plotly_chart(fig_compare, width="stretch", config={"responsive": False})
     return fig_compare
@@ -918,7 +1104,9 @@ def render_animation_tab(
             trial_words,
             prefix="Animated scanpath:",
         )
-        _render_paragraph_panel(trial_words, expanded=False)
+        _render_paragraph_panel(
+            trial_words, trial_fixations=trial_fixations, expanded=False
+        )
 
         if trial_fixations.empty:
             st.warning("No fixations available for this trial.")
@@ -950,6 +1138,7 @@ def render_animation_tab(
         marker_size_range=viz_settings["marker_size_range"],
         order_font_size=viz_settings["order_font_size"],
         order_font_color=viz_settings["order_font_color"],
+        background_color=viz_settings.get("background_color"),
     )
     with col_main:
         st.plotly_chart(fig, width="stretch", config={"responsive": False})
