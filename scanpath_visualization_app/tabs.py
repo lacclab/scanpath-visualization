@@ -11,8 +11,8 @@ from scanpath_visualization_app.annotations import render_trial_annotations
 from scanpath_visualization_app.data import compute_word_metrics
 
 from scanpath_visualization_app.plots import (
+    animation_playback_ms,
     make_comparison_figure,
-    make_dual_scanpath_animation,
     make_fixation_duration_histogram,
     make_scanpath_animation,
     make_scanpath_figure,
@@ -50,6 +50,80 @@ def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
             if pd.notna(value):
                 return str(value)
     return None
+
+
+def _default_second_trial(combos: pd.DataFrame, participant_a, trial_a):
+    """Pick a sensible default second scanpath: a DIFFERENT trial on the SAME
+    text as A, preferring A's own participant (a re-reading) and otherwise a
+    different participant. Returns (participant_b, trial_b, text_str, text_field)
+    or None when there's no same-text alternative.
+    """
+    para_field = (
+        "unique_paragraph_id"
+        if "unique_paragraph_id" in combos.columns
+        else "paragraph_id"
+    )
+    if para_field not in combos.columns:
+        return None
+    a_rows = combos[
+        (combos["participant_id"] == participant_a)
+        & (combos["trial_id"].astype(str) == str(trial_a))
+    ]
+    if a_rows.empty or pd.isna(a_rows.iloc[0][para_field]):
+        return None
+    para = a_rows.iloc[0][para_field]
+    same_text = combos[combos[para_field] == para].drop_duplicates(
+        subset=["participant_id", "trial_id"]
+    )
+    # A different reading of the same text (exclude exactly A's trial).
+    cand = same_text[
+        ~(
+            (same_text["participant_id"] == participant_a)
+            & (same_text["trial_id"].astype(str) == str(trial_a))
+        )
+    ]
+    if cand.empty:
+        return None
+    same_pid = cand[cand["participant_id"] == participant_a].sort_values("trial_id")
+    pick = (
+        same_pid
+        if not same_pid.empty
+        else cand.sort_values(["participant_id", "trial_id"])
+    )
+    row = pick.iloc[0]
+    return row["participant_id"], row["trial_id"], str(para), para_field
+
+
+def _seed_anim_b_default(combos: pd.DataFrame, participant_a, trial_a) -> None:
+    """Seed the second-scanpath selector to `_default_second_trial` the first
+    time the overlay is shown for a given text. Re-seeds only when A's text
+    changes, so a manual second-scanpath choice isn't clobbered on every rerun.
+
+    Seeds via the selector's "Text" mode (text → participant → reading), which
+    is exactly the same-text-different-reader shape we want as the default.
+    """
+    default = _default_second_trial(combos, participant_a, trial_a)
+    seed_key = default[2] if default else f"__none__:{participant_a}:{trial_a}"
+    if st.session_state.get("_anim_b_seeded_text") == seed_key:
+        return
+    st.session_state["_anim_b_seeded_text"] = seed_key
+    if default is None:
+        return
+    pid_b, trial_b, para, para_field = default
+    st.session_state["anim_b_select_trial_mode"] = "Text"
+    st.session_state["anim_b_text_id"] = para
+    st.session_state["anim_b_participant_text"] = pid_b
+    readings = (
+        combos[
+            (combos[para_field].astype(str) == str(para))
+            & (combos["participant_id"] == pid_b)
+        ]
+        .drop_duplicates(subset=["trial_id"])
+        .sort_values("trial_id")["trial_id"]
+        .tolist()
+    )
+    if len(readings) > 1:
+        st.session_state["anim_b_reading_text"] = trial_b
 
 
 _MIME_FOR_FORMAT = {
@@ -1091,9 +1165,12 @@ def render_animation_tab(
         & (fixations_filtered["trial_id"] == selected_trial)
     ]
 
-    # Optional second scanpath, co-animated on the same clock (see
-    # `make_dual_scanpath_animation`). Its selector is keyed under "anim_b" so
-    # it stays independent of the single-tab → anim sync (which targets "anim").
+    # Optional second scanpath, co-animated on the same real-time clock by
+    # `make_scanpath_animation`. Its selector is keyed under "anim_b" so it stays
+    # independent of the single-tab → anim sync (which targets "anim"); when the
+    # overlay is first enabled (or A's text changes) we seed it to another
+    # reading of the SAME text, preferring the same participant — see
+    # `_seed_anim_b_default`.
     with col_side:
         compare = st.checkbox(
             "Overlay a second scanpath",
@@ -1101,11 +1178,13 @@ def render_animation_tab(
             key="anim_compare",
             help=(
                 "Animate a second reading on the same timeline. Works best for "
-                "two readings of the same text (e.g. two participants)."
+                "two readings of the same text (e.g. a re-reading, or another "
+                "participant)."
             ),
         )
         sel_b_participant = sel_b_trial = None
         if compare:
+            _seed_anim_b_default(combos, selected_participant, selected_trial)
             sel_b_participant, sel_b_trial, _mode_b, _text_b = select_trial(
                 combos, key_prefix="anim_b"
             )
@@ -1160,23 +1239,28 @@ def render_animation_tab(
         if trial_fixations.empty:
             st.warning("No fixations available for this trial.")
         else:
-            n_fixations = len(trial_fixations)
-            total_duration_ms = trial_fixations["duration_ms"].sum()
-            playback_duration_s = total_duration_ms / playback_speed / 1000
-            prefix_a = "Scanpath A — " if dual else ""
-            st.info(
-                f"**{prefix_a}{n_fixations} fixations** · Total duration: "
-                f"{total_duration_ms / 1000:.1f}s · Playback time at "
-                f"×{playback_speed}: {playback_duration_s:.1f}s"
+            # Quote the REAL animation runtime (see `animation_playback_ms`) so
+            # the stated playback time matches what the user observes; "reading
+            # time" is the recorded span (incl. saccade/blink gaps), not the sum
+            # of fixation durations.
+            reading_span_ms, playback_ms = animation_playback_ms(
+                [trial_fixations] + ([trial_fixations_b] if dual else []),
+                playback_speed,
             )
             if dual:
-                n_b = len(trial_fixations_b)
-                total_b_ms = trial_fixations_b["duration_ms"].sum()
-                playback_b_s = total_b_ms / playback_speed / 1000
+                span_a = animation_playback_ms([trial_fixations], 1.0)[0]
+                span_b = animation_playback_ms([trial_fixations_b], 1.0)[0]
                 st.info(
-                    f"**Scanpath B — {n_b} fixations** · Total duration: "
-                    f"{total_b_ms / 1000:.1f}s · Playback time at "
-                    f"×{playback_speed}: {playback_b_s:.1f}s"
+                    f"**A: {len(trial_fixations)} fixations** "
+                    f"({span_a / 1000:.1f}s) · **B: {len(trial_fixations_b)} "
+                    f"fixations** ({span_b / 1000:.1f}s)"
+                )
+                shorter = "A" if span_a <= span_b else "B"
+                st.caption(
+                    f"Playback at ×{playback_speed}: "
+                    f"**{playback_ms / 1000:.1f}s** — both co-animate on one "
+                    f"clock; the shorter reading ({shorter}) finishes first and "
+                    f"holds while the longer one continues."
                 )
                 if (sel_b_participant, sel_b_trial) == (
                     selected_participant,
@@ -1194,18 +1278,26 @@ def render_animation_tab(
                             "view is intended for two readings of the same "
                             "paragraph."
                         )
-            elif compare and sel_b_participant and sel_b_trial:
-                st.warning(
-                    "The selected second scanpath has no fixations after "
-                    "filtering — showing only the first scanpath."
+            else:
+                st.info(
+                    f"**{len(trial_fixations)} fixations** · Reading time: "
+                    f"{reading_span_ms / 1000:.1f}s · Playback at "
+                    f"×{playback_speed}: {playback_ms / 1000:.1f}s"
                 )
+                if compare and sel_b_participant and sel_b_trial:
+                    st.warning(
+                        "The selected second scanpath has no fixations after "
+                        "filtering — showing only the first scanpath."
+                    )
 
     if trial_fixations.empty:
         return
 
-    # Shared kwargs for either animation builder; order_font_color applies only
-    # to the single builder (the dual view tints order numbers per-scanpath).
-    anim_common = dict(
+    # One builder for both cases: passing fixations_b/words_b switches it to the
+    # dual co-animation; without them it's the classic single replay.
+    fig = make_scanpath_animation(
+        trial_words,
+        trial_fixations,
         canvas_width=int(canvas_width),
         canvas_height=int(canvas_height),
         base_font_size=int(base_font_size),
@@ -1217,25 +1309,13 @@ def render_animation_tab(
         show_order=viz_settings["show_order"],
         marker_size_range=viz_settings["marker_size_range"],
         order_font_size=viz_settings["order_font_size"],
+        order_font_color=viz_settings["order_font_color"],
         background_color=viz_settings.get("background_color"),
+        fixations_b=trial_fixations_b if dual else None,
+        words_b=trial_words_b if dual else None,
+        label_a=f"{selected_participant} · {selected_trial}" if dual else "Scanpath A",
+        label_b=f"{sel_b_participant} · {sel_b_trial}" if dual else "Scanpath B",
     )
-    if dual:
-        fig = make_dual_scanpath_animation(
-            trial_words,
-            trial_fixations,
-            trial_fixations_b,
-            **anim_common,
-            label_a=f"{selected_participant} · {selected_trial}",
-            label_b=f"{sel_b_participant} · {sel_b_trial}",
-            words_b=trial_words_b,
-        )
-    else:
-        fig = make_scanpath_animation(
-            trial_words,
-            trial_fixations,
-            **anim_common,
-            order_font_color=viz_settings["order_font_color"],
-        )
     with col_main:
         st.plotly_chart(fig, width="stretch", config={"responsive": False})
 
@@ -1257,9 +1337,9 @@ def render_animation_tab(
             )
         else:
             st.caption(
-                "**Controls:** Use ▶ Play to auto-advance through fixations, "
-                "⏸ Pause to stop, or drag the slider to jump to any fixation. "
-                "Orange highlight shows the current fixation."
+                "**Controls:** ▶ Play replays the scan in real reading time ÷ "
+                "speed, ⏸ Pause stops, and the slider scrubs by elapsed reading "
+                "time. Orange highlight shows the current fixation."
             )
             file_name = (
                 f"animation_{_safe_filename(selected_participant)}__"

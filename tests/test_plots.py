@@ -4,9 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from scanpath_visualization_app.plots import (
+    animation_playback_ms,
     build_word_boxes,
     make_comparison_figure,
-    make_dual_scanpath_animation,
     make_scanpath_animation,
     make_scanpath_figure,
 )
@@ -244,8 +244,8 @@ class TestMakeScanpathAnimation:
         assert isinstance(fig, go.Figure)
 
 
-class TestMakeDualScanpathAnimation:
-    """Tests for make_dual_scanpath_animation function."""
+class TestDualScanpathAnimation:
+    """Tests for the dual path of make_scanpath_animation (the fixations_b arg)."""
 
     @staticmethod
     def _second_fixations():
@@ -265,15 +265,15 @@ class TestMakeDualScanpathAnimation:
         )
 
     def test_dual_animation_basic(self, normalized_words_df, normalized_fixations_df):
-        fig = make_dual_scanpath_animation(
+        fig = make_scanpath_animation(
             normalized_words_df,
             normalized_fixations_df,
-            self._second_fixations(),
             canvas_width=800,
             canvas_height=600,
             base_font_size=12,
             font_family="Arial",
             playback_speed=1.0,
+            fixations_b=self._second_fixations(),
         )
         assert isinstance(fig, go.Figure)
         assert hasattr(fig, "frames")
@@ -300,15 +300,14 @@ class TestMakeDualScanpathAnimation:
                 "order_in_trial": [1, 2],
             }
         )
-        fix_b = fix_a.iloc[:1].copy()  # single fixation at t=0
-        fig = make_dual_scanpath_animation(
+        fig = make_scanpath_animation(
             normalized_words_df,
             fix_a,
-            fix_b,
             canvas_width=800,
             canvas_height=600,
             base_font_size=12,
             font_family="Arial",
+            fixations_b=fix_a.iloc[:1].copy(),  # single fixation at t=0
         )
         labels = [s.label for s in fig.layout.sliders[0].steps]
         # Real-timestamp clock → onset of fixation 2 at 1.0s; a duration clock
@@ -321,45 +320,136 @@ class TestMakeDualScanpathAnimation:
     ):
         # Identical scanpaths share onsets, so the merged frame count collapses
         # to a single scanpath's fixation count.
-        fig = make_dual_scanpath_animation(
+        fig = make_scanpath_animation(
             normalized_words_df,
-            normalized_fixations_df,
             normalized_fixations_df,
             canvas_width=800,
             canvas_height=600,
             base_font_size=12,
             font_family="Arial",
+            fixations_b=normalized_fixations_df,
         )
         assert len(fig.frames) == len(normalized_fixations_df)
 
-    def test_dual_animation_one_empty(
+    def test_dual_animation_one_empty_falls_back(
         self, normalized_words_df, normalized_fixations_df
     ):
-        # A robust no-op for the empty side: still animates the populated one.
-        fig = make_dual_scanpath_animation(
+        # An empty second scanpath degrades to the single replay (no legend).
+        fig = make_scanpath_animation(
             normalized_words_df,
             normalized_fixations_df,
-            pd.DataFrame(),
             canvas_width=800,
             canvas_height=600,
             base_font_size=12,
             font_family="Arial",
+            fixations_b=pd.DataFrame(),
         )
         assert isinstance(fig, go.Figure)
         assert len(fig.frames) == len(normalized_fixations_df)
+        assert [t for t in fig.data if t.showlegend] == []
 
     def test_dual_animation_both_empty(self, normalized_words_df):
-        fig = make_dual_scanpath_animation(
+        fig = make_scanpath_animation(
             normalized_words_df,
-            pd.DataFrame(),
             pd.DataFrame(),
             canvas_width=800,
             canvas_height=600,
             base_font_size=12,
             font_family="Arial",
+            fixations_b=pd.DataFrame(),
         )
         assert isinstance(fig, go.Figure)
         assert len(fig.frames) == 0
+
+
+class TestAnimationPlaybackTiming:
+    """The side panel must quote the *actual* animation runtime."""
+
+    def test_playback_ms_matches_play_button(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # animation_playback_ms must equal what Play actually runs: Play advances
+        # all frames at a single frame-duration, so runtime == n_frames * that.
+        speed = 2.0
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            playback_speed=speed,
+        )
+        play_btn = fig.layout.updatemenus[0].buttons[0]
+        frame_ms = play_btn.args[1]["frame"]["duration"]
+        expected = len(fig.frames) * frame_ms
+        _span, playback_ms = animation_playback_ms([normalized_fixations_df], speed)
+        assert playback_ms == expected
+
+    def test_playback_ms_empty(self):
+        assert animation_playback_ms([], 1.0) == (0.0, 0.0)
+
+    def test_fake_index_timestamps_fall_back_to_durations(self, normalized_words_df):
+        # data.normalize_fixations synthesizes timestamp_ms = 0,1,2,... when the
+        # source has no timestamp column. Those row indices must NOT be read as
+        # milliseconds; the clock falls back to fixation durations laid out
+        # back-to-back, so reading time ~ sum(durations), not a couple of ms.
+        fix = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p1"],
+                "trial_id": ["t1", "t1", "t1"],
+                "x": [120, 220, 320],
+                "y": [70, 70, 70],
+                "duration_ms": [200, 250, 180],
+                "timestamp_ms": [0, 1, 2],  # row-index sentinel, not real ms
+                "order_in_trial": [1, 2, 3],
+            }
+        )
+        span_ms, _playback = animation_playback_ms([fix], 1.0)
+        assert span_ms == 630  # 200+250+180, NOT ~2 ms
+
+    def test_single_mode_color_is_canonical_from_b_slot(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # Degenerate direct call: only the second slot is populated. The lone
+        # trail must still be the canonical single-replay blue, never the red
+        # "B" colour.
+        from scanpath_visualization_app.constants import COMPARISON_PALETTE
+
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            pd.DataFrame(),
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            fixations_b=normalized_fixations_df,
+        )
+        marker_colors = [
+            t.marker.color
+            for t in fig.data
+            if t.marker is not None and isinstance(t.marker.color, str)
+        ]
+        assert COMPARISON_PALETTE[0] in marker_colors
+        assert COMPARISON_PALETTE[1] not in marker_colors
+
+    def test_animation_transitions_are_zero(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # Zero transition = labels/markers appear on their fixation instead of
+        # gliding in from the corner, and the runtime stays exact.
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            show_order=True,
+        )
+        play_btn = fig.layout.updatemenus[0].buttons[0]
+        assert play_btn.args[1]["transition"]["duration"] == 0
+        assert fig.layout.sliders[0].transition.duration == 0
 
 
 class TestMakeComparisonFigure:
