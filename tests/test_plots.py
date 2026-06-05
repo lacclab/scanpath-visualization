@@ -249,8 +249,9 @@ class TestMakeDualScanpathAnimation:
 
     @staticmethod
     def _second_fixations():
-        # Onsets are cumulative durations: [0, 300]. Paired with scanpath A's
-        # [0, 200, 450] the merged onset set is {0, 200, 300, 450} → 4 frames.
+        # Onsets are recorded timestamps rebased to t=0: [0, 300]. Paired with
+        # scanpath A's [0, 200, 450] the merged onset set is {0, 200, 300, 450}
+        # → 4 frames.
         return pd.DataFrame(
             {
                 "participant_id": ["p2", "p2"],
@@ -281,6 +282,39 @@ class TestMakeDualScanpathAnimation:
         # Both trails appear in the legend so the two readers are tellable apart.
         legend_names = [t.name for t in fig.data if t.showlegend]
         assert len(legend_names) == 2
+
+    def test_dual_animation_uses_real_timestamps(self, normalized_words_df):
+        # The shared clock must come from recorded timestamp_ms (rebased), NOT
+        # cumulative durations — otherwise readings with saccade/blink gaps
+        # desync. Here fixation 2 starts at t=1000ms but lasts only 100ms, so a
+        # duration-based clock would place its onset at 100ms. The elapsed-time
+        # slider label proves which clock is used.
+        fix_a = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1"],
+                "trial_id": ["t1", "t1"],
+                "x": [120, 220],
+                "y": [70, 70],
+                "duration_ms": [100, 100],
+                "timestamp_ms": [0, 1000],
+                "order_in_trial": [1, 2],
+            }
+        )
+        fix_b = fix_a.iloc[:1].copy()  # single fixation at t=0
+        fig = make_dual_scanpath_animation(
+            normalized_words_df,
+            fix_a,
+            fix_b,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        labels = [s.label for s in fig.layout.sliders[0].steps]
+        # Real-timestamp clock → onset of fixation 2 at 1.0s; a duration clock
+        # would have shown 0.1s.
+        assert labels == ["0.0s", "1.0s"], labels
+        assert fig.layout.sliders[0].currentvalue.prefix == "Elapsed: "
 
     def test_dual_animation_identical_inputs(
         self, normalized_words_df, normalized_fixations_df

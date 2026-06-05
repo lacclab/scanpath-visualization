@@ -1125,28 +1125,27 @@ def make_dual_scanpath_animation(
     show_order: bool = True,
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     order_font_size: int = 10,
-    order_font_color: str = "#000000",
     background_color: Optional[str] = None,
     label_a: str = "Scanpath A",
     label_b: str = "Scanpath B",
     words_b: Optional[pd.DataFrame] = None,
 ) -> go.Figure:
-    """Two scanpaths animated together on one shared clock.
+    """Two scanpaths animated together on one shared real-time clock.
 
-    Both scanpaths start at t=0 and advance by elapsed *fixation time*: each
-    fixation occupies its own ``duration_ms`` laid out back-to-back, exactly
-    like :func:`make_scanpath_animation`. A frame is emitted at every fixation
-    onset across *either* scanpath, so at wall-clock time ``t`` each scanpath
-    shows every fixation whose onset has been reached. The shorter reading
-    finishes first and stays fully drawn while the longer one keeps going — so
-    the two replay "at the same time" in reading-time terms.
+    Both scanpaths are placed on a common clock rebased to each reading's first
+    fixation (``timestamp_ms - timestamp_ms[0]``), so they share *real reading
+    time*: at clock ``t`` each scanpath shows every fixation whose recorded onset
+    has been reached, including the saccade/blink gaps between fixations. The
+    shorter reading finishes first and stays fully drawn while the longer one
+    keeps going — so the two genuinely replay "at the same time". (This differs
+    from the single-scanpath builder, which compresses out inter-fixation gaps;
+    that smoothing is fine for one path but would desync two.)
 
     Word boxes / labels are drawn from ``words`` (scanpath A). The canonical use
     is two readings of the *same* text, where A's boxes stand in for both; for
-    two different texts the spatial overlay is only loosely meaningful (prefer
-    the side-by-side comparison view there). ``order_font_color`` is accepted for
-    signature parity with the single-scanpath builder but order numbers are
-    tinted per-scanpath here so the two trails stay distinguishable.
+    two different texts the spatial overlay is only loosely meaningful (the
+    caller is expected to warn). Order numbers are tinted per-scanpath so the two
+    trails stay distinguishable, so ``order_font_color`` does not apply here.
     """
     fig = go.Figure()
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
@@ -1166,9 +1165,12 @@ def make_dual_scanpath_animation(
 
     marker_mode = "markers+text" if show_order else "markers"
 
-    # Per-scanpath layout. Onsets are the cumulative sum of preceding fixation
-    # durations (contiguous, no saccade gaps) so both clocks start at 0 and run
-    # in reading-time — matching the single-scanpath builder's implicit timeline.
+    # Per-scanpath timeline. Onsets are the recorded fixation start times
+    # (``timestamp_ms``) rebased to each reading's first fixation, so both clocks
+    # share *real reading time* including inter-fixation/blink gaps — that shared
+    # real clock is what makes "at the same time" literally true across readings.
+    # Falls back to contiguous cumulative durations only if timestamps are
+    # missing/non-numeric.
     specs = []
     for fix_df, color, label in (
         (fixations_a, COMPARISON_PALETTE[0], label_a),
@@ -1178,7 +1180,11 @@ def make_dual_scanpath_animation(
             continue
         ordered = fix_df.sort_values("timestamp_ms").reset_index(drop=True)
         dur = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
-        onsets = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
+        ts = pd.to_numeric(ordered["timestamp_ms"], errors="coerce")
+        if ts.notna().all():
+            onsets = (ts - ts.iloc[0]).to_numpy(dtype=float)
+        else:
+            onsets = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
         specs.append(
             dict(
                 ordered=ordered,

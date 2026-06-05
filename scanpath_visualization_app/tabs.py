@@ -42,6 +42,16 @@ def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(text))
 
 
+def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
+    """Best-available text identifier for a trial's words (for same-text checks)."""
+    for col in ("unique_paragraph_id", "paragraph_id"):
+        if col in trial_words.columns and not trial_words.empty:
+            value = trial_words[col].iloc[0]
+            if pd.notna(value):
+                return str(value)
+    return None
+
+
 _MIME_FOR_FORMAT = {
     "PNG": "image/png",
     "SVG": "image/svg+xml",
@@ -1173,28 +1183,48 @@ def render_animation_tab(
                     selected_trial,
                 ):
                     st.caption("⚠️ The second scanpath is the same trial as the first.")
+                else:
+                    text_a = _trial_text_id(trial_words)
+                    text_b = _trial_text_id(trial_words_b)
+                    if text_a is not None and text_b is not None and text_a != text_b:
+                        st.warning(
+                            "The two scanpaths are **different texts**, so the "
+                            "shared word boxes don't line up with the second "
+                            "reading — the spatial overlay isn't meaningful. This "
+                            "view is intended for two readings of the same "
+                            "paragraph."
+                        )
+            elif compare and sel_b_participant and sel_b_trial:
+                st.warning(
+                    "The selected second scanpath has no fixations after "
+                    "filtering — showing only the first scanpath."
+                )
 
     if trial_fixations.empty:
         return
 
+    # Shared kwargs for either animation builder; order_font_color applies only
+    # to the single builder (the dual view tints order numbers per-scanpath).
+    anim_common = dict(
+        canvas_width=int(canvas_width),
+        canvas_height=int(canvas_height),
+        base_font_size=int(base_font_size),
+        font_family=font_family,
+        playback_speed=playback_speed,
+        show_words=viz_settings["show_words"],
+        show_word_labels=viz_settings["show_labels"],
+        show_saccades=viz_settings["show_saccades"],
+        show_order=viz_settings["show_order"],
+        marker_size_range=viz_settings["marker_size_range"],
+        order_font_size=viz_settings["order_font_size"],
+        background_color=viz_settings.get("background_color"),
+    )
     if dual:
         fig = make_dual_scanpath_animation(
             trial_words,
             trial_fixations,
             trial_fixations_b,
-            canvas_width=int(canvas_width),
-            canvas_height=int(canvas_height),
-            base_font_size=int(base_font_size),
-            font_family=font_family,
-            playback_speed=playback_speed,
-            show_words=viz_settings["show_words"],
-            show_word_labels=viz_settings["show_labels"],
-            show_saccades=viz_settings["show_saccades"],
-            show_order=viz_settings["show_order"],
-            marker_size_range=viz_settings["marker_size_range"],
-            order_font_size=viz_settings["order_font_size"],
-            order_font_color=viz_settings["order_font_color"],
-            background_color=viz_settings.get("background_color"),
+            **anim_common,
             label_a=f"{selected_participant} · {selected_trial}",
             label_b=f"{sel_b_participant} · {sel_b_trial}",
             words_b=trial_words_b,
@@ -1203,19 +1233,8 @@ def render_animation_tab(
         fig = make_scanpath_animation(
             trial_words,
             trial_fixations,
-            canvas_width=int(canvas_width),
-            canvas_height=int(canvas_height),
-            base_font_size=int(base_font_size),
-            font_family=font_family,
-            playback_speed=playback_speed,
-            show_words=viz_settings["show_words"],
-            show_word_labels=viz_settings["show_labels"],
-            show_saccades=viz_settings["show_saccades"],
-            show_order=viz_settings["show_order"],
-            marker_size_range=viz_settings["marker_size_range"],
-            order_font_size=viz_settings["order_font_size"],
+            **anim_common,
             order_font_color=viz_settings["order_font_color"],
-            background_color=viz_settings.get("background_color"),
         )
     with col_main:
         st.plotly_chart(fig, width="stretch", config={"responsive": False})
@@ -1223,11 +1242,12 @@ def render_animation_tab(
     with col_side:
         if dual:
             st.caption(
-                "**Controls:** ▶ Play co-animates both scanpaths on one clock — "
-                "each fixation lasts its real duration ÷ speed, so the shorter "
-                "reading finishes first and waits. Drag the slider to step "
-                "through fixation onsets. Each orange highlight, ringed in its "
-                "scanpath's colour, marks that reader's current fixation."
+                "**Controls:** ▶ Play co-animates both scanpaths on one shared "
+                "real-time clock (recorded fixation timings ÷ speed), so the "
+                "shorter reading finishes first and waits while the longer one "
+                "continues. Drag the slider to scrub by elapsed reading time. "
+                "Each orange highlight, ringed in its scanpath's colour, marks "
+                "that reader's current fixation."
             )
             file_name = (
                 f"animation_{_safe_filename(selected_participant)}__"
