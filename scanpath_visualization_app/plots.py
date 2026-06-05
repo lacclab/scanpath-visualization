@@ -785,239 +785,116 @@ def _add_density_heatmap(
     )
 
 
-def make_scanpath_animation(
-    words: pd.DataFrame,
-    fixations: pd.DataFrame,
-    *,
-    canvas_width: int,
-    canvas_height: int,
-    base_font_size: int,
-    font_family: str,
-    playback_speed: float = 1.0,
-    show_words: bool = True,
-    show_word_labels: bool = True,
-    show_saccades: bool = True,
-    show_order: bool = True,
-    marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
-    order_font_size: int = 10,
-    order_font_color: str = "#000000",
-    background_color: Optional[str] = None,
-) -> go.Figure:
-    """Frame-by-frame animation with per-fixation frame durations.
+# =============================================================================
+# Scanpath animation — one or two scanpaths on a shared real reading-time clock
+# =============================================================================
 
-    Each frame stays on screen for that fixation's actual duration divided by
-    playback_speed, clipped at 50 ms so the slowest frames remain perceptible.
+_ANIM_MIN_FRAME_MS = 50  # floor so the briefest gaps stay perceptible
+
+
+def _scanpath_anim_specs(entries, marker_size_range):
+    """Build per-scanpath animation specs from (fixations, color, label) entries.
+
+    Empty/None fixations are skipped. Onsets are the recorded ``timestamp_ms``
+    rebased to each reading's first fixation, so multiple scanpaths share one
+    *real reading-time* clock. When timestamps aren't real times — missing, or
+    the 0,1,2,… row index ``data.normalize_fixations`` synthesises when the
+    source has no timestamp column — fixations are instead laid out back-to-back
+    by their durations. Marker sizes are scaled over the COMBINED durations so
+    equal durations render at equal sizes across scanpaths.
     """
-    fig = go.Figure()
-    font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
-
-    x_range, y_range, *_ = _compute_axis_ranges(
-        canvas_width,
-        canvas_height,
-        (fixations, "x", "y"),
-        word_frames=[words] if not words.empty else [],
-    )
-
-    shapes = build_word_boxes(words) if show_words and not words.empty else []
-
-    if show_word_labels:
-        _add_word_label_trace(fig, words, base_font_size, font_settings["family"])
-    word_label_trace_idx = 0 if show_word_labels and not words.empty else -1
-
-    if fixations.empty:
-        return fig
-
-    ordered = fixations.sort_values("timestamp_ms").reset_index(drop=True)
-    n_fix = len(ordered)
-    durations = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
-    sizes = _compute_marker_sizes(durations, marker_size_range)
-    frame_durations_ms = (
-        (durations / max(playback_speed, 1e-6)).clip(lower=50).astype(int).tolist()
-    )
-    avg_frame_duration = max(int(np.mean(frame_durations_ms)), 50)
-    marker_mode = "markers+text" if show_order else "markers"
-
-    fig.add_trace(
-        go.Scatter(
-            x=[ordered.iloc[0]["x"]],
-            y=[ordered.iloc[0]["y"]],
-            mode=marker_mode,
-            marker=dict(
-                size=[sizes[0]],
-                color=COMPARISON_PALETTE[0],
-                line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
-            ),
-            text=["1"] if show_order else None,
-            textfont=dict(
-                color=order_font_color,
-                size=order_font_size,
-                family=font_settings["family"],
-            ),
-            textposition="top center",
-            showlegend=False,
-            name="fixations",
-            hovertemplate=(
-                "Fixation #%{text}<br>Duration %{customdata} ms<extra></extra>"
-            ),
-            customdata=[ordered.iloc[0]["duration_ms"]],
+    specs = []
+    for fix_df, color, label in entries:
+        if fix_df is None or fix_df.empty:
+            continue
+        ordered = fix_df.sort_values("timestamp_ms").reset_index(drop=True)
+        dur = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
+        contiguous = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
+        ts = pd.to_numeric(ordered["timestamp_ms"], errors="coerce")
+        # Trust recorded timestamps only if they look like real times: fixations
+        # don't overlap, so a real sequence spans at least its total dwell. A
+        # synthesised 0,1,2,… index collapses to a few ms and must NOT be read as
+        # milliseconds (it would crush the whole replay onto the 50 ms floor).
+        real_ts = bool(ts.notna().all()) and float(ts.iloc[-1] - ts.iloc[0]) >= (
+            0.5 * float(contiguous[-1])
         )
-    )
-    fix_trace_idx = 1 if word_label_trace_idx == 0 else 0
-
-    if show_saccades:
-        fig.add_trace(
-            go.Scatter(
-                x=[],
-                y=[],
-                mode="lines",
-                line=dict(color=SACCADE_COLOR, width=2),
-                showlegend=False,
-                name="saccades",
-                hoverinfo="skip",
+        onsets = (ts - ts.iloc[0]).to_numpy(dtype=float) if real_ts else contiguous
+        specs.append(
+            dict(
+                ordered=ordered,
+                dur=dur,
+                onsets=onsets,
+                end=float(onsets[-1] + dur.iloc[-1]),
+                color=color,
+                label=label,
             )
         )
-        sac_trace_idx = fix_trace_idx + 1
-    else:
-        sac_trace_idx = None
-
-    fig.add_trace(
-        go.Scatter(
-            x=[ordered.iloc[0]["x"]],
-            y=[ordered.iloc[0]["y"]],
-            mode="markers",
-            marker=dict(
-                size=sizes[0] + 8,
-                color=CURRENT_FIX_COLOR,
-                line=dict(color=CURRENT_FIX_OUTLINE, width=2),
-            ),
-            showlegend=False,
-            name="current",
-            hoverinfo="skip",
+    if specs:
+        combined = _compute_marker_sizes(
+            pd.concat([s["dur"] for s in specs], ignore_index=True), marker_size_range
         )
+        cursor = 0
+        for s in specs:
+            n = len(s["dur"])
+            s["sizes"] = np.asarray(combined[cursor : cursor + n], dtype=float)
+            cursor += n
+    return specs
+
+
+def _anim_timeline(specs, playback_speed):
+    """Merged frame timeline across all scanpaths.
+
+    Returns ``(onset_times, frame_durations_ms, avg_frame_duration,
+    reading_span_ms)``. A frame is emitted at every distinct fixation onset
+    across all scanpaths; each frame lasts the gap to the next onset divided by
+    ``playback_speed``, floored at ``_ANIM_MIN_FRAME_MS``. ``reading_span_ms`` is
+    the longest reading's real span (all readings are rebased to t=0).
+    """
+    onset_times = sorted({float(t) for s in specs for t in s["onsets"]})
+    reading_span_ms = max((s["end"] for s in specs), default=0.0)
+    frame_durations_ms = []
+    for k, t in enumerate(onset_times):
+        nxt = onset_times[k + 1] if k + 1 < len(onset_times) else reading_span_ms
+        gap = max(nxt - t, 0.0)
+        frame_durations_ms.append(
+            int(max(gap / max(playback_speed, 1e-6), _ANIM_MIN_FRAME_MS))
+        )
+    avg = (
+        max(int(np.mean(frame_durations_ms)), _ANIM_MIN_FRAME_MS)
+        if frame_durations_ms
+        else _ANIM_MIN_FRAME_MS
     )
-    curr_trace_idx = (sac_trace_idx if sac_trace_idx is not None else fix_trace_idx) + 1
+    return onset_times, frame_durations_ms, avg, reading_span_ms
 
-    frames = []
-    for i in range(n_fix):
-        fix_x = ordered["x"].iloc[: i + 1].tolist()
-        fix_y = ordered["y"].iloc[: i + 1].tolist()
-        fix_sizes = sizes[: i + 1].tolist()
-        fix_texts = [str(j + 1) for j in range(i + 1)] if show_order else None
-        fix_durations = ordered["duration_ms"].iloc[: i + 1].tolist()
 
-        traces_in_frame = []
-        traces_idx_in_frame = []
+def animation_playback_ms(fixations_list, playback_speed):
+    """Reading span and *actual* animation runtime for the given scanpath(s).
 
-        fix_scatter = go.Scatter(
-            x=fix_x,
-            y=fix_y,
-            mode=marker_mode,
-            marker=dict(
-                size=fix_sizes,
-                color=COMPARISON_PALETTE[0],
-                line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
-            ),
-            text=fix_texts,
-            textfont=dict(
-                color=order_font_color,
-                size=order_font_size,
-                family=font_settings["family"],
-            ),
-            textposition="top center",
-            customdata=fix_durations,
-        )
-        traces_in_frame.append(fix_scatter)
-        traces_idx_in_frame.append(fix_trace_idx)
-
-        if show_saccades:
-            sac_x: list = []
-            sac_y: list = []
-            for j in range(i):
-                sac_x.extend([ordered["x"].iloc[j], ordered["x"].iloc[j + 1], None])
-                sac_y.extend([ordered["y"].iloc[j], ordered["y"].iloc[j + 1], None])
-            traces_in_frame.append(
-                go.Scatter(
-                    x=sac_x,
-                    y=sac_y,
-                    mode="lines",
-                    line=dict(color=SACCADE_COLOR, width=2),
-                )
-            )
-            traces_idx_in_frame.append(sac_trace_idx)
-
-        traces_in_frame.append(
-            go.Scatter(
-                x=[ordered["x"].iloc[i]],
-                y=[ordered["y"].iloc[i]],
-                mode="markers",
-                marker=dict(
-                    size=[sizes[i] + 8],
-                    color=CURRENT_FIX_COLOR,
-                    line=dict(color=CURRENT_FIX_OUTLINE, width=2),
-                ),
-            )
-        )
-        traces_idx_in_frame.append(curr_trace_idx)
-
-        frames.append(
-            go.Frame(
-                data=traces_in_frame,
-                name=str(i),
-                traces=traces_idx_in_frame,
-            )
-        )
-
-    fig.frames = frames
-
-    shapes.append(
-        dict(
-            type="rect",
-            x0=x_range[0],
-            y0=y_range[1],
-            x1=x_range[1],
-            y1=y_range[0],
-            line=dict(color="#000000", width=1),
-            fillcolor="rgba(0,0,0,0)",
-        )
+    Returns ``(reading_span_ms, playback_ms)``. ``playback_ms`` is the real
+    runtime the Play button produces: Play advances every frame at the average
+    frame duration, so the total is ``n_frames * avg`` — quoting that in the side
+    panel makes the stated playback time match what the user actually observes.
+    Both 0 when there are no fixations.
+    """
+    specs = _scanpath_anim_specs(
+        [(f, None, None) for f in fixations_list], DEFAULT_MARKER_SIZE_RANGE
     )
+    if not specs:
+        return 0.0, 0.0
+    onset_times, _frame_durations, avg, reading_span_ms = _anim_timeline(
+        specs, playback_speed
+    )
+    return reading_span_ms, float(len(onset_times) * avg)
 
-    sliders = [
-        dict(
-            active=0,
-            yanchor="bottom",
-            xanchor="left",
-            currentvalue=dict(
-                font=dict(size=14),
-                prefix="Fixation: ",
-                visible=True,
-                xanchor="right",
-            ),
-            transition=dict(duration=avg_frame_duration // 2, easing="cubic-in-out"),
-            pad=dict(b=10, t=10),
-            len=0.9,
-            x=0.1,
-            y=1.0,
-            steps=[
-                dict(
-                    args=[
-                        [str(i)],
-                        dict(
-                            frame=dict(duration=frame_durations_ms[i], redraw=True),
-                            mode="immediate",
-                            transition=dict(
-                                duration=min(frame_durations_ms[i] // 2, 100)
-                            ),
-                        ),
-                    ],
-                    label=str(i + 1),
-                    method="animate",
-                )
-                for i in range(n_fix)
-            ],
-        )
-    ]
 
-    updatemenus = [
+def _animation_play_buttons(frame_duration):
+    """Play / Pause / Restart buttons.
+
+    Transitions are 0 so frames snap into place: no tweening means the replay
+    runs at exactly ``n_frames * frame_duration`` and new markers/order-numbers
+    appear on their fixation instead of gliding in from the corner.
+    """
+    return [
         dict(
             type="buttons",
             showactive=False,
@@ -1033,12 +910,9 @@ def make_scanpath_animation(
                     args=[
                         None,
                         dict(
-                            frame=dict(duration=avg_frame_duration, redraw=True),
+                            frame=dict(duration=frame_duration, redraw=True),
                             fromcurrent=True,
-                            transition=dict(
-                                duration=min(avg_frame_duration // 2, 100),
-                                easing="cubic-in-out",
-                            ),
+                            transition=dict(duration=0),
                         ),
                     ],
                 ),
@@ -1070,49 +944,49 @@ def make_scanpath_animation(
         )
     ]
 
-    fitted_w, fitted_h = _fit_display_size(
-        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
-    )
-    # Sliders + play/pause buttons sit in the top margin now (yanchor="bottom",
-    # y=1.0) so they're visible without scrolling past the plot.
-    fig.update_layout(
-        height=fitted_h + 80,
-        width=fitted_w,
-        autosize=False,
-        margin=dict(l=0, r=0, t=80, b=0),
-        xaxis=dict(
-            showticklabels=False,
-            showgrid=False,
-            zeroline=False,
-            title=None,
-            range=x_range,
-            constrain="domain",
-        ),
-        yaxis=dict(
-            showticklabels=False,
-            showgrid=False,
-            zeroline=False,
-            title=None,
-            range=y_range,
-            constrain="domain",
-            scaleanchor="x",
-            scaleratio=1,
-        ),
-        template="plotly_white",
-        plot_bgcolor=background_color,
-        paper_bgcolor=background_color,
-        font=font_settings,
-        shapes=shapes,
-        sliders=sliders,
-        updatemenus=updatemenus,
-    )
-    return fig
+
+def _animation_time_slider(onset_times):
+    """Slider whose steps are labelled by elapsed reading time (not fixation
+    index), so scrubbing maps to seconds into the reading. Steps jump instantly
+    (duration 0)."""
+    return [
+        dict(
+            active=0,
+            yanchor="bottom",
+            xanchor="left",
+            currentvalue=dict(
+                font=dict(size=14),
+                prefix="Elapsed: ",
+                visible=True,
+                xanchor="right",
+            ),
+            transition=dict(duration=0),
+            pad=dict(b=10, t=10),
+            len=0.9,
+            x=0.1,
+            y=1.0,
+            steps=[
+                dict(
+                    args=[
+                        [str(k)],
+                        dict(
+                            frame=dict(duration=0, redraw=True),
+                            mode="immediate",
+                            transition=dict(duration=0),
+                        ),
+                    ],
+                    label=f"{onset_times[k] / 1000:.1f}s",
+                    method="animate",
+                )
+                for k in range(len(onset_times))
+            ],
+        )
+    ]
 
 
-def make_dual_scanpath_animation(
+def make_scanpath_animation(
     words: pd.DataFrame,
-    fixations_a: pd.DataFrame,
-    fixations_b: pd.DataFrame,
+    fixations: pd.DataFrame,
     *,
     canvas_width: int,
     canvas_height: int,
@@ -1125,27 +999,30 @@ def make_dual_scanpath_animation(
     show_order: bool = True,
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     order_font_size: int = 10,
+    order_font_color: str = "#000000",
     background_color: Optional[str] = None,
+    fixations_b: Optional[pd.DataFrame] = None,
+    words_b: Optional[pd.DataFrame] = None,
     label_a: str = "Scanpath A",
     label_b: str = "Scanpath B",
-    words_b: Optional[pd.DataFrame] = None,
 ) -> go.Figure:
-    """Two scanpaths animated together on one shared real-time clock.
+    """Frame-by-frame scanpath replay on a real reading-time clock.
 
-    Both scanpaths are placed on a common clock rebased to each reading's first
-    fixation (``timestamp_ms - timestamp_ms[0]``), so they share *real reading
-    time*: at clock ``t`` each scanpath shows every fixation whose recorded onset
-    has been reached, including the saccade/blink gaps between fixations. The
-    shorter reading finishes first and stays fully drawn while the longer one
-    keeps going — so the two genuinely replay "at the same time". (This differs
-    from the single-scanpath builder, which compresses out inter-fixation gaps;
-    that smoothing is fine for one path but would desync two.)
+    Pass ``fixations_b`` (and optionally ``words_b``) to overlay a SECOND
+    scanpath animated on the same clock. Every scanpath is rebased to its first
+    fixation's ``timestamp_ms``, so they share *real reading time* including the
+    saccade/blink gaps between fixations; a frame is emitted at every fixation
+    onset across all scanpaths, and the shorter reading finishes first and holds
+    while the longer keeps going. The Play button advances frames at the average
+    frame duration, so the whole replay takes ``reading_span / playback_speed``
+    — exactly what :func:`animation_playback_ms` reports (and the side panel
+    quotes), so the stated time matches the observed runtime.
 
-    Word boxes / labels are drawn from ``words`` (scanpath A). The canonical use
-    is two readings of the *same* text, where A's boxes stand in for both; for
-    two different texts the spatial overlay is only loosely meaningful (the
-    caller is expected to warn). Order numbers are tinted per-scanpath so the two
-    trails stay distinguishable, so ``order_font_color`` does not apply here.
+    With two scanpaths the trails take the two comparison colours, order numbers
+    are tinted per-scanpath, and a legend names them; word boxes/labels come from
+    ``words`` (scanpath A), so the overlay is meaningful for two readings of the
+    same text. With one scanpath the behaviour matches the classic single replay
+    (order numbers honour ``order_font_color``, no legend).
     """
     fig = go.Figure()
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
@@ -1154,7 +1031,7 @@ def make_dual_scanpath_animation(
     x_range, y_range, *_ = _compute_axis_ranges(
         canvas_width,
         canvas_height,
-        (fixations_a, "x", "y"),
+        (fixations, "x", "y"),
         (fixations_b, "x", "y"),
         word_frames=word_frames,
     )
@@ -1165,53 +1042,29 @@ def make_dual_scanpath_animation(
 
     marker_mode = "markers+text" if show_order else "markers"
 
-    # Per-scanpath timeline. Onsets are the recorded fixation start times
-    # (``timestamp_ms``) rebased to each reading's first fixation, so both clocks
-    # share *real reading time* including inter-fixation/blink gaps — that shared
-    # real clock is what makes "at the same time" literally true across readings.
-    # Falls back to contiguous cumulative durations only if timestamps are
-    # missing/non-numeric.
-    specs = []
-    for fix_df, color, label in (
-        (fixations_a, COMPARISON_PALETTE[0], label_a),
-        (fixations_b, COMPARISON_PALETTE[1], label_b),
-    ):
-        if fix_df is None or fix_df.empty:
-            continue
-        ordered = fix_df.sort_values("timestamp_ms").reset_index(drop=True)
-        dur = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
-        ts = pd.to_numeric(ordered["timestamp_ms"], errors="coerce")
-        if ts.notna().all():
-            onsets = (ts - ts.iloc[0]).to_numpy(dtype=float)
-        else:
-            onsets = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
-        specs.append(
-            dict(
-                ordered=ordered,
-                dur=dur,
-                onsets=onsets,
-                end=float(onsets[-1] + dur.iloc[-1]),
-                color=color,
-                label=label,
-            )
-        )
-
-    # Shared duration->size scale so equal durations render at equal marker
-    # sizes across both scanpaths (each builder otherwise self-normalizes).
-    if specs:
-        combined = _compute_marker_sizes(
-            pd.concat([s["dur"] for s in specs], ignore_index=True), marker_size_range
-        )
-        cursor = 0
-        for s in specs:
-            n = len(s["dur"])
-            s["sizes"] = np.asarray(combined[cursor : cursor + n], dtype=float)
-            cursor += n
+    specs = _scanpath_anim_specs(
+        [
+            (fixations, COMPARISON_PALETTE[0], label_a),
+            (fixations_b, COMPARISON_PALETTE[1], label_b),
+        ],
+        marker_size_range,
+    )
+    dual = len(specs) > 1
+    if not dual and specs:
+        # A lone scanpath always wears the canonical single-replay colour,
+        # whether it arrived as `fixations` or (degenerately) only as
+        # `fixations_b`, so the trail never silently renders in the B colour.
+        specs[0]["color"] = COMPARISON_PALETTE[0]
 
     # Base traces, with stable indices the frames update by position.
     for s in specs:
         ordered = s["ordered"]
         first_size = float(s["sizes"][0])
+        s["text_color"] = s["color"] if dual else order_font_color
+        sac_color = s["color"] if dual else SACCADE_COLOR
+        curr_outline = s["color"] if dual else CURRENT_FIX_OUTLINE
+        curr_outline_w = 2.5 if dual else 2
+
         s["idx_trail"] = len(fig.data)
         fig.add_trace(
             go.Scatter(
@@ -1225,17 +1078,17 @@ def make_dual_scanpath_animation(
                 ),
                 text=["1"] if show_order else None,
                 textfont=dict(
-                    color=s["color"],
+                    color=s["text_color"],
                     size=order_font_size,
                     family=font_settings["family"],
                 ),
                 textposition="top center",
-                showlegend=True,
+                showlegend=dual,
                 name=s["label"],
                 legendgroup=s["label"],
                 hovertemplate=(
-                    s["label"]
-                    + "<br>Fixation #%{text}<br>Duration %{customdata} ms<extra></extra>"
+                    (s["label"] + "<br>" if dual else "")
+                    + "Fixation #%{text}<br>Duration %{customdata} ms<extra></extra>"
                 ),
                 customdata=[ordered["duration_ms"].iloc[0]],
             )
@@ -1247,7 +1100,7 @@ def make_dual_scanpath_animation(
                     x=[],
                     y=[],
                     mode="lines",
-                    line=dict(color=s["color"], width=1.5),
+                    line=dict(color=sac_color, width=2),
                     showlegend=False,
                     legendgroup=s["label"],
                     hoverinfo="skip",
@@ -1264,7 +1117,7 @@ def make_dual_scanpath_animation(
                 marker=dict(
                     size=[first_size + 8],
                     color=CURRENT_FIX_COLOR,
-                    line=dict(color=s["color"], width=2.5),
+                    line=dict(color=curr_outline, width=curr_outline_w),
                 ),
                 showlegend=False,
                 legendgroup=s["label"],
@@ -1272,17 +1125,8 @@ def make_dual_scanpath_animation(
             )
         )
 
-    # Merged timeline: one frame per distinct fixation onset across both paths.
-    onset_times = sorted({float(t) for s in specs for t in s["onsets"]})
-    max_end = max((s["end"] for s in specs), default=0.0)
-
-    frame_durations_ms = []
-    for k, t in enumerate(onset_times):
-        nxt = onset_times[k + 1] if k + 1 < len(onset_times) else max_end
-        gap = max(nxt - t, 0.0)
-        frame_durations_ms.append(int(max(gap / max(playback_speed, 1e-6), 50)))
-    avg_frame_duration = (
-        max(int(np.mean(frame_durations_ms)), 50) if onset_times else 50
+    onset_times, _frame_durations, avg_frame_duration, _span = _anim_timeline(
+        specs, playback_speed
     )
 
     frames = []
@@ -1291,11 +1135,15 @@ def make_dual_scanpath_animation(
         traces_idx_in_frame = []
         for s in specs:
             ordered = s["ordered"]
-            # Fixations whose onset has been reached by time t (>=1 from t=0).
+            # Fixations whose recorded onset has been reached by time t.
             kk = max(int(np.searchsorted(s["onsets"], t, side="right")), 1)
             xs = ordered["x"].iloc[:kk].tolist()
             ys = ordered["y"].iloc[:kk].tolist()
             szs = s["sizes"][:kk].tolist()
+            sac_color = s["color"] if dual else SACCADE_COLOR
+            curr_outline = s["color"] if dual else CURRENT_FIX_OUTLINE
+            curr_outline_w = 2.5 if dual else 2
+
             traces_in_frame.append(
                 go.Scatter(
                     x=xs,
@@ -1308,7 +1156,7 @@ def make_dual_scanpath_animation(
                     ),
                     text=[str(j + 1) for j in range(kk)] if show_order else None,
                     textfont=dict(
-                        color=s["color"],
+                        color=s["text_color"],
                         size=order_font_size,
                         family=font_settings["family"],
                     ),
@@ -1329,7 +1177,7 @@ def make_dual_scanpath_animation(
                         x=sac_x,
                         y=sac_y,
                         mode="lines",
-                        line=dict(color=s["color"], width=1.5),
+                        line=dict(color=sac_color, width=2),
                     )
                 )
                 traces_idx_in_frame.append(s["idx_sac"])
@@ -1343,20 +1191,15 @@ def make_dual_scanpath_animation(
                     marker=dict(
                         size=[szs[ci] + 8],
                         color=CURRENT_FIX_COLOR,
-                        line=dict(color=s["color"], width=2.5),
+                        line=dict(color=curr_outline, width=curr_outline_w),
                     ),
                 )
             )
             traces_idx_in_frame.append(s["idx_curr"])
 
         frames.append(
-            go.Frame(
-                data=traces_in_frame,
-                name=str(k),
-                traces=traces_idx_in_frame,
-            )
+            go.Frame(data=traces_in_frame, name=str(k), traces=traces_idx_in_frame)
         )
-
     fig.frames = frames
 
     shapes.append(
@@ -1371,103 +1214,15 @@ def make_dual_scanpath_animation(
         )
     )
 
-    sliders = []
-    updatemenus = []
-    if onset_times:
-        sliders = [
-            dict(
-                active=0,
-                yanchor="bottom",
-                xanchor="left",
-                currentvalue=dict(
-                    font=dict(size=14),
-                    prefix="Elapsed: ",
-                    visible=True,
-                    xanchor="right",
-                ),
-                transition=dict(
-                    duration=avg_frame_duration // 2, easing="cubic-in-out"
-                ),
-                pad=dict(b=10, t=10),
-                len=0.9,
-                x=0.1,
-                y=1.0,
-                steps=[
-                    dict(
-                        args=[
-                            [str(k)],
-                            dict(
-                                frame=dict(duration=frame_durations_ms[k], redraw=True),
-                                mode="immediate",
-                                transition=dict(
-                                    duration=min(frame_durations_ms[k] // 2, 100)
-                                ),
-                            ),
-                        ],
-                        label=f"{onset_times[k] / 1000:.1f}s",
-                        method="animate",
-                    )
-                    for k in range(len(onset_times))
-                ],
-            )
-        ]
-        updatemenus = [
-            dict(
-                type="buttons",
-                showactive=False,
-                y=1.0,
-                x=0.05,
-                xanchor="right",
-                yanchor="bottom",
-                pad=dict(b=10, r=10),
-                buttons=[
-                    dict(
-                        label="▶ Play",
-                        method="animate",
-                        args=[
-                            None,
-                            dict(
-                                frame=dict(duration=avg_frame_duration, redraw=True),
-                                fromcurrent=True,
-                                transition=dict(
-                                    duration=min(avg_frame_duration // 2, 100),
-                                    easing="cubic-in-out",
-                                ),
-                            ),
-                        ],
-                    ),
-                    dict(
-                        label="⏸ Pause",
-                        method="animate",
-                        args=[
-                            [None],
-                            dict(
-                                frame=dict(duration=0, redraw=False),
-                                mode="immediate",
-                                transition=dict(duration=0),
-                            ),
-                        ],
-                    ),
-                    dict(
-                        label="⟲ Restart",
-                        method="animate",
-                        args=[
-                            ["0"],
-                            dict(
-                                frame=dict(duration=0, redraw=True),
-                                mode="immediate",
-                                transition=dict(duration=0),
-                            ),
-                        ],
-                    ),
-                ],
-            )
-        ]
+    sliders = _animation_time_slider(onset_times) if onset_times else []
+    updatemenus = _animation_play_buttons(avg_frame_duration) if onset_times else []
 
     fitted_w, fitted_h = _fit_display_size(
         canvas_width, canvas_height, x_range, y_range, spatial_axes=True
     )
-    fig.update_layout(
+    # Sliders + play/pause buttons sit in the top margin (yanchor="bottom",
+    # y=1.0) so they're visible without scrolling past the plot.
+    layout = dict(
         height=fitted_h + 80,
         width=fitted_w,
         autosize=False,
@@ -1490,16 +1245,6 @@ def make_dual_scanpath_animation(
             scaleanchor="x",
             scaleratio=1,
         ),
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=0.99,
-            xanchor="right",
-            x=0.99,
-            bgcolor="rgba(255,255,255,0.7)",
-            bordercolor="#cccccc",
-            borderwidth=1,
-        ),
         template="plotly_white",
         plot_bgcolor=background_color,
         paper_bgcolor=background_color,
@@ -1508,6 +1253,18 @@ def make_dual_scanpath_animation(
         sliders=sliders,
         updatemenus=updatemenus,
     )
+    if dual:
+        layout["legend"] = dict(
+            orientation="h",
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#cccccc",
+            borderwidth=1,
+        )
+    fig.update_layout(**layout)
     return fig
 
 
