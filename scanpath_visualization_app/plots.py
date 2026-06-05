@@ -1109,6 +1109,402 @@ def make_scanpath_animation(
     return fig
 
 
+def make_dual_scanpath_animation(
+    words: pd.DataFrame,
+    fixations_a: pd.DataFrame,
+    fixations_b: pd.DataFrame,
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    base_font_size: int,
+    font_family: str,
+    playback_speed: float = 1.0,
+    show_words: bool = True,
+    show_word_labels: bool = True,
+    show_saccades: bool = True,
+    show_order: bool = True,
+    marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
+    order_font_size: int = 10,
+    order_font_color: str = "#000000",
+    background_color: Optional[str] = None,
+    label_a: str = "Scanpath A",
+    label_b: str = "Scanpath B",
+    words_b: Optional[pd.DataFrame] = None,
+) -> go.Figure:
+    """Two scanpaths animated together on one shared clock.
+
+    Both scanpaths start at t=0 and advance by elapsed *fixation time*: each
+    fixation occupies its own ``duration_ms`` laid out back-to-back, exactly
+    like :func:`make_scanpath_animation`. A frame is emitted at every fixation
+    onset across *either* scanpath, so at wall-clock time ``t`` each scanpath
+    shows every fixation whose onset has been reached. The shorter reading
+    finishes first and stays fully drawn while the longer one keeps going — so
+    the two replay "at the same time" in reading-time terms.
+
+    Word boxes / labels are drawn from ``words`` (scanpath A). The canonical use
+    is two readings of the *same* text, where A's boxes stand in for both; for
+    two different texts the spatial overlay is only loosely meaningful (prefer
+    the side-by-side comparison view there). ``order_font_color`` is accepted for
+    signature parity with the single-scanpath builder but order numbers are
+    tinted per-scanpath here so the two trails stay distinguishable.
+    """
+    fig = go.Figure()
+    font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
+
+    word_frames = [w for w in (words, words_b) if w is not None and not w.empty]
+    x_range, y_range, *_ = _compute_axis_ranges(
+        canvas_width,
+        canvas_height,
+        (fixations_a, "x", "y"),
+        (fixations_b, "x", "y"),
+        word_frames=word_frames,
+    )
+
+    shapes = build_word_boxes(words) if show_words and not words.empty else []
+    if show_word_labels and not words.empty:
+        _add_word_label_trace(fig, words, base_font_size, font_settings["family"])
+
+    marker_mode = "markers+text" if show_order else "markers"
+
+    # Per-scanpath layout. Onsets are the cumulative sum of preceding fixation
+    # durations (contiguous, no saccade gaps) so both clocks start at 0 and run
+    # in reading-time — matching the single-scanpath builder's implicit timeline.
+    specs = []
+    for fix_df, color, label in (
+        (fixations_a, COMPARISON_PALETTE[0], label_a),
+        (fixations_b, COMPARISON_PALETTE[1], label_b),
+    ):
+        if fix_df is None or fix_df.empty:
+            continue
+        ordered = fix_df.sort_values("timestamp_ms").reset_index(drop=True)
+        dur = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
+        onsets = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
+        specs.append(
+            dict(
+                ordered=ordered,
+                dur=dur,
+                onsets=onsets,
+                end=float(onsets[-1] + dur.iloc[-1]),
+                color=color,
+                label=label,
+            )
+        )
+
+    # Shared duration->size scale so equal durations render at equal marker
+    # sizes across both scanpaths (each builder otherwise self-normalizes).
+    if specs:
+        combined = _compute_marker_sizes(
+            pd.concat([s["dur"] for s in specs], ignore_index=True), marker_size_range
+        )
+        cursor = 0
+        for s in specs:
+            n = len(s["dur"])
+            s["sizes"] = np.asarray(combined[cursor : cursor + n], dtype=float)
+            cursor += n
+
+    # Base traces, with stable indices the frames update by position.
+    for s in specs:
+        ordered = s["ordered"]
+        first_size = float(s["sizes"][0])
+        s["idx_trail"] = len(fig.data)
+        fig.add_trace(
+            go.Scatter(
+                x=[ordered["x"].iloc[0]],
+                y=[ordered["y"].iloc[0]],
+                mode=marker_mode,
+                marker=dict(
+                    size=[first_size],
+                    color=s["color"],
+                    line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
+                ),
+                text=["1"] if show_order else None,
+                textfont=dict(
+                    color=s["color"],
+                    size=order_font_size,
+                    family=font_settings["family"],
+                ),
+                textposition="top center",
+                showlegend=True,
+                name=s["label"],
+                legendgroup=s["label"],
+                hovertemplate=(
+                    s["label"]
+                    + "<br>Fixation #%{text}<br>Duration %{customdata} ms<extra></extra>"
+                ),
+                customdata=[ordered["duration_ms"].iloc[0]],
+            )
+        )
+        if show_saccades:
+            s["idx_sac"] = len(fig.data)
+            fig.add_trace(
+                go.Scatter(
+                    x=[],
+                    y=[],
+                    mode="lines",
+                    line=dict(color=s["color"], width=1.5),
+                    showlegend=False,
+                    legendgroup=s["label"],
+                    hoverinfo="skip",
+                )
+            )
+        else:
+            s["idx_sac"] = None
+        s["idx_curr"] = len(fig.data)
+        fig.add_trace(
+            go.Scatter(
+                x=[ordered["x"].iloc[0]],
+                y=[ordered["y"].iloc[0]],
+                mode="markers",
+                marker=dict(
+                    size=[first_size + 8],
+                    color=CURRENT_FIX_COLOR,
+                    line=dict(color=s["color"], width=2.5),
+                ),
+                showlegend=False,
+                legendgroup=s["label"],
+                hoverinfo="skip",
+            )
+        )
+
+    # Merged timeline: one frame per distinct fixation onset across both paths.
+    onset_times = sorted({float(t) for s in specs for t in s["onsets"]})
+    max_end = max((s["end"] for s in specs), default=0.0)
+
+    frame_durations_ms = []
+    for k, t in enumerate(onset_times):
+        nxt = onset_times[k + 1] if k + 1 < len(onset_times) else max_end
+        gap = max(nxt - t, 0.0)
+        frame_durations_ms.append(int(max(gap / max(playback_speed, 1e-6), 50)))
+    avg_frame_duration = (
+        max(int(np.mean(frame_durations_ms)), 50) if onset_times else 50
+    )
+
+    frames = []
+    for k, t in enumerate(onset_times):
+        traces_in_frame = []
+        traces_idx_in_frame = []
+        for s in specs:
+            ordered = s["ordered"]
+            # Fixations whose onset has been reached by time t (>=1 from t=0).
+            kk = max(int(np.searchsorted(s["onsets"], t, side="right")), 1)
+            xs = ordered["x"].iloc[:kk].tolist()
+            ys = ordered["y"].iloc[:kk].tolist()
+            szs = s["sizes"][:kk].tolist()
+            traces_in_frame.append(
+                go.Scatter(
+                    x=xs,
+                    y=ys,
+                    mode=marker_mode,
+                    marker=dict(
+                        size=szs,
+                        color=s["color"],
+                        line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
+                    ),
+                    text=[str(j + 1) for j in range(kk)] if show_order else None,
+                    textfont=dict(
+                        color=s["color"],
+                        size=order_font_size,
+                        family=font_settings["family"],
+                    ),
+                    textposition="top center",
+                    customdata=ordered["duration_ms"].iloc[:kk].tolist(),
+                )
+            )
+            traces_idx_in_frame.append(s["idx_trail"])
+
+            if show_saccades:
+                sac_x: list = []
+                sac_y: list = []
+                for j in range(kk - 1):
+                    sac_x.extend([xs[j], xs[j + 1], None])
+                    sac_y.extend([ys[j], ys[j + 1], None])
+                traces_in_frame.append(
+                    go.Scatter(
+                        x=sac_x,
+                        y=sac_y,
+                        mode="lines",
+                        line=dict(color=s["color"], width=1.5),
+                    )
+                )
+                traces_idx_in_frame.append(s["idx_sac"])
+
+            ci = kk - 1
+            traces_in_frame.append(
+                go.Scatter(
+                    x=[xs[ci]],
+                    y=[ys[ci]],
+                    mode="markers",
+                    marker=dict(
+                        size=[szs[ci] + 8],
+                        color=CURRENT_FIX_COLOR,
+                        line=dict(color=s["color"], width=2.5),
+                    ),
+                )
+            )
+            traces_idx_in_frame.append(s["idx_curr"])
+
+        frames.append(
+            go.Frame(
+                data=traces_in_frame,
+                name=str(k),
+                traces=traces_idx_in_frame,
+            )
+        )
+
+    fig.frames = frames
+
+    shapes.append(
+        dict(
+            type="rect",
+            x0=x_range[0],
+            y0=y_range[1],
+            x1=x_range[1],
+            y1=y_range[0],
+            line=dict(color="#000000", width=1),
+            fillcolor="rgba(0,0,0,0)",
+        )
+    )
+
+    sliders = []
+    updatemenus = []
+    if onset_times:
+        sliders = [
+            dict(
+                active=0,
+                yanchor="bottom",
+                xanchor="left",
+                currentvalue=dict(
+                    font=dict(size=14),
+                    prefix="Elapsed: ",
+                    visible=True,
+                    xanchor="right",
+                ),
+                transition=dict(
+                    duration=avg_frame_duration // 2, easing="cubic-in-out"
+                ),
+                pad=dict(b=10, t=10),
+                len=0.9,
+                x=0.1,
+                y=1.0,
+                steps=[
+                    dict(
+                        args=[
+                            [str(k)],
+                            dict(
+                                frame=dict(duration=frame_durations_ms[k], redraw=True),
+                                mode="immediate",
+                                transition=dict(
+                                    duration=min(frame_durations_ms[k] // 2, 100)
+                                ),
+                            ),
+                        ],
+                        label=f"{onset_times[k] / 1000:.1f}s",
+                        method="animate",
+                    )
+                    for k in range(len(onset_times))
+                ],
+            )
+        ]
+        updatemenus = [
+            dict(
+                type="buttons",
+                showactive=False,
+                y=1.0,
+                x=0.05,
+                xanchor="right",
+                yanchor="bottom",
+                pad=dict(b=10, r=10),
+                buttons=[
+                    dict(
+                        label="▶ Play",
+                        method="animate",
+                        args=[
+                            None,
+                            dict(
+                                frame=dict(duration=avg_frame_duration, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(
+                                    duration=min(avg_frame_duration // 2, 100),
+                                    easing="cubic-in-out",
+                                ),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="⏸ Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            dict(
+                                frame=dict(duration=0, redraw=False),
+                                mode="immediate",
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                    dict(
+                        label="⟲ Restart",
+                        method="animate",
+                        args=[
+                            ["0"],
+                            dict(
+                                frame=dict(duration=0, redraw=True),
+                                mode="immediate",
+                                transition=dict(duration=0),
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ]
+
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
+    )
+    fig.update_layout(
+        height=fitted_h + 80,
+        width=fitted_w,
+        autosize=False,
+        margin=dict(l=0, r=0, t=80, b=0),
+        xaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            title=None,
+            range=x_range,
+            constrain="domain",
+        ),
+        yaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False,
+            title=None,
+            range=y_range,
+            constrain="domain",
+            scaleanchor="x",
+            scaleratio=1,
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99,
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#cccccc",
+            borderwidth=1,
+        ),
+        template="plotly_white",
+        plot_bgcolor=background_color,
+        paper_bgcolor=background_color,
+        font=font_settings,
+        shapes=shapes,
+        sliders=sliders,
+        updatemenus=updatemenus,
+    )
+    return fig
+
+
 def _resolve_trial_display_name(
     participant: str,
     trial_id: str,

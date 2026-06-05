@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from scanpath_visualization_app.plots import (
     build_word_boxes,
     make_comparison_figure,
+    make_dual_scanpath_animation,
     make_scanpath_animation,
     make_scanpath_figure,
 )
@@ -241,6 +242,90 @@ class TestMakeScanpathAnimation:
             playback_speed=2.0,
         )
         assert isinstance(fig, go.Figure)
+
+
+class TestMakeDualScanpathAnimation:
+    """Tests for make_dual_scanpath_animation function."""
+
+    @staticmethod
+    def _second_fixations():
+        # Onsets are cumulative durations: [0, 300]. Paired with scanpath A's
+        # [0, 200, 450] the merged onset set is {0, 200, 300, 450} → 4 frames.
+        return pd.DataFrame(
+            {
+                "participant_id": ["p2", "p2"],
+                "trial_id": ["t1", "t1"],
+                "x": [130, 230],
+                "y": [80, 80],
+                "duration_ms": [300, 100],
+                "timestamp_ms": [0, 300],
+                "order_in_trial": [1, 2],
+            }
+        )
+
+    def test_dual_animation_basic(self, normalized_words_df, normalized_fixations_df):
+        fig = make_dual_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            self._second_fixations(),
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            playback_speed=1.0,
+        )
+        assert isinstance(fig, go.Figure)
+        assert hasattr(fig, "frames")
+        # One frame per distinct fixation onset across both scanpaths.
+        assert len(fig.frames) == 4
+        # Both trails appear in the legend so the two readers are tellable apart.
+        legend_names = [t.name for t in fig.data if t.showlegend]
+        assert len(legend_names) == 2
+
+    def test_dual_animation_identical_inputs(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # Identical scanpaths share onsets, so the merged frame count collapses
+        # to a single scanpath's fixation count.
+        fig = make_dual_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        assert len(fig.frames) == len(normalized_fixations_df)
+
+    def test_dual_animation_one_empty(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # A robust no-op for the empty side: still animates the populated one.
+        fig = make_dual_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            pd.DataFrame(),
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        assert isinstance(fig, go.Figure)
+        assert len(fig.frames) == len(normalized_fixations_df)
+
+    def test_dual_animation_both_empty(self, normalized_words_df):
+        fig = make_dual_scanpath_animation(
+            normalized_words_df,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        assert isinstance(fig, go.Figure)
+        assert len(fig.frames) == 0
 
 
 class TestMakeComparisonFigure:

@@ -12,6 +12,7 @@ from scanpath_visualization_app.data import compute_word_metrics
 
 from scanpath_visualization_app.plots import (
     make_comparison_figure,
+    make_dual_scanpath_animation,
     make_fixation_duration_histogram,
     make_scanpath_animation,
     make_scanpath_figure,
@@ -1080,6 +1081,44 @@ def render_animation_tab(
         & (fixations_filtered["trial_id"] == selected_trial)
     ]
 
+    # Optional second scanpath, co-animated on the same clock (see
+    # `make_dual_scanpath_animation`). Its selector is keyed under "anim_b" so
+    # it stays independent of the single-tab → anim sync (which targets "anim").
+    with col_side:
+        compare = st.checkbox(
+            "Overlay a second scanpath",
+            value=False,
+            key="anim_compare",
+            help=(
+                "Animate a second reading on the same timeline. Works best for "
+                "two readings of the same text (e.g. two participants)."
+            ),
+        )
+        sel_b_participant = sel_b_trial = None
+        if compare:
+            sel_b_participant, sel_b_trial, _mode_b, _text_b = select_trial(
+                combos, key_prefix="anim_b"
+            )
+
+    trial_words_b = None
+    trial_fixations_b = None
+    if compare and sel_b_participant and sel_b_trial:
+        trial_words_b = words_filtered[
+            (words_filtered["participant_id"] == sel_b_participant)
+            & (words_filtered["trial_id"] == sel_b_trial)
+        ]
+        trial_fixations_b = fixations_filtered[
+            (fixations_filtered["participant_id"] == sel_b_participant)
+            & (fixations_filtered["trial_id"] == sel_b_trial)
+        ]
+
+    dual = (
+        compare
+        and trial_fixations_b is not None
+        and not trial_fixations_b.empty
+        and not trial_fixations.empty
+    )
+
     # Playback speed — rendered on the right (next to the animation plot)
     # because that's where the eye actually goes when adjusting playback.
     # Frame durations are floor-clamped at 50 ms (see `make_scanpath_animation`),
@@ -1114,46 +1153,103 @@ def render_animation_tab(
             n_fixations = len(trial_fixations)
             total_duration_ms = trial_fixations["duration_ms"].sum()
             playback_duration_s = total_duration_ms / playback_speed / 1000
+            prefix_a = "Scanpath A — " if dual else ""
             st.info(
-                f"**{n_fixations} fixations** · Total duration: "
+                f"**{prefix_a}{n_fixations} fixations** · Total duration: "
                 f"{total_duration_ms / 1000:.1f}s · Playback time at "
                 f"×{playback_speed}: {playback_duration_s:.1f}s"
             )
+            if dual:
+                n_b = len(trial_fixations_b)
+                total_b_ms = trial_fixations_b["duration_ms"].sum()
+                playback_b_s = total_b_ms / playback_speed / 1000
+                st.info(
+                    f"**Scanpath B — {n_b} fixations** · Total duration: "
+                    f"{total_b_ms / 1000:.1f}s · Playback time at "
+                    f"×{playback_speed}: {playback_b_s:.1f}s"
+                )
+                if (sel_b_participant, sel_b_trial) == (
+                    selected_participant,
+                    selected_trial,
+                ):
+                    st.caption("⚠️ The second scanpath is the same trial as the first.")
 
     if trial_fixations.empty:
         return
 
-    fig = make_scanpath_animation(
-        trial_words,
-        trial_fixations,
-        canvas_width=int(canvas_width),
-        canvas_height=int(canvas_height),
-        base_font_size=int(base_font_size),
-        font_family=font_family,
-        playback_speed=playback_speed,
-        show_words=viz_settings["show_words"],
-        show_word_labels=viz_settings["show_labels"],
-        show_saccades=viz_settings["show_saccades"],
-        show_order=viz_settings["show_order"],
-        marker_size_range=viz_settings["marker_size_range"],
-        order_font_size=viz_settings["order_font_size"],
-        order_font_color=viz_settings["order_font_color"],
-        background_color=viz_settings.get("background_color"),
-    )
+    if dual:
+        fig = make_dual_scanpath_animation(
+            trial_words,
+            trial_fixations,
+            trial_fixations_b,
+            canvas_width=int(canvas_width),
+            canvas_height=int(canvas_height),
+            base_font_size=int(base_font_size),
+            font_family=font_family,
+            playback_speed=playback_speed,
+            show_words=viz_settings["show_words"],
+            show_word_labels=viz_settings["show_labels"],
+            show_saccades=viz_settings["show_saccades"],
+            show_order=viz_settings["show_order"],
+            marker_size_range=viz_settings["marker_size_range"],
+            order_font_size=viz_settings["order_font_size"],
+            order_font_color=viz_settings["order_font_color"],
+            background_color=viz_settings.get("background_color"),
+            label_a=f"{selected_participant} · {selected_trial}",
+            label_b=f"{sel_b_participant} · {sel_b_trial}",
+            words_b=trial_words_b,
+        )
+    else:
+        fig = make_scanpath_animation(
+            trial_words,
+            trial_fixations,
+            canvas_width=int(canvas_width),
+            canvas_height=int(canvas_height),
+            base_font_size=int(base_font_size),
+            font_family=font_family,
+            playback_speed=playback_speed,
+            show_words=viz_settings["show_words"],
+            show_word_labels=viz_settings["show_labels"],
+            show_saccades=viz_settings["show_saccades"],
+            show_order=viz_settings["show_order"],
+            marker_size_range=viz_settings["marker_size_range"],
+            order_font_size=viz_settings["order_font_size"],
+            order_font_color=viz_settings["order_font_color"],
+            background_color=viz_settings.get("background_color"),
+        )
     with col_main:
         st.plotly_chart(fig, width="stretch", config={"responsive": False})
 
     with col_side:
-        st.caption(
-            "**Controls:** Use ▶ Play to auto-advance through fixations, "
-            "⏸ Pause to stop, or drag the slider to jump to any fixation. "
-            "Orange highlight shows the current fixation."
-        )
+        if dual:
+            st.caption(
+                "**Controls:** ▶ Play co-animates both scanpaths on one clock — "
+                "each fixation lasts its real duration ÷ speed, so the shorter "
+                "reading finishes first and waits. Drag the slider to step "
+                "through fixation onsets. Each orange highlight, ringed in its "
+                "scanpath's colour, marks that reader's current fixation."
+            )
+            file_name = (
+                f"animation_{_safe_filename(selected_participant)}__"
+                f"{_safe_filename(selected_trial)}__vs__"
+                f"{_safe_filename(sel_b_participant)}__"
+                f"{_safe_filename(sel_b_trial)}.html"
+            )
+        else:
+            st.caption(
+                "**Controls:** Use ▶ Play to auto-advance through fixations, "
+                "⏸ Pause to stop, or drag the slider to jump to any fixation. "
+                "Orange highlight shows the current fixation."
+            )
+            file_name = (
+                f"animation_{_safe_filename(selected_participant)}__"
+                f"{_safe_filename(selected_trial)}.html"
+            )
         html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
         st.download_button(
             "Export animation (HTML)",
             data=html_bytes,
-            file_name=f"animation_{_safe_filename(selected_participant)}__{_safe_filename(selected_trial)}.html",
+            file_name=file_name,
             mime="text/html",
             key="anim_export_html",
             help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
