@@ -789,7 +789,11 @@ def _add_density_heatmap(
 # Scanpath animation — one or two scanpaths on a shared real reading-time clock
 # =============================================================================
 
-_ANIM_MIN_FRAME_MS = 50  # floor so the briefest gaps stay perceptible
+# Floor on per-frame duration: ~one 60 fps display frame. Browsers can't redraw
+# faster than this, so it's the lowest value at which the quoted playback time
+# (n_frames * avg) still matches the observed runtime — going lower would just
+# make the quote understate reality. Also keeps the briefest gaps perceptible.
+_ANIM_MIN_FRAME_MS = 16
 
 
 def _scanpath_anim_specs(entries, marker_size_range):
@@ -814,7 +818,7 @@ def _scanpath_anim_specs(entries, marker_size_range):
         # Trust recorded timestamps only if they look like real times: fixations
         # don't overlap, so a real sequence spans at least its total dwell. A
         # synthesised 0,1,2,… index collapses to a few ms and must NOT be read as
-        # milliseconds (it would crush the whole replay onto the 50 ms floor).
+        # milliseconds (it would crush the whole replay onto the frame floor).
         real_ts = bool(ts.notna().all()) and float(ts.iloc[-1] - ts.iloc[0]) >= (
             0.5 * float(contiguous[-1])
         )

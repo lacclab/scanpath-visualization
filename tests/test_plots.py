@@ -389,6 +389,34 @@ class TestAnimationPlaybackTiming:
     def test_playback_ms_empty(self):
         assert animation_playback_ms([], 1.0) == (0.0, 0.0)
 
+    def test_frame_floor_clamps_tiny_gaps(self, normalized_words_df):
+        # Gaps below the frame floor are clamped up so frames stay renderable
+        # (browsers cap ~60fps); the Play frame duration is the floor itself.
+        from scanpath_visualization_app.plots import _ANIM_MIN_FRAME_MS
+
+        fix = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p1"],
+                "trial_id": ["t1", "t1", "t1"],
+                "x": [100, 200, 300],
+                "y": [50, 50, 50],
+                "duration_ms": [5, 5, 5],
+                "timestamp_ms": [0, 10, 20],  # 10 ms gaps, below the floor
+                "order_in_trial": [1, 2, 3],
+            }
+        )
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            fix,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            playback_speed=1.0,
+        )
+        play_ms = fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"]
+        assert play_ms == _ANIM_MIN_FRAME_MS
+
     def test_fake_index_timestamps_fall_back_to_durations(self, normalized_words_df):
         # data.normalize_fixations synthesizes timestamp_ms = 0,1,2,... when the
         # source has no timestamp column. Those row indices must NOT be read as

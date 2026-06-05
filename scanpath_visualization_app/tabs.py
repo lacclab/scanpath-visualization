@@ -1210,7 +1210,7 @@ def render_animation_tab(
 
     # Playback speed — rendered on the right (next to the animation plot)
     # because that's where the eye actually goes when adjusting playback.
-    # Frame durations are floor-clamped at 50 ms (see `make_scanpath_animation`),
+    # Frame durations are floor-clamped at ~16 ms (see `make_scanpath_animation`),
     # so higher speeds aren't more expensive to render than lower ones; they
     # just cap there for the shortest fixations.
     speed_options = [0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 8.0]
