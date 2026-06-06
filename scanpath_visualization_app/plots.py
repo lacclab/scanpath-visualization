@@ -275,6 +275,11 @@ def _saccade_segments(
     return xs, ys
 
 
+# Saccades shorter than this fraction of the fixation-extent diagonal get no
+# direction arrow — their heading is sub-pixel noise (refixations on one word).
+_ARROW_MIN_LEN_FRAC = 0.005
+
+
 def _saccade_arrow_markers(
     fix_df: pd.DataFrame, x_col: str, y_col: str
 ) -> Tuple[list, list, list]:
@@ -291,6 +296,17 @@ def _saccade_arrow_markers(
     ordered = fix_df.sort_values("timestamp_ms")
     xv = pd.to_numeric(ordered[x_col], errors="coerce").to_numpy()
     yv = pd.to_numeric(ordered[y_col], errors="coerce").to_numpy()
+    # Suppress arrowheads on micro-saccades: a sub-pixel refixation has a
+    # well-defined midpoint but its direction is just noise, so a full-size
+    # arrow would point a random way. Threshold scales with the data extent so
+    # it's dataset-agnostic.
+    finite = np.isfinite(xv) & np.isfinite(yv)
+    if finite.any():
+        x_ext = float(np.nanmax(xv[finite]) - np.nanmin(xv[finite]))
+        y_ext = float(np.nanmax(yv[finite]) - np.nanmin(yv[finite]))
+        min_len = np.hypot(x_ext, y_ext) * _ARROW_MIN_LEN_FRAC
+    else:
+        min_len = 0.0
     mid_x: list = []
     mid_y: list = []
     angles: list = []
@@ -299,7 +315,8 @@ def _saccade_arrow_markers(
         if not np.isfinite((x0, y0, x1, y1)).all():
             continue
         dx, dy = x1 - x0, y1 - y0
-        if dx == 0 and dy == 0:
+        seg_len = float(np.hypot(dx, dy))
+        if seg_len == 0.0 or seg_len < min_len:
             continue
         mid_x.append((x0 + x1) / 2.0)
         mid_y.append((y0 + y1) / 2.0)
@@ -585,7 +602,6 @@ def make_scanpath_figure(
                 y_max=y_max,
                 weights=weights,
                 heatmap_colorscale=heatmap_colorscale,
-                heatmap_range=heatmap_range,
                 show_colorbars=show_colorbars,
             )
         elif not words.empty:
@@ -1009,7 +1025,6 @@ def _add_interpolated_heatmap(
     y_max: float,
     weights: Optional[pd.Series],
     heatmap_colorscale: str,
-    heatmap_range: Optional[Tuple[float, float]],
     show_colorbars: bool,
 ) -> None:
     """Smooth, word-box-independent fixation heatmap (Gaussian-interpolated).
@@ -1066,10 +1081,14 @@ def _add_interpolated_heatmap(
             colorscale=heatmap_colorscale,
             opacity=_INTERP_OPACITY,
             showscale=show_colorbars,
-            zmin=heatmap_range[0] if heatmap_range else None,
-            zmax=heatmap_range[1] if heatmap_range else None,
+            # z is a Gaussian-smoothed density in arbitrary (weighted) units, not
+            # the per-word counts/ms the `heatmap_range` slider is calibrated for,
+            # so it autoscales from 0 rather than borrowing that range.
+            zmin=0.0,
             colorbar=dict(
-                title="Fixation density" if weights is None else "Duration (ms)",
+                title="Dwell-time density"
+                if weights is not None
+                else "Fixation density",
                 x=1.02,
                 lenmode="fraction",
                 len=COLORBAR_LEN_FRACTION,

@@ -40,6 +40,15 @@ class TestSaccadeArrowMarkers:
         df = pd.DataFrame({"x": [5, 5], "y": [5, 5], "timestamp_ms": [0, 1]})
         assert _saccade_arrow_markers(df, "x", "y") == ([], [], [])
 
+    def test_micro_saccade_below_threshold_skipped(self):
+        # A large saccade then a sub-pixel refixation: only the large one gets an
+        # arrow (the tiny one's heading would be noise).
+        df = pd.DataFrame(
+            {"x": [0, 100, 100.2], "y": [0, 0, 0], "timestamp_ms": [0, 1, 2]}
+        )
+        _mid_x, _mid_y, angles = _saccade_arrow_markers(df, "x", "y")
+        assert angles == pytest.approx([90.0])
+
 
 class TestBuildWordBoxes:
     """Tests for build_word_boxes function."""
