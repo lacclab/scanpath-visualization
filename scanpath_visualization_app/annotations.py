@@ -229,14 +229,14 @@ def render_trial_annotations(participant_id: str, trial_id: str) -> None:
 
 def render_annotations_sidebar() -> None:
     """Render the sidebar Annotations panel: count + JSON download/restore."""
-    st.sidebar.header("Annotations")
+    panel = st.sidebar.expander("Save & restore (JSON)", expanded=False)
     count = annotated_count()
-    st.sidebar.caption(
+    panel.caption(
         f"{count} trial(s) annotated this session."
         if count
         else "No annotations yet — star, tag, or note trials in the Interactive Plot tab."
     )
-    st.sidebar.download_button(
+    panel.download_button(
         "⬇ Download annotations (JSON)",
         data=serialize(_store()),
         file_name="scanpath_annotations.json",
@@ -245,7 +245,7 @@ def render_annotations_sidebar() -> None:
         key="anno_download",
         help="A portable sidecar of all stars / tags / notes from this session.",
     )
-    uploaded = st.sidebar.file_uploader(
+    uploaded = panel.file_uploader(
         "Restore annotations (JSON)",
         type=["json"],
         key="anno_upload",
@@ -257,7 +257,7 @@ def render_annotations_sidebar() -> None:
             try:
                 store = deserialize(uploaded.getvalue().decode("utf-8"))
             except Exception as exc:  # malformed file
-                st.sidebar.error(f"Could not load annotations: {exc}")
+                panel.error(f"Could not load annotations: {exc}")
             else:
                 st.session_state[ANNOTATIONS_STATE_KEY] = store
                 st.session_state[_LAST_IMPORT_KEY] = signature
@@ -268,7 +268,7 @@ def render_annotations_sidebar() -> None:
                     if k.startswith(_WIDGET_PREFIX)
                 ]:
                     del st.session_state[key]
-                st.sidebar.success(f"Loaded {len(store)} annotation(s).")
+                panel.success(f"Loaded {len(store)} annotation(s).")
                 st.rerun()
 
 

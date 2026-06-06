@@ -47,7 +47,7 @@ from scanpath_visualization_app.annotations import (
     filter_keys,
     render_annotations_sidebar,
 )
-from scanpath_visualization_app.constants import FONT_FAMILY
+from scanpath_visualization_app.constants import DEFAULT_LINE_SPACING, FONT_FAMILY
 from scanpath_visualization_app.controls import (
     FIX_FIELD_SPECS,
     RAW_GAZE_FIELD_SPECS,
@@ -163,7 +163,7 @@ def _apply_url_preset() -> Optional[str]:
     # Seed selection state for every tab that exposes a `select_trial` widget.
     # `?participant=` + `?trial=` map onto Participant mode with the matching
     # participant / slider value. Without this loop the Animated Scanpath tab
-    # (key_prefix="anim") would default to "None" mode and land on the
+    # (key_prefix="anim") would default to "Trial" mode and land on the
     # alphabetically-first trial instead of the deep-linked one.
     if "participant" in qp or "trial" in qp:
         for prefix in _SELECTION_PREFIXES:
@@ -221,12 +221,8 @@ def _render_about_panel() -> None:
 
     title_col, links_col = st.columns([5, 2])
     with title_col:
-        st.title("Scanpath Visualization")
-        st.caption(
-            "Interactive workbench for visualizing eye-tracking-while-reading "
-            "scanpaths — word boxes, fixations, saccades, heatmaps, comparisons, "
-            "and per-word reading measures."
-        )
+        st.title("Scanpath Studio")
+        st.caption("Interactive exploration of eye movements in reading.")
     with links_col:
         st.markdown(
             f"""<div class="header-link-row">
@@ -410,6 +406,11 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 
 
+def _sidebar_group(title: str) -> None:
+    """Render a section title that groups the toggles below it in the sidebar."""
+    st.sidebar.markdown(f"### {title}")
+
+
 def render_sidebar_data_source() -> str:
     """Render the data source selection radio button in sidebar.
 
@@ -421,7 +422,6 @@ def render_sidebar_data_source() -> str:
         - Radio button with two options and help text
         - Help text explains expected CSV column formats
     """
-    st.sidebar.header("Experimental Setup")
     # Only offer the OneStop bundle when $ONESTOP_DATA_DIR is set on the
     # server. Outside that context the choice would be a dead-end, so we hide it.
     options = [DEMO_CHOICE, SYNTHETIC_CHOICE, UPLOAD_CHOICE]
@@ -432,12 +432,14 @@ def render_sidebar_data_source() -> str:
     default = st.session_state.get("data_source_choice", options[0])
     if default not in options:
         default = options[0]
-    return st.sidebar.radio(
+    source = st.sidebar.expander("Data source", expanded=True)
+    return source.radio(
         "Data source",
         options,
         index=options.index(default),
         help=data_dictionary_help_text(),
         key="data_source_choice",
+        label_visibility="collapsed",
     )
 
 
@@ -445,7 +447,7 @@ def render_sidebar_canvas_controls(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
     data_choice: Optional[str] = None,
-) -> Tuple[int, int, int, str]:
+) -> Tuple[int, int, int, str, float, bool]:
     """Render canvas dimension and font controls in sidebar.
 
     These controls allow users to match the visualization to their experimental
@@ -460,7 +462,9 @@ def render_sidebar_canvas_controls(
             §Monitor). Otherwise defaults are derived from data extents.
 
     Returns:
-        Tuple of (canvas_width, canvas_height, base_font_size, font_family)
+        Tuple of (canvas_width, canvas_height, base_font_size, font_family,
+        line_spacing, scale_text_to_boxes). The text-sizing pair keeps the reading
+        text true-to-scale: see `plots._word_label_font_px`.
     """
     # OneStop server bundle + bundled demo share the same experimental setup
     # (Dell U2715H, 2560x1440). Data-derived extents undershoot — text only
@@ -474,7 +478,8 @@ def render_sidebar_canvas_controls(
     canvas_width = min(max(default_canvas_w, 100), 10000)
     canvas_height = min(max(default_canvas_h, 100), 10000)
 
-    canvas_width = st.sidebar.number_input(
+    display = st.sidebar.expander("Display settings", expanded=False)
+    canvas_width = display.number_input(
         "Monitor width (px)",
         min_value=100,
         max_value=10000,
@@ -482,7 +487,7 @@ def render_sidebar_canvas_controls(
         step=10,
         help="Use the real monitor width in pixels to keep coordinates true to scale.",
     )
-    canvas_height = st.sidebar.number_input(
+    canvas_height = display.number_input(
         "Monitor height (px)",
         min_value=100,
         max_value=10000,
@@ -490,23 +495,51 @@ def render_sidebar_canvas_controls(
         step=10,
         help="Use the real monitor height in pixels to keep coordinates true to scale.",
     )
-    base_font_size = st.sidebar.number_input(
+    # Reading text is true-to-scale by default: it auto-sizes to the word boxes
+    # (text height = box_height / line_spacing) and scales with the figure, so it
+    # always fills the real line slot. Untick to fall back to a fixed font size.
+    scale_text_to_boxes = display.checkbox(
+        "Scale text to boxes",
+        value=True,
+        help="Size the reading text from the word boxes (height = box height ÷ "
+        "line spacing) so it stays true to the real experiment at any zoom. "
+        "Untick to use the fixed 'Figure font size' below instead.",
+    )
+    line_spacing = display.number_input(
+        "Line spacing",
+        min_value=1.0,
+        max_value=10.0,
+        value=float(DEFAULT_LINE_SPACING),
+        step=0.5,
+        disabled=not scale_text_to_boxes,
+        help="Line slots per line of text. OneStop rendered one blank line above "
+        "and one below each text line, so the box spans 3 line heights → 3.",
+    )
+    base_font_size = display.number_input(
         "Figure font size (px)",
         min_value=6,
         max_value=72,
         value=16,
         step=1,
-        help="Match the font size used in your experiment to keep bounding boxes aligned.",
+        help="Real (monitor-pixel) font size, scaled true-to-scale with the "
+        "figure. Used for the reading text when 'Scale text to boxes' is off or "
+        "the data has no word boxes, and always for axis/legend chrome.",
     )
-    font_family = st.sidebar.text_input(
+    font_family = display.text_input(
         "Text font",
         value=FONT_FAMILY,
         help="Font for the word labels. Use the exact font from your experiment "
         "(e.g. 'Courier New') or a CSS fallback stack.",
     )
-    st.sidebar.divider()
 
-    return int(canvas_width), int(canvas_height), int(base_font_size), font_family
+    return (
+        int(canvas_width),
+        int(canvas_height),
+        int(base_font_size),
+        font_family,
+        float(line_spacing),
+        bool(scale_text_to_boxes),
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -554,6 +587,7 @@ def main() -> None:
         st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
 
     # Data source selection (sidebar)
+    _sidebar_group("📂 Data")
     data_choice = render_sidebar_data_source()
 
     # Load and prepare core data (words + fixations). Pass the deep-link
@@ -634,9 +668,15 @@ def main() -> None:
     combos, _, _ = build_combo_options(fixations_filtered)
 
     # Canvas and visualization controls (sidebar)
-    canvas_width, canvas_height, base_font_size, font_family = (
-        render_sidebar_canvas_controls(words_filtered, fixations_filtered, data_choice)
-    )
+    _sidebar_group("🎨 Visualization")
+    (
+        canvas_width,
+        canvas_height,
+        base_font_size,
+        font_family,
+        line_spacing,
+        scale_text_to_boxes,
+    ) = render_sidebar_canvas_controls(words_filtered, fixations_filtered, data_choice)
 
     has_raw_gaze = not raw_gaze_filtered.empty
     viz_settings = sidebar_controls(
@@ -645,6 +685,7 @@ def main() -> None:
 
     # Sidebar Annotations panel (download/restore JSON + count). The per-trial
     # star/tags/notes editor lives in the Interactive Plot tab.
+    _sidebar_group("📝 Annotations")
     render_annotations_sidebar()
 
     # Tab pre-selection isn't supported by st.tabs (Streamlit limitation), so
@@ -674,6 +715,8 @@ def main() -> None:
             font_family=font_family,
             viz_settings=viz_settings,
             raw_gaze=raw_gaze_filtered,
+            line_spacing=line_spacing,
+            scale_text_to_boxes=scale_text_to_boxes,
         )
 
     with tab_animation:
@@ -686,6 +729,8 @@ def main() -> None:
             base_font_size=base_font_size,
             font_family=font_family,
             viz_settings=viz_settings,
+            line_spacing=line_spacing,
+            scale_text_to_boxes=scale_text_to_boxes,
         )
 
     with tab_raw:

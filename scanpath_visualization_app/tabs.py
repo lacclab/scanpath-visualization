@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from scanpath_visualization_app.annotations import render_trial_annotations
+from scanpath_visualization_app.constants import DEFAULT_LINE_SPACING
 from scanpath_visualization_app.data import compute_word_metrics
 
 from scanpath_visualization_app.plots import (
@@ -40,6 +43,58 @@ from scanpath_visualization_app.utils import (
 
 def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(text))
+
+
+def _render_true_scale_chart(fig, *, key: str) -> None:
+    """Display a spatial figure true-to-scale, fitted to the column width.
+
+    ``st.plotly_chart`` pins the chart width to the column but keeps the layout
+    height, re-laying-out the plot to an unknown scale — which breaks the
+    data→pixel sizing the word labels were computed for (text over/under fills
+    the boxes). Instead we render the figure at its exact pixel size, then scale
+    that whole block *uniformly* with a CSS transform so it fills the column
+    width. A uniform transform keeps boxes, fixations and text locked at one true
+    scale (unlike a Plotly re-layout, which leaves the font fixed), so the plot
+    stays faithful to the experiment at any column width — and never needs
+    horizontal scrolling. It is only scaled down to fit (capped at 1×), so on a
+    wide monitor it sits at true size with margin rather than being stretched.
+    """
+    width = int(fig.layout.width or 900)
+    height = int(fig.layout.height or 600)
+    plot_html = fig.to_html(
+        include_plotlyjs="cdn",
+        full_html=False,
+        config={"responsive": False, "displaylogo": False},
+        div_id=f"truescale-{key}",
+    )
+    # Wrap the fixed-size plot and scale it to the available (iframe) width.
+    # transform-origin top-left keeps it flush-left; the outer box height tracks
+    # the scaled height so there's no dead space below.
+    html = f"""
+    <div id="fit-{key}" style="width:100%;overflow:hidden;">
+      <div id="box-{key}" style="width:{width}px;height:{height}px;
+           transform-origin:top left;">{plot_html}</div>
+    </div>
+    <script>
+    (function() {{
+      var W = {width}, H = {height};
+      var outer = document.getElementById("fit-{key}");
+      var box = document.getElementById("box-{key}");
+      function fit() {{
+        var avail = outer.clientWidth || W;
+        var s = Math.min(1, avail / W);
+        box.style.transform = "scale(" + s + ")";
+        outer.style.height = Math.round(H * s) + "px";
+      }}
+      fit();
+      window.addEventListener("resize", fit);
+      setTimeout(fit, 150);
+    }})();
+    </script>
+    """
+    # Iframe height = full true height (the most it can be, at 1× on wide
+    # monitors); the script trims the visible block to the scaled height.
+    components.html(html, height=height + 12, scrolling=False)
 
 
 def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
@@ -142,19 +197,21 @@ def _render_save_plot_button(
     slug: str,
     key_prefix: str,
 ) -> None:
-    """Render a Generate-then-download flow for the currently displayed figure.
+    """Download the currently displayed figure.
 
-    Pulls width/height from the figure's own layout (so stacked / multi-panel
-    figures save at their on-screen size). Only invokes the expensive
-    `fig.to_image` call when the user clicks Generate.
+    HTML is cheap (no Kaleido/Chrome) so it downloads in a single click. PNG/SVG/
+    PDF go through Kaleido, which spins up a headless Chrome — far too slow to run
+    on every Streamlit rerun — so those keep a Render step and reveal the download
+    only once the image is ready. Width/height come from the figure's own layout
+    so stacked / multi-panel figures save at their on-screen size.
     """
     if fig is None:
         return
     file_stem = f"scanpath_{_safe_filename(slug)}"
-    cols = st.columns([1, 1, 2])
+    cols = st.columns([1, 2])
     with cols[0]:
         fmt = st.radio(
-            "Save format",
+            "Download format",
             # HTML is a browser-free fallback (no Kaleido/Chrome) — useful on
             # Streamlit Cloud where static image export needs a Chromium binary.
             options=["PNG", "SVG", "PDF", "HTML"],
@@ -164,39 +221,55 @@ def _render_save_plot_button(
             help="PNG/SVG/PDF need a Chrome/Chromium browser (Kaleido). HTML "
             "is interactive and needs no browser.",
         )
+
+    # HTML: one-click download — no expensive render to defer.
+    if fmt == "HTML":
+        with cols[1]:
+            html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode(
+                "utf-8"
+            )
+            st.download_button(
+                "⬇ Download HTML",
+                data=html_bytes,
+                file_name=f"{file_stem}.html",
+                mime=_MIME_FOR_FORMAT["HTML"],
+                key=f"{key_prefix}_save_button_html",
+            )
+        return
+
+    # PNG/SVG/PDF: render on click (Kaleido/Chrome), then reveal the download.
     with cols[1]:
         generate = st.button(
             f"Render {fmt}",
             key=f"{key_prefix}_save_generate",
-            help="Generates the file. The download button below appears once it's ready.",
+            help="Renders the image (needs Chrome/Kaleido); the download button "
+            "appears once it's ready.",
         )
-
     if not generate:
         return
 
-    if fmt == "HTML":
-        # Self-contained interactive HTML — never touches Kaleido/Chrome.
-        data = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
-    else:
-        fig_width = int(fig.layout.width or canvas_width)
-        fig_height = int(fig.layout.height or canvas_height)
-        try:
-            data = fig.to_image(
-                format=fmt.lower(),
-                width=fig_width,
-                height=fig_height,
-                scale=2 if fmt == "PNG" else 1,
-            )
-        except Exception as exc:
-            st.warning(
-                f"Could not render {fmt}: {exc}\n\n"
-                "Static image export (PNG/SVG/PDF) needs a Chrome/Chromium browser "
-                "for Kaleido. On Streamlit Cloud this is installed via `packages.txt`; "
-                "if it still fails, choose the **HTML** format above — it needs no browser."
-            )
-            return
+    fig_width = int(fig.layout.width or canvas_width)
+    fig_height = int(fig.layout.height or canvas_height)
+    try:
+        data = fig.to_image(
+            format=fmt.lower(),
+            width=fig_width,
+            height=fig_height,
+            # The on-screen figure is sized to fit the column; render raster
+            # PNG at 3x so saved figures stay paper-quality (SVG/PDF are
+            # vector and unaffected).
+            scale=3 if fmt == "PNG" else 1,
+        )
+    except Exception as exc:
+        st.warning(
+            f"Could not render {fmt}: {exc}\n\n"
+            "Static image export (PNG/SVG/PDF) needs a Chrome/Chromium browser "
+            "for Kaleido. On Streamlit Cloud this is installed via `packages.txt`; "
+            "if it still fails, choose the **HTML** format above — it needs no browser."
+        )
+        return
     st.download_button(
-        f"Save plot ({fmt})",
+        f"⬇ Download {fmt}",
         data=data,
         file_name=f"{file_stem}.{fmt.lower()}",
         mime=_MIME_FOR_FORMAT[fmt],
@@ -402,13 +475,13 @@ def _render_trial_header(
     trial_words: pd.DataFrame,
     prefix: str = "Trial:",
 ) -> None:
-    """Render the one-line participant + trial id + text id header.
+    """Render the trial id header with participant + text id stacked below it.
 
     The paragraph text / question / spans live in
     `_render_paragraph_panel` so they can sit under the figure (single tab)
     while the header stays in the side panel.
     """
-    parts = [f"**{prefix}** `{trial_id}`", f"participant `{participant}`"]
+    lines = [f"**{prefix}** `{trial_id}`", f"Participant: `{participant}`"]
     text_id = None
     for col in ("unique_paragraph_id", "paragraph_id"):
         if col in trial_words.columns and not trial_words.empty:
@@ -417,8 +490,10 @@ def _render_trial_header(
                 text_id = value
                 break
     if text_id is not None:
-        parts.append(f"Text: `{text_id}`")
-    st.markdown(" · ".join(parts))
+        lines.append(f"Text: `{text_id}`")
+    # Participant and Text sit on their own lines under the trial id (a markdown
+    # hard line break is two trailing spaces + newline).
+    st.markdown("  \n".join(lines))
 
 
 def _render_paragraph_panel(
@@ -487,38 +562,46 @@ def _render_paragraph_panel(
             )
 
 
-def _render_trial_stats(trial_words: pd.DataFrame, trial_fixations: pd.DataFrame):
-    """Render trial statistics metrics."""
-    stats = compute_trial_stats(trial_words, trial_fixations)
-    stat_cols = st.columns(3)
-    stat_cols[0].metric(
-        "Total reading time (s)", f"{stats['total_reading_time_s']:.1f}"
-    )
-    stat_cols[1].metric("Number of words", f"{stats['word_count']:,}")
-    stat_cols[2].metric("Number of fixations", f"{stats['fixation_count']:,}")
-
-
-def _render_out_of_text_caption(
+def _in_text_fixation_value(
     trial_words: pd.DataFrame, trial_fixations: pd.DataFrame
-) -> None:
-    """Caption the count of fixations that fell outside every word box."""
+) -> Optional[str]:
+    """Concise "in / total" count of fixations that landed inside a word box.
+
+    Replaces the old free-text caption ("All 154 fixations landed inside word
+    boxes.") with a compact value for the trial summary table. Returns None when
+    there's nothing to count."""
     if trial_words.empty or trial_fixations.empty:
-        return
+        return None
     from scanpath_visualization_app.measures import fixation_in_text_mask
 
     mask = fixation_in_text_mask(trial_fixations, trial_words)
     n_total = len(mask)
     if n_total == 0:
-        return
-    n_out = int((~mask).sum())
-    if n_out:
-        pct = 100.0 * n_out / n_total
-        st.caption(
-            f"⚠ {n_out} of {n_total} fixations ({pct:.0f}%) fell outside every "
-            "word box (out-of-text). Toggle **Mark out-of-text fixations** to see them."
-        )
-    else:
-        st.caption(f"All {n_total} fixations landed inside word boxes.")
+        return None
+    n_in = int(mask.sum())
+    return f"{n_in} / {n_total}"
+
+
+def _summary_rows(
+    trial_words: pd.DataFrame, trial_fixations: pd.DataFrame
+) -> list[dict]:
+    """Field/Value rows summarising a trial — totals + in-text fixation count.
+
+    Folded into the metadata table (formerly the three `st.metric` cards plus
+    the out-of-text caption), so a trial's headline numbers live in one place."""
+    stats = compute_trial_stats(trial_words, trial_fixations)
+    rows = [
+        {
+            "Field": "Total reading time (s)",
+            "Value": f"{stats['total_reading_time_s']:.1f}",
+        },
+        {"Field": "Number of words", "Value": f"{stats['word_count']:,}"},
+        {"Field": "Number of fixations", "Value": f"{stats['fixation_count']:,}"},
+    ]
+    in_text = _in_text_fixation_value(trial_words, trial_fixations)
+    if in_text is not None:
+        rows.append({"Field": "Fixations in word boxes", "Value": in_text})
+    return rows
 
 
 # Row-wise palette for the trial-metadata table. Picked light so the text
@@ -573,7 +656,11 @@ def _render_metadata_selector(
     trial_fixations: pd.DataFrame,
     compare: Optional[dict] = None,
 ):
-    """Render metadata field selector and display table.
+    """Render the trial summary + metadata table.
+
+    The table always leads with the trial's headline numbers (reading time,
+    word / fixation counts, in-text fixation count — see `_summary_rows`), then
+    lists the metadata fields chosen in the sidebar picker.
 
     When ``compare`` is given (keys: ``words``, ``fixations``,
     ``label_primary``, ``label_compare``), the table shows one value column per
@@ -595,45 +682,73 @@ def _render_metadata_selector(
         ]
         if field in metadata_candidates
     ]
-    # Field picker lives in a collapsed toggle so the chips don't crowd the
-    # side panel; the table renders below it.
-    with st.expander("Trial metadata fields", expanded=False):
+    # Field picker lives in the sidebar so the chips don't crowd the side panel;
+    # the table renders in the panel next to the plot.
+    with st.sidebar.expander("Trial metadata fields", expanded=False):
         selected_metadata = st.multiselect(
             "Fields to show",
             options=metadata_candidates,
             default=default_metadata or metadata_candidates,
             key="trial_metadata_fields",
         )
-    if not selected_metadata:
-        return
 
     if compare is None:
-        metadata_df = _prefix_is_correct(
-            gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
+        summary = pd.DataFrame(_summary_rows(trial_words, trial_fixations))
+        metadata_df = (
+            _prefix_is_correct(
+                gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
+            )
+            if selected_metadata
+            else pd.DataFrame(columns=["Field", "Value"])
         )
-        if not metadata_df.empty:
-            styled = metadata_df.style.apply(_style_metadata_row, axis=1)
+        table = pd.concat([summary, metadata_df], ignore_index=True)
+        if not table.empty:
+            styled = table.style.apply(_style_metadata_row, axis=1)
             st.dataframe(styled, hide_index=True, width="stretch")
         return
 
     # Comparison mode: one value column per trial, merged on Field.
     label_a = compare["label_primary"]
     label_b = compare["label_compare"]
-    primary = _prefix_is_correct(
-        gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
-    ).rename(columns={"Value": label_a})
-    other = _prefix_is_correct(
-        gather_trial_metadata(compare["words"], compare["fixations"], selected_metadata)
-    ).rename(columns={"Value": label_b})
-    merged = primary.merge(other, on="Field", how="outer")
-    order = {field: i for i, field in enumerate(selected_metadata)}
-    merged = (
-        merged.assign(_o=merged["Field"].map(order))
-        .sort_values("_o")
-        .drop(columns="_o")
+    # Summary rows share the same fields in the same order across both trials,
+    # so pair them up directly to keep the row order rather than outer-merging.
+    summary_b = {
+        r["Field"]: r["Value"]
+        for r in _summary_rows(compare["words"], compare["fixations"])
+    }
+    summary = pd.DataFrame(
+        [
+            {
+                "Field": r["Field"],
+                label_a: r["Value"],
+                label_b: summary_b.get(r["Field"], "—"),
+            }
+            for r in _summary_rows(trial_words, trial_fixations)
+        ]
     )
-    if not merged.empty:
-        st.dataframe(merged, hide_index=True, width="stretch")
+    if selected_metadata:
+        primary = _prefix_is_correct(
+            gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
+        ).rename(columns={"Value": label_a})
+        other = _prefix_is_correct(
+            gather_trial_metadata(
+                compare["words"], compare["fixations"], selected_metadata
+            )
+        ).rename(columns={"Value": label_b})
+        # Outer merge in case the two trials' sources expose different columns;
+        # fill any resulting gap with the same "—" placeholder the summary uses.
+        merged = primary.merge(other, on="Field", how="outer").fillna("—")
+        order = {field: i for i, field in enumerate(selected_metadata)}
+        merged = (
+            merged.assign(_o=merged["Field"].map(order))
+            .sort_values("_o")
+            .drop(columns="_o")
+        )
+    else:
+        merged = pd.DataFrame(columns=["Field", label_a, label_b])
+    table = pd.concat([summary, merged], ignore_index=True)
+    if not table.empty:
+        st.dataframe(table, hide_index=True, width="stretch")
 
 
 def _render_plot_config_expander(
@@ -648,7 +763,11 @@ def _render_plot_config_expander(
     base_font_size: int,
     trial_raw_gaze: pd.DataFrame,
 ):
-    """Render the plot configuration expander in the sidebar."""
+    """Render the plot configuration expander in the sidebar.
+
+    Offers the active plot settings as a downloadable JSON sidecar so a reviewer
+    can save/share the exact configuration that produced the current figure.
+    """
     with st.sidebar.expander("Plot configuration"):
         plot_config = {
             "selection": {
@@ -696,7 +815,20 @@ def _render_plot_config_expander(
                 "points": len(trial_raw_gaze) if not trial_raw_gaze.empty else 0,
             },
         }
-        st.json(plot_config)
+        safe_pid = str(selected_participant).replace("/", "-")
+        safe_trial = str(selected_trial).replace("/", "-")
+        st.caption(
+            "The exact settings behind the current figure — download to save or "
+            "share a reproducible configuration."
+        )
+        st.download_button(
+            "⬇ Download plot config (JSON)",
+            data=json.dumps(plot_config, indent=2),
+            file_name=f"plot_config_{safe_pid}_{safe_trial}.json",
+            mime="application/json",
+            key="plot_config_download",
+            use_container_width=True,
+        )
 
 
 def _ordered_trial_ids(combos: pd.DataFrame) -> list[str]:
@@ -707,6 +839,43 @@ def _ordered_trial_ids(combos: pd.DataFrame) -> list[str]:
     """
     trial_col = "unique_trial_id" if "unique_trial_id" in combos.columns else "trial_id"
     return sorted(combos[trial_col].dropna().astype(str).unique().tolist())
+
+
+def _build_compare_meta(
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    selected_participant: str,
+    selected_trial: str,
+    compare_participant: Optional[str],
+    compare_trial: Optional[str],
+) -> Optional[dict]:
+    """Build the second trial's words/fixations + column labels for the
+    side-by-side metadata table, or None when no comparison is active."""
+    if compare_participant is None or compare_trial is None:
+        return None
+    compare_words = words_filtered[
+        (words_filtered["participant_id"] == compare_participant)
+        & (words_filtered["trial_id"] == compare_trial)
+    ]
+    compare_fix = fixations_filtered[
+        (fixations_filtered["participant_id"] == compare_participant)
+        & (fixations_filtered["trial_id"] == compare_trial)
+    ]
+    # Short, distinct column headers: participant ids when comparing different
+    # participants (the common same-text case), else the trial ids — the long
+    # ids otherwise overflow the narrow panel.
+    if str(selected_participant) != str(compare_participant):
+        label_primary = str(selected_participant)
+        label_compare = str(compare_participant)
+    else:
+        label_primary = str(selected_trial)
+        label_compare = str(compare_trial)
+    return {
+        "words": compare_words,
+        "fixations": compare_fix,
+        "label_primary": label_primary,
+        "label_compare": label_compare,
+    }
 
 
 def render_single_trial_tab(
@@ -720,6 +889,8 @@ def render_single_trial_tab(
     font_family: str,
     viz_settings: dict,
     raw_gaze: Optional[pd.DataFrame] = None,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> None:
     """Render the single trial visualization tab.
 
@@ -732,11 +903,6 @@ def render_single_trial_tab(
     col_side, col_main = st.columns([3, 7], gap="medium")
 
     with col_side:
-        # Stats render at the very top of the side panel so reviewers see the
-        # trial's totals before scrolling into the picker / metadata. The slot
-        # is reserved here and filled later once `trial_words` / `trial_fixations`
-        # are available (they depend on the picker selection).
-        stats_slot = st.container()
         selected_participant, selected_trial, selection_mode, selected_text = (
             select_trial(combos, key_prefix="single")
         )
@@ -763,6 +929,10 @@ def render_single_trial_tab(
     effective_show_raw_gaze = bool(global_raw_toggle and trial_has_raw_gaze)
     figure_settings = _build_figure_settings(viz_settings, effective_show_raw_gaze)
     figure_settings["raw_gaze"] = trial_raw_gaze if trial_has_raw_gaze else None
+    # Carried into both the live figure and the bulk export so exported plots are
+    # sized identically to what's on screen (true-to-scale reading text).
+    figure_settings["line_spacing"] = line_spacing
+    figure_settings["scale_text_to_boxes"] = scale_text_to_boxes
     x_field = viz_settings["x_field"]
     y_field = viz_settings["y_field"]
 
@@ -778,6 +948,25 @@ def render_single_trial_tab(
                 selected_trial,
                 selected_text,
             )
+        )
+        # Trial summary + metadata table (totals, in-text fixation count, then
+        # the sidebar-selected metadata fields). Sits high in the side panel,
+        # right under the selectors, so the trial's headline numbers are visible
+        # without scrolling.
+        compare_meta = _build_compare_meta(
+            words_filtered,
+            fixations_filtered,
+            selected_participant,
+            selected_trial,
+            compare_participant,
+            compare_trial,
+        )
+        _render_metadata_selector(
+            words_filtered,
+            fixations_filtered,
+            trial_words,
+            trial_fixations,
+            compare=compare_meta,
         )
 
     with col_main:
@@ -797,6 +986,8 @@ def render_single_trial_tab(
                 base_font_size,
                 viz_settings,
                 layout=compare_layout,
+                line_spacing=line_spacing,
+                scale_text_to_boxes=scale_text_to_boxes,
             )
             save_slug = (
                 f"{selected_participant}__{selected_trial}__vs__"
@@ -814,10 +1005,7 @@ def render_single_trial_tab(
                 y_field=y_field,
                 **figure_settings,
             )
-            st.plotly_chart(
-                displayed_fig, width="stretch", config={"responsive": False}
-            )
-            _render_out_of_text_caption(trial_words, trial_fixations)
+            _render_true_scale_chart(displayed_fig, key="single")
             save_slug = f"{selected_participant}__{selected_trial}"
 
         # Save format / Render-PNG button lives directly under the plot so
@@ -843,44 +1031,8 @@ def render_single_trial_tab(
     st.session_state["shared_selected_pid"] = selected_participant
     st.session_state["shared_selected_trial_id"] = selected_trial
 
-    # Fill the reserved stats slot now that the trial data is in hand.
-    with stats_slot:
-        _render_trial_stats(trial_words, trial_fixations)
-
     with col_side:
         render_trial_annotations(selected_participant, selected_trial)
-        compare_meta = None
-        if compare_participant is not None and compare_trial is not None:
-            compare_words = words_filtered[
-                (words_filtered["participant_id"] == compare_participant)
-                & (words_filtered["trial_id"] == compare_trial)
-            ]
-            compare_fix = fixations_filtered[
-                (fixations_filtered["participant_id"] == compare_participant)
-                & (fixations_filtered["trial_id"] == compare_trial)
-            ]
-            # Short, distinct column headers: participant ids when comparing
-            # different participants (the common same-text case), else the
-            # trial ids — the long ids otherwise overflow the narrow panel.
-            if str(selected_participant) != str(compare_participant):
-                label_primary = str(selected_participant)
-                label_compare = str(compare_participant)
-            else:
-                label_primary = str(selected_trial)
-                label_compare = str(compare_trial)
-            compare_meta = {
-                "words": compare_words,
-                "fixations": compare_fix,
-                "label_primary": label_primary,
-                "label_compare": label_compare,
-            }
-        _render_metadata_selector(
-            words_filtered,
-            fixations_filtered,
-            trial_words,
-            trial_fixations,
-            compare=compare_meta,
-        )
 
     # Plot configuration renders into the sidebar (see _render_plot_config_expander).
     _render_plot_config_expander(
@@ -1007,6 +1159,8 @@ def _render_comparison_figure(
     base_font_size: int,
     viz_settings: dict,
     layout: str = "overlay",
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ):
     """Render comparison figure for two trials."""
     paragraph_field = (
@@ -1050,8 +1204,10 @@ def _render_comparison_figure(
         trial_labels=(primary_label, compare_label),
         layout=layout,
         background_color=viz_settings.get("background_color"),
+        line_spacing=line_spacing,
+        scale_text_to_boxes=scale_text_to_boxes,
     )
-    st.plotly_chart(fig_compare, width="stretch", config={"responsive": False})
+    _render_true_scale_chart(fig_compare, key="compare")
     return fig_compare
 
 
@@ -1068,7 +1224,7 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
     changes inside the anim tab are preserved across reruns until the
     single tab moves again.
 
-    Respects whichever selection mode (None/Text/Participant) the anim tab
+    Respects whichever selection mode (Trial/Text/Participant) the anim tab
     is currently in and writes to the matching state key, so the user's
     mode choice isn't reset every time the single tab advances.
     """
@@ -1091,9 +1247,9 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
         return
     row = match.iloc[0]
 
-    mode = st.session_state.get("anim_select_trial_mode", "None")
+    mode = st.session_state.get("anim_select_trial_mode", "Trial")
 
-    if mode == "None":
+    if mode == "Trial":
         trial_options = _ordered_trial_ids(combos)
         try:
             idx = trial_options.index(str(shared_trial))
@@ -1136,6 +1292,8 @@ def render_animation_tab(
     base_font_size: int,
     font_family: str,
     viz_settings: dict,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> None:
     """Render the animated scanpath tab.
 
@@ -1315,9 +1473,11 @@ def render_animation_tab(
         words_b=trial_words_b if dual else None,
         label_a=f"{selected_participant} · {selected_trial}" if dual else "Scanpath A",
         label_b=f"{sel_b_participant} · {sel_b_trial}" if dual else "Scanpath B",
+        line_spacing=line_spacing,
+        scale_text_to_boxes=scale_text_to_boxes,
     )
     with col_main:
-        st.plotly_chart(fig, width="stretch", config={"responsive": False})
+        _render_true_scale_chart(fig, key="animation")
 
     with col_side:
         if dual:

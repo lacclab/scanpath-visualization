@@ -24,7 +24,7 @@ class TestAppLaunches:
         at = _make_apptest()
         at.run(timeout=30)
         titles = [t.value for t in at.title]
-        assert any("Scanpath Visualization" in v for v in titles)
+        assert any("Scanpath Studio" in v for v in titles)
 
     def test_no_streamlit_errors(self):
         at = _make_apptest()

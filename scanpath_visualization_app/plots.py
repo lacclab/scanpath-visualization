@@ -16,6 +16,7 @@ from .constants import (
     CURRENT_FIX_OUTLINE,
     DEFAULT_FIXATION_COLORSCALE,
     DEFAULT_HEATMAP_COLORSCALE,
+    DEFAULT_LINE_SPACING,
     DEFAULT_MARKER_SIZE_RANGE,
     FIX_MARKER_OUTLINE,
     FONT_FAMILY,
@@ -78,12 +79,14 @@ def _compute_axis_ranges(
     return x_range, y_range, x_min, x_max, y_min, y_max
 
 
-# Cap the figure render size so the plot fits inside a typical reviewer
-# viewport (~1080p screen, minus header / controls). Aspect ratio is
-# preserved when shrinking — both dims scale together so words don't squish.
-# Sized to fill the 70%-wide main column in the side-by-side layout (tabs.py).
-_DISPLAY_MAX_HEIGHT = 750
-_DISPLAY_MAX_WIDTH = 2200
+# Cap the *fixed* render size so the true-to-scale plot (rendered at exactly
+# these pixels via tabs._render_true_scale_chart) fits a typical research display
+# without horizontal scrolling. Aspect ratio is preserved when shrinking — both
+# dims scale together, so boxes/text/fixations keep one true scale. A wider
+# monitor just leaves margin (the plot is "narrower than the column", never
+# stretched); a narrower window scrolls rather than distorting.
+_DISPLAY_MAX_HEIGHT = 650
+_DISPLAY_MAX_WIDTH = 900
 
 
 def _fit_display_size(
@@ -118,6 +121,89 @@ def _fit_display_size(
         w = _DISPLAY_MAX_WIDTH
         h = int(round(w / aspect))
     return max(w, 100), max(h, 100)
+
+
+# Text in Plotly is sized in screen pixels with no native "data unit" mode, so
+# to keep word labels true-to-scale we convert a real (monitor-pixel) font size
+# into the figure's screen pixels using the same scale the boxes/fixations use.
+_MIN_LABEL_PX = 1.0
+
+# Advance-width / em of a typical monospaced font (DejaVu Sans Mono ≈ 0.6).
+# Reading experiments use monospaced fonts (OneStop included), so we can cap the
+# label size by the box *width* — stopping long words from colliding when the
+# on-screen font is a touch wider than the one the experiment was rendered in.
+_MONO_ASPECT = 0.6
+_WIDTH_FIT_MARGIN = 0.92  # leave a sliver of horizontal padding inside each box
+
+
+def _width_fit_font(words: pd.DataFrame) -> Optional[float]:
+    """Largest font (data px) at which every word still fits its box width.
+
+    Word boxes are drawn around the rendered text, so ``box_width / n_chars`` is
+    the per-character advance; dividing by the monospace aspect recovers the em.
+    The tightest words bind, so we take a low quantile (robust to one odd box).
+    Returns None when there's no text/width to measure.
+    """
+    if "width" not in words.columns or "text" not in words.columns:
+        return None
+    w = pd.to_numeric(words["width"], errors="coerce")
+    n = words["text"].astype(str).str.len().clip(lower=1)
+    per_char = (w / n).replace([np.inf, -np.inf], np.nan).dropna()
+    if per_char.empty:
+        return None
+    tight = float(per_char.quantile(0.05))
+    return tight / _MONO_ASPECT * _WIDTH_FIT_MARGIN if tight > 0 else None
+
+
+def _display_scale(x_range: list, y_range: list, fitted_w: int, fitted_h: int) -> float:
+    """Screen px per data unit for a fixed-size, equal-aspect spatial plot.
+
+    With ``scaleratio=1`` the x and y mappings are identical; we take the min so
+    rounding can never make text/markers sized through this overflow the boxes.
+    Returns 1.0 for degenerate ranges.
+    """
+    x_span = x_range[1] - x_range[0]
+    y_span = y_range[0] - y_range[1]  # y_range is inverted [y_max, y_min]
+    if x_span <= 0 or y_span <= 0:
+        return 1.0
+    return min(fitted_w / x_span, fitted_h / y_span)
+
+
+def _word_label_font_px(
+    words: pd.DataFrame,
+    *,
+    scale: float,
+    line_spacing: float,
+    manual_font_px: float,
+    scale_text_to_boxes: bool,
+) -> float:
+    """Word-label font size in *screen* px so the text stays true-to-scale.
+
+    The experiment's font lives in monitor pixels. To keep the rendered glyphs
+    the same physical fraction of the (data-space) word boxes at any display
+    size, the font is expressed in data px and multiplied by ``scale`` (screen
+    px per data unit):
+
+    - ``scale_text_to_boxes`` (default): one line of text fills
+      ``1 / line_spacing`` of the line pitch, where the pitch is the median word
+      box height from the data. For OneStop the boxes tile the lines
+      (height == pitch) and ``line_spacing == 3`` (one blank line above + below),
+      so the height budget is box_height / 3. The size is *also* capped so the
+      longest words still fit their box width (see :func:`_width_fit_font`), which
+      keeps the default monospaced font from colliding; the smaller of the two
+      wins.
+    - otherwise / no usable boxes: ``manual_font_px`` is treated as the real
+      monitor font size and scaled the same way.
+    """
+    font_data_px = float(manual_font_px)
+    if scale_text_to_boxes and not words.empty and "height" in words.columns:
+        box_h = float(pd.to_numeric(words["height"], errors="coerce").median())
+        height_fit = box_h / line_spacing if (box_h > 0 and line_spacing > 0) else None
+        width_fit = _width_fit_font(words)
+        candidates = [c for c in (height_fit, width_fit) if c and c > 0]
+        if candidates:
+            font_data_px = min(candidates)
+    return max(font_data_px * scale, _MIN_LABEL_PX)
 
 
 _QUALITATIVE_PALETTE = [
@@ -340,6 +426,8 @@ def make_scanpath_figure(
     background_color: Optional[str] = None,
     color_by_line: bool = False,
     highlight_out_of_text: bool = False,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> go.Figure:
     fig = go.Figure()
     spatial_axes = x_field == "x" and y_field == "y"
@@ -361,6 +449,23 @@ def make_scanpath_figure(
         y_range = [canvas_height, 0]
         x_min_data = x_max_data = y_min_data = y_max_data = None
 
+    # Fix the display size up front so the data->screen scale is known: word
+    # labels are then sized in that scale (true-to-scale text), and the same
+    # fitted_w/fitted_h drive the final layout below.
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes
+    )
+    scale = (
+        _display_scale(x_range, y_range, fitted_w, fitted_h) if spatial_axes else 1.0
+    )
+    label_font_px = _word_label_font_px(
+        words,
+        scale=scale,
+        line_spacing=line_spacing,
+        manual_font_px=base_font_size,
+        scale_text_to_boxes=scale_text_to_boxes,
+    )
+
     # Hunting/preview trials get the critical span marked one of two ways:
     #   - "Mark text": color the critical-span words dark pink (no border).
     #   - "Mark border": draw a thin black outline around the span.
@@ -381,7 +486,7 @@ def make_scanpath_figure(
             _add_word_label_trace(
                 fig,
                 words,
-                base_font_size,
+                label_font_px,
                 font_settings["family"],
                 highlight_critical_text=highlight_critical_text,
             )
@@ -637,9 +742,7 @@ def make_scanpath_figure(
             )
         )
 
-    fitted_w, fitted_h = _fit_display_size(
-        canvas_width, canvas_height, x_range, y_range, spatial_axes
-    )
+    # fitted_w / fitted_h were computed up front (so the label scale matched).
     fig.update_layout(
         height=fitted_h,
         width=fitted_w,
@@ -950,16 +1053,32 @@ def _animation_play_buttons(frame_duration):
 
 
 def _animation_time_slider(onset_times):
-    """Slider whose steps are labelled by elapsed reading time (not fixation
-    index), so scrubbing maps to seconds into the reading. Steps jump instantly
-    (duration 0)."""
+    """Slider whose handle position maps to elapsed reading time (not fixation
+    index), so scrubbing moves through seconds into the reading. Steps jump
+    instantly (duration 0).
+
+    A long reading has hundreds of fixations. Drawing a tick + time label under
+    *every* step renders an illegible wall of overlapping numbers — but the
+    per-step ``label`` is also what the single "Elapsed" readout shows, so we
+    can't simply blank most of them (the readout would go empty between the few
+    kept labels). Instead every step keeps its real time label — so the readout
+    updates smoothly on every frame and the handle stays frame-accurate — while
+    the per-step tick ruler (``ticklen``/``minorticklen=0``) and the per-step
+    labels (transparent ``font``) are hidden. The "Elapsed: X.Xs" readout is then
+    the one, uncluttered time display.
+    """
     return [
         dict(
             active=0,
             yanchor="bottom",
             xanchor="left",
+            ticklen=0,
+            minorticklen=0,
+            # Per-step labels feed the "Elapsed" readout but must not pile up
+            # under the track, so draw them fully transparent.
+            font=dict(color="rgba(0,0,0,0)"),
             currentvalue=dict(
-                font=dict(size=14),
+                font=dict(size=14, color="#444"),
                 prefix="Elapsed: ",
                 visible=True,
                 xanchor="right",
@@ -1009,6 +1128,8 @@ def make_scanpath_animation(
     words_b: Optional[pd.DataFrame] = None,
     label_a: str = "Scanpath A",
     label_b: str = "Scanpath B",
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> go.Figure:
     """Frame-by-frame scanpath replay on a real reading-time clock.
 
@@ -1040,9 +1161,23 @@ def make_scanpath_animation(
         word_frames=word_frames,
     )
 
+    # Fix the display size first so word labels are sized in the data->screen
+    # scale (true-to-scale text); the same fitted_w/fitted_h drive the layout.
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
+    )
+    scale = _display_scale(x_range, y_range, fitted_w, fitted_h)
+    label_font_px = _word_label_font_px(
+        words,
+        scale=scale,
+        line_spacing=line_spacing,
+        manual_font_px=base_font_size,
+        scale_text_to_boxes=scale_text_to_boxes,
+    )
+
     shapes = build_word_boxes(words) if show_words and not words.empty else []
     if show_word_labels and not words.empty:
-        _add_word_label_trace(fig, words, base_font_size, font_settings["family"])
+        _add_word_label_trace(fig, words, label_font_px, font_settings["family"])
 
     marker_mode = "markers+text" if show_order else "markers"
 
@@ -1221,9 +1356,7 @@ def make_scanpath_animation(
     sliders = _animation_time_slider(onset_times) if onset_times else []
     updatemenus = _animation_play_buttons(avg_frame_duration) if onset_times else []
 
-    fitted_w, fitted_h = _fit_display_size(
-        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
-    )
+    # fitted_w / fitted_h were computed up front (so the label scale matched).
     # Sliders + play/pause buttons sit in the top margin (yanchor="bottom",
     # y=1.0) so they're visible without scrolling past the plot.
     layout = dict(
@@ -1352,6 +1485,8 @@ def _make_split_comparison_figure(
     orientation: str,
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     background_color: Optional[str] = None,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> go.Figure:
     """Two-panel comparison, either horizontal (side-by-side) or vertical (stacked)."""
     from plotly.subplots import make_subplots
@@ -1359,6 +1494,9 @@ def _make_split_comparison_figure(
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
     palette = COMPARISON_PALETTE
     is_stacked = orientation == "stacked"
+    # Per-panel pixel size (approx; subplot spacing/titles shave a little) used to
+    # size word labels true-to-scale within each panel.
+    per_panel_w = canvas_width if is_stacked else canvas_width // 2
 
     trial_specs = []
     for idx, trial in enumerate([trial_a, trial_b]):
@@ -1456,10 +1594,20 @@ def _make_split_comparison_figure(
         )
 
         if show_word_labels:
+            pf_w, pf_h = _fit_display_size(
+                per_panel_w, canvas_height, x_range, y_range, spatial_axes=True
+            )
+            panel_scale = _display_scale(x_range, y_range, pf_w, pf_h)
             _add_word_label_trace(
                 fig,
                 trial_words,
-                base_font_size,
+                _word_label_font_px(
+                    trial_words,
+                    scale=panel_scale,
+                    line_spacing=line_spacing,
+                    manual_font_px=base_font_size,
+                    scale_text_to_boxes=scale_text_to_boxes,
+                ),
                 font_settings["family"],
                 row=row,
                 col=col,
@@ -1493,9 +1641,7 @@ def _make_split_comparison_figure(
     # Fit the figure to the data aspect just like the single-trial plot.
     # `x_range` / `y_range` from the inner loop are per-trial; the two trials
     # being compared usually share the paragraph (same canvas), so re-using
-    # the last loop iteration's range is fine. Per-panel width is half the
-    # canvas for side-by-side and the full canvas for stacked.
-    per_panel_w = canvas_width if is_stacked else canvas_width // 2
+    # the last loop iteration's range is fine. `per_panel_w` was set above.
     panel_w, panel_h = _fit_display_size(
         per_panel_w, canvas_height, x_range, y_range, spatial_axes=True
     )
@@ -1537,6 +1683,8 @@ def make_comparison_figure(
     layout: str = "overlay",
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     background_color: Optional[str] = None,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
 ) -> go.Figure:
     if layout in {"side_by_side", "stacked"}:
         return _make_split_comparison_figure(
@@ -1554,6 +1702,8 @@ def make_comparison_figure(
             orientation=layout,
             marker_size_range=marker_size_range,
             background_color=background_color,
+            line_spacing=line_spacing,
+            scale_text_to_boxes=scale_text_to_boxes,
         )
 
     fig = go.Figure()
@@ -1591,6 +1741,13 @@ def make_comparison_figure(
         ],
     )
 
+    # Both trials are overlaid on one shared canvas, so one display scale sizes
+    # every word label true-to-scale (geometry is identical across the readings).
+    fitted_w, fitted_h = _fit_display_size(
+        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
+    )
+    overlay_scale = _display_scale(x_range, y_range, fitted_w, fitted_h)
+
     for spec in trial_specs:
         _add_comparison_fixation_trace(
             fig,
@@ -1608,7 +1765,16 @@ def make_comparison_figure(
             )
         if show_word_labels:
             _add_word_label_trace(
-                fig, spec["trial_words"], base_font_size, font_settings["family"]
+                fig,
+                spec["trial_words"],
+                _word_label_font_px(
+                    spec["trial_words"],
+                    scale=overlay_scale,
+                    line_spacing=line_spacing,
+                    manual_font_px=base_font_size,
+                    scale_text_to_boxes=scale_text_to_boxes,
+                ),
+                font_settings["family"],
             )
 
     shapes = list(fig.layout.shapes) if fig.layout.shapes else []
@@ -1624,9 +1790,7 @@ def make_comparison_figure(
         )
     )
 
-    fitted_w, fitted_h = _fit_display_size(
-        canvas_width, canvas_height, x_range, y_range, spatial_axes=True
-    )
+    # fitted_w / fitted_h were computed up front (so the label scale matched).
     fig.update_layout(
         height=fitted_h,
         width=fitted_w,

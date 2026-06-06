@@ -124,33 +124,23 @@ def data_dictionary_help_text() -> str:
 def sidebar_controls(
     trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False
 ) -> Dict:
-    st.sidebar.header("Visualization controls")
-    show_words = st.sidebar.checkbox(
-        "Show word boxes", value=True, key="global_show_words"
-    )
-    show_labels = st.sidebar.checkbox(
-        "Show word labels", value=True, key="global_show_labels"
-    )
-    show_fix = st.sidebar.checkbox("Show fixations", value=True, key="global_show_fix")
-    show_order = st.sidebar.checkbox(
-        "Number fixation order", value=True, key="global_show_order"
-    )
-    show_saccades = st.sidebar.checkbox(
-        "Show saccades", value=True, key="global_show_saccades"
-    )
-    show_heatmap = st.sidebar.checkbox(
-        "Add density heatmap", value=True, key="global_show_heatmap"
-    )
-    show_raw_gaze = st.sidebar.checkbox(
-        "Show raw gaze data",
+    viz = st.sidebar.expander("Visualization controls", expanded=True)
+    show_words = viz.checkbox("Bounding boxes", value=True, key="global_show_words")
+    show_labels = viz.checkbox("Text", value=True, key="global_show_labels")
+    show_fix = viz.checkbox("Fixations", value=True, key="global_show_fix")
+    show_order = viz.checkbox("Fixation index", value=True, key="global_show_order")
+    show_saccades = viz.checkbox("Saccades", value=True, key="global_show_saccades")
+    show_heatmap = viz.checkbox("Heatmap", value=True, key="global_show_heatmap")
+    show_raw_gaze = viz.checkbox(
+        "Raw gaze data",
         value=False,
         help="Display millisecond-level gaze positions as small dots. "
         + ("" if has_raw_gaze else "(No raw gaze data loaded)"),
         disabled=not has_raw_gaze,
         key="global_show_raw_gaze",
     )
-    critical_span_style = st.sidebar.radio(
-        "Critical-span mark",
+    critical_span_style = viz.radio(
+        "Text Highlighting",
         options=["Mark text", "Mark border", "None"],
         index=0,
         horizontal=True,
@@ -161,7 +151,7 @@ def sidebar_controls(
             "None: don't mark the critical span."
         ),
     )
-    color_by_line = st.sidebar.checkbox(
+    color_by_line = viz.checkbox(
         "Color fixations by line",
         value=False,
         key="global_color_by_line",
@@ -170,7 +160,7 @@ def sidebar_controls(
             "from word positions). Overrides 'Color fixations by'."
         ),
     )
-    highlight_out_of_text = st.sidebar.checkbox(
+    highlight_out_of_text = viz.checkbox(
         "Mark out-of-text fixations",
         value=False,
         key="global_highlight_out_of_text",
@@ -179,7 +169,7 @@ def sidebar_controls(
 
     # Plot background. White by default; some analyses prefer a neutral gray.
     bg_options = list(BACKGROUND_PRESETS.keys()) + ["Custom…"]
-    bg_choice = st.sidebar.selectbox(
+    bg_choice = viz.selectbox(
         "Plot background",
         options=bg_options,
         index=0,
@@ -187,7 +177,7 @@ def sidebar_controls(
         help="Background of the plotting area (and exported figures).",
     )
     if bg_choice == "Custom…":
-        background_color = st.sidebar.color_picker(
+        background_color = viz.color_picker(
             "Custom background color",
             value=DEFAULT_BACKGROUND_COLOR,
             key="global_bg_custom",
@@ -214,12 +204,12 @@ def sidebar_controls(
     color_fields = [f for f in preferred_color_fields if f in trial_fixations.columns]
     if not color_fields:
         color_fields = ["duration_ms"]
-    color_by = st.sidebar.selectbox(
+    color_by = viz.selectbox(
         "Color fixations by",
         options=color_fields,
         index=color_fields.index("duration_ms") if "duration_ms" in color_fields else 0,
     )
-    heatmap_metric = st.sidebar.selectbox(
+    heatmap_metric = viz.selectbox(
         "Heatmap metric",
         options=["duration_ms", "counts"],
         help="Heatmap can be raw counts or weighted by fixation duration.",
@@ -240,10 +230,10 @@ def sidebar_controls(
         if "y" in numeric_fields
         else numeric_fields[min(1, len(numeric_fields) - 1)]
     )
-    x_field = st.sidebar.selectbox(
+    x_field = viz.selectbox(
         "X axis field", options=numeric_fields, index=numeric_fields.index(x_default)
     )
-    y_field = st.sidebar.selectbox(
+    y_field = viz.selectbox(
         "Y axis field", options=numeric_fields, index=numeric_fields.index(y_default)
     )
 
@@ -283,7 +273,7 @@ def sidebar_controls(
             help="Color palette for the density heatmap overlay.",
             key="global_heatmap_colorscale",
         )
-        show_colorbars = st.checkbox("Show color bars", value=False)
+        show_colorbars = st.checkbox("Color bars", value=False)
         if show_colorbars and pd.api.types.is_numeric_dtype(trial_fixations[color_by]):
             cmin = float(trial_fixations[color_by].min())
             cmax = float(trial_fixations[color_by].max())

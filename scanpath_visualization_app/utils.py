@@ -142,11 +142,11 @@ def _select_trial_text_mode(
     """Handle trial selection when mode is 'Text' (select by text first)."""
     paragraph_options = sorted(combos[paragraph_field].dropna().astype(str).unique())
     if not paragraph_options:
-        st.warning("No text ids available after filtering.")
+        st.warning("No texts available after filtering.")
         st.stop()
 
     selected_paragraph = st.selectbox(
-        "Text id",
+        "Text",
         options=paragraph_options,
         key=f"{key_prefix}_text_id" if key_prefix else None,
     )
@@ -228,7 +228,7 @@ def _select_trial_participant_mode(
         slider_options = sorted(
             participant_trials[paragraph_field].dropna().astype(str).unique().tolist()
         )
-        slider_label = "Text id"
+        slider_label = "Text"
         slider_field = paragraph_field
 
     if not slider_options:
@@ -333,7 +333,7 @@ def select_trial(
 
     selection_mode = st.radio(
         label="Select trials by",
-        options=["None", "Text", "Participant"],
+        options=["Trial", "Text", "Participant"],
         horizontal=True,
         key=f"{key_prefix}_select_trial_mode" if key_prefix else None,
     )
@@ -350,7 +350,7 @@ def select_trial(
         (c for c in ["TRIAL_INDEX", "trial_index"] if c in combos.columns), None
     )
 
-    if selection_mode == "None":
+    if selection_mode == "Trial":
         participant, trial, text = _select_trial_none_mode(
             combos, trial_field, paragraph_field, key_prefix
         )

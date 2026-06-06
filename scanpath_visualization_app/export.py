@@ -31,7 +31,7 @@ from typing import List, Optional
 
 import pandas as pd
 
-from .constants import CITATION
+from .constants import CITATION, DEFAULT_LINE_SPACING
 from .data import compute_word_metrics
 from .plots import make_scanpath_figure
 
@@ -137,6 +137,12 @@ def _plot_config_dict(
         "sizing": {
             "marker_size_range": list(settings.get("marker_size_range", [])),
             "order_font_size": settings.get("order_font_size"),
+        },
+        # True-to-scale reading text: records how the word labels were sized so
+        # the figure can be reproduced exactly (see plots._word_label_font_px).
+        "text": {
+            "scale_text_to_boxes": settings.get("scale_text_to_boxes", True),
+            "line_spacing": settings.get("line_spacing", DEFAULT_LINE_SPACING),
         },
     }
 
@@ -424,10 +430,16 @@ def bulk_export(
                     background_color=settings.get("background_color"),
                     color_by_line=settings.get("color_by_line", False),
                     highlight_out_of_text=settings.get("highlight_out_of_text", False),
+                    line_spacing=settings.get("line_spacing", DEFAULT_LINE_SPACING),
+                    scale_text_to_boxes=settings.get("scale_text_to_boxes", True),
                 )
+                # Render at the figure's own fitted size (not the raw monitor
+                # canvas) so the exported reading text matches the on-screen scale.
+                out_w = int(fig.layout.width or canvas_width)
+                out_h = int(fig.layout.height or canvas_height)
                 for fmt in figure_formats:
                     scale = options.png_scale if fmt == "png" else 1
-                    data = _figure_bytes(fig, fmt, canvas_width, canvas_height, scale)
+                    data = _figure_bytes(fig, fmt, out_w, out_h, scale)
                     zf.writestr(f"{prefix}figure.{fmt}", data)
                     progress.bytes_written += len(data)
             except Exception as exc:

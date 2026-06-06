@@ -2,8 +2,11 @@
 
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
 from scanpath_visualization_app.plots import (
+    _width_fit_font,
+    _word_label_font_px,
     animation_playback_ms,
     build_word_boxes,
     make_comparison_figure,
@@ -242,6 +245,45 @@ class TestMakeScanpathAnimation:
             playback_speed=2.0,
         )
         assert isinstance(fig, go.Figure)
+
+    def test_slider_declutters_long_reading_but_keeps_elapsed(
+        self, normalized_words_df
+    ):
+        # A long reading must not draw a tick + time label per frame (illegible
+        # smear). Every step keeps its real time label (so the "Elapsed" readout
+        # updates on every frame and stays frame-accurate), while the per-step
+        # ticks and labels are hidden — the readout is the one time display.
+        n = 60
+        fixations = pd.DataFrame(
+            {
+                "participant_id": ["p1"] * n,
+                "trial_id": ["t1"] * n,
+                "x": [100 + (i % 3) * 50 for i in range(n)],
+                "y": [50] * n,
+                "duration_ms": [100] * n,
+                "timestamp_ms": list(range(0, n * 100, 100)),
+                "word_id": [1] * n,
+                "order_in_trial": list(range(1, n + 1)),
+                "pass_index": [1] * n,
+            }
+        )
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            fixations,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        slider = fig.layout.sliders[0]
+        assert len(slider.steps) == n  # every frame scrubbable
+        # Every step labelled -> the Elapsed readout shows a time at any position.
+        assert all(s.label for s in slider.steps)
+        assert slider.currentvalue.visible
+        # Tick ruler hidden, and per-step labels drawn transparent.
+        assert slider.ticklen == 0
+        assert slider.minorticklen == 0
+        assert "0)" in slider.font.color or "rgba" in str(slider.font.color)
 
 
 class TestDualScanpathAnimation:
@@ -579,3 +621,145 @@ class TestPlotEnhancements:
         )
         line_traces = [t for t in fig.data if str(t.name).startswith("line:")]
         assert len(line_traces) == 2
+
+
+class TestTrueToScaleText:
+    """Word-label text is sized true-to-scale from the box geometry.
+
+    The reading text must track the word boxes (so it always fills the real
+    line slot) instead of being a fixed screen-pixel size. See
+    `plots._word_label_font_px`.
+    """
+
+    def _label_size(self, fig):
+        """Pixel size of the word-label text trace in a scanpath figure."""
+        trace = next(t for t in fig.data if t.name == "words")
+        return float(trace.textfont.size)
+
+    def _figure(self, words, fixations, **overrides):
+        kwargs = dict(
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=16,
+            font_family="monospace",
+            x_field="x",
+            y_field="y",
+            show_words=True,
+            show_word_labels=True,
+            show_fixations=False,
+            show_order=False,
+            show_saccades=False,
+            show_heatmap=False,
+            color_by="duration_ms",
+            heatmap_metric=None,
+            marker_size_range=(8, 24),
+            order_font_size=10,
+            order_font_color="#000000",
+            show_colorbars=False,
+            fixation_color_range=None,
+            heatmap_range=None,
+        )
+        kwargs.update(overrides)
+        return make_scanpath_figure(words, fixations, **kwargs)
+
+    # -- _word_label_font_px unit behaviour -------------------------------
+
+    def test_autofit_uses_box_height_over_line_spacing(self, normalized_words_df):
+        # 50px boxes; line_spacing 3 budgets 50/3 height. width_fit (5-char
+        # words in 50px boxes) is the tighter bound here, so it wins — but the
+        # result is always <= the height budget and scales linearly with `scale`.
+        font = _word_label_font_px(
+            normalized_words_df,
+            scale=1.0,
+            line_spacing=3.0,
+            manual_font_px=99,
+            scale_text_to_boxes=True,
+        )
+        assert 0 < font <= 50 / 3 + 1e-6
+        # Linear in scale.
+        font2 = _word_label_font_px(
+            normalized_words_df,
+            scale=2.0,
+            line_spacing=3.0,
+            manual_font_px=99,
+            scale_text_to_boxes=True,
+        )
+        assert font2 == pytest.approx(2 * font)
+
+    def test_autofit_shrinks_with_larger_line_spacing(self, normalized_words_df):
+        # Past the point where the height budget is the binding constraint,
+        # a bigger line spacing yields strictly smaller text.
+        big = _word_label_font_px(
+            normalized_words_df,
+            scale=1.0,
+            line_spacing=3.0,
+            manual_font_px=0,
+            scale_text_to_boxes=True,
+        )
+        bigger = _word_label_font_px(
+            normalized_words_df,
+            scale=1.0,
+            line_spacing=10.0,
+            manual_font_px=0,
+            scale_text_to_boxes=True,
+        )
+        assert bigger < big
+        assert bigger == pytest.approx(50 / 10)  # height budget binds
+
+    def test_manual_mode_is_real_font_times_scale(self, normalized_words_df):
+        # scale_text_to_boxes off -> manual font (monitor px) * display scale,
+        # independent of line_spacing.
+        font = _word_label_font_px(
+            normalized_words_df,
+            scale=0.5,
+            line_spacing=3.0,
+            manual_font_px=20,
+            scale_text_to_boxes=False,
+        )
+        assert font == pytest.approx(10.0)
+
+    def test_falls_back_to_manual_without_boxes(self):
+        empty = pd.DataFrame()
+        font = _word_label_font_px(
+            empty,
+            scale=0.5,
+            line_spacing=3.0,
+            manual_font_px=20,
+            scale_text_to_boxes=True,
+        )
+        assert font == pytest.approx(10.0)
+
+    def test_width_fit_recovers_per_char_advance(self, normalized_words_df):
+        # 5-char words in 50px boxes -> 10px/char advance; /0.6 monospace aspect.
+        wf = _width_fit_font(normalized_words_df)
+        assert wf == pytest.approx(10 / 0.6 * 0.92, rel=1e-6)
+
+    # -- integration through the figure builder ---------------------------
+
+    def test_label_font_tracks_line_spacing(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        small_spacing = self._figure(
+            normalized_words_df, normalized_fixations_df, line_spacing=3.0
+        )
+        large_spacing = self._figure(
+            normalized_words_df, normalized_fixations_df, line_spacing=10.0
+        )
+        assert self._label_size(large_spacing) < self._label_size(small_spacing)
+
+    def test_label_font_independent_of_line_spacing_when_manual(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        a = self._figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            scale_text_to_boxes=False,
+            line_spacing=3.0,
+        )
+        b = self._figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            scale_text_to_boxes=False,
+            line_spacing=10.0,
+        )
+        assert self._label_size(a) == pytest.approx(self._label_size(b))

@@ -11,6 +11,12 @@ FONT_FAMILY = "monospace"
 
 DEFAULT_FIGURE_SIZE = (2560, 1440)
 
+# Reading text is drawn true-to-scale: one line of text fills ``1/line_spacing``
+# of the line pitch (the word-box height that the data already encodes). OneStop
+# rendered each line of text with one blank line above and one below it, so the
+# line pitch is 3x the single-line height — hence a default line spacing of 3.
+DEFAULT_LINE_SPACING = 3.0
+
 COLORSCALES = [
     "Blues",
     "Greens",
