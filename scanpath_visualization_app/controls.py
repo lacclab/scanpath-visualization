@@ -130,7 +130,26 @@ def sidebar_controls(
     show_fix = viz.checkbox("Fixations", value=True, key="global_show_fix")
     show_order = viz.checkbox("Fixation index", value=True, key="global_show_order")
     show_saccades = viz.checkbox("Saccades", value=True, key="global_show_saccades")
+    show_saccade_arrows = viz.checkbox(
+        "Saccade direction arrows",
+        value=False,
+        key="global_show_saccade_arrows",
+        help="Draw an arrowhead on each saccade pointing in the gaze direction.",
+    )
     show_heatmap = viz.checkbox("Heatmap", value=True, key="global_show_heatmap")
+    heatmap_style = viz.radio(
+        "Heatmap style",
+        options=["Word boxes", "Interpolated"],
+        index=0,
+        horizontal=True,
+        key="global_heatmap_style",
+        help=(
+            "Word boxes: tint each word box by fixation count / duration. "
+            "Interpolated: a smooth Gaussian density over the fixations "
+            "themselves, independent of the word boxes (classic eye-movement "
+            "heatmap)."
+        ),
+    )
     show_raw_gaze = viz.checkbox(
         "Raw gaze data",
         value=False,
@@ -307,7 +326,9 @@ def sidebar_controls(
         show_fix=show_fix,
         show_order=show_order,
         show_saccades=show_saccades,
+        show_saccade_arrows=show_saccade_arrows,
         show_heatmap=show_heatmap,
+        heatmap_style=heatmap_style,
         show_raw_gaze=show_raw_gaze,
         color_by=color_by,
         heatmap_metric=heatmap_metric,

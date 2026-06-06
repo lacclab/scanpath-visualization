@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import pytest
 
 from scanpath_visualization_app.plots import (
+    _saccade_arrow_markers,
     _width_fit_font,
     _word_label_font_px,
     animation_playback_ms,
@@ -13,6 +14,40 @@ from scanpath_visualization_app.plots import (
     make_scanpath_animation,
     make_scanpath_figure,
 )
+
+
+class TestSaccadeArrowMarkers:
+    """Tests for _saccade_arrow_markers (direction-arrow geometry)."""
+
+    def test_direction_angles_account_for_reversed_y(self):
+        # (0,0)->(10,0) is rightward; (10,0)->(10,10) goes to larger data y,
+        # which is DOWN on the reversed y-axis. marker.angle is clockwise from
+        # up, so rightward=90 and screen-down=180.
+        df = pd.DataFrame(
+            {"x": [0, 10, 10], "y": [0, 0, 10], "timestamp_ms": [0, 1, 2]}
+        )
+        mid_x, mid_y, angles = _saccade_arrow_markers(df, "x", "y")
+        assert mid_x == [5.0, 10.0]
+        assert mid_y == [0.0, 5.0]
+        assert angles == pytest.approx([90.0, 180.0])
+
+    def test_single_fixation_yields_no_arrows(self):
+        df = pd.DataFrame({"x": [1], "y": [2], "timestamp_ms": [0]})
+        assert _saccade_arrow_markers(df, "x", "y") == ([], [], [])
+
+    def test_zero_length_saccade_skipped(self):
+        # Identical consecutive points produce no arrow (no direction).
+        df = pd.DataFrame({"x": [5, 5], "y": [5, 5], "timestamp_ms": [0, 1]})
+        assert _saccade_arrow_markers(df, "x", "y") == ([], [], [])
+
+    def test_micro_saccade_below_threshold_skipped(self):
+        # A large saccade then a sub-pixel refixation: only the large one gets an
+        # arrow (the tiny one's heading would be noise).
+        df = pd.DataFrame(
+            {"x": [0, 100, 100.2], "y": [0, 0, 0], "timestamp_ms": [0, 1, 2]}
+        )
+        _mid_x, _mid_y, angles = _saccade_arrow_markers(df, "x", "y")
+        assert angles == pytest.approx([90.0])
 
 
 class TestBuildWordBoxes:
@@ -95,6 +130,76 @@ class TestMakeScanpathFigure:
             heatmap_range=None,
         )
         assert isinstance(fig, go.Figure)
+
+    def test_make_scanpath_figure_interpolated_heatmap(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        """heatmap_style='Interpolated' adds a smooth go.Heatmap density trace."""
+        fig = make_scanpath_figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            x_field="x",
+            y_field="y",
+            show_words=True,
+            show_word_labels=False,
+            show_fixations=True,
+            show_order=False,
+            show_saccades=False,
+            show_heatmap=True,
+            heatmap_style="Interpolated",
+            color_by="duration_ms",
+            heatmap_metric="duration_ms",
+            marker_size_range=(8, 24),
+            order_font_size=10,
+            order_font_color="#000000",
+            show_colorbars=False,
+            fixation_color_range=None,
+            heatmap_range=None,
+        )
+        assert any(isinstance(t, go.Heatmap) for t in fig.data)
+
+    def test_make_scanpath_figure_saccade_arrows(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        """show_saccade_arrows adds an arrow-marker trace with one angle/saccade."""
+        fig = make_scanpath_figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            x_field="x",
+            y_field="y",
+            show_words=True,
+            show_word_labels=False,
+            show_fixations=True,
+            show_order=False,
+            show_saccades=True,
+            show_saccade_arrows=True,
+            show_heatmap=False,
+            color_by="duration_ms",
+            heatmap_metric=None,
+            marker_size_range=(8, 24),
+            order_font_size=10,
+            order_font_color="#000000",
+            show_colorbars=False,
+            fixation_color_range=None,
+            heatmap_range=None,
+        )
+        arrow_traces = [
+            t
+            for t in fig.data
+            if isinstance(t, go.Scatter)
+            and getattr(t.marker, "symbol", None) == "arrow"
+        ]
+        assert len(arrow_traces) == 1
+        # Three fixations -> two saccade segments -> two arrowheads.
+        assert len(arrow_traces[0].x) == 2
 
     def test_make_scanpath_figure_empty_fixations(self, normalized_words_df):
         empty_fixations = pd.DataFrame()

@@ -275,6 +275,57 @@ def _saccade_segments(
     return xs, ys
 
 
+# Saccades shorter than this fraction of the fixation-extent diagonal get no
+# direction arrow — their heading is sub-pixel noise (refixations on one word).
+_ARROW_MIN_LEN_FRAC = 0.005
+
+
+def _saccade_arrow_markers(
+    fix_df: pd.DataFrame, x_col: str, y_col: str
+) -> Tuple[list, list, list]:
+    """Arrowhead position + rotation for each saccade, for a marker trace.
+
+    Returns (mid_x, mid_y, angle_deg) with one entry per consecutive-fixation
+    segment: a marker at the segment midpoint, rotated to point along the gaze
+    direction. Angles follow Plotly's ``marker.angle`` convention (degrees
+    clockwise from "up") and account for the reversed y-axis — data y grows
+    downward on screen — so they read correctly on the plot.
+    """
+    if len(fix_df) < 2:
+        return [], [], []
+    ordered = fix_df.sort_values("timestamp_ms")
+    xv = pd.to_numeric(ordered[x_col], errors="coerce").to_numpy()
+    yv = pd.to_numeric(ordered[y_col], errors="coerce").to_numpy()
+    # Suppress arrowheads on micro-saccades: a sub-pixel refixation has a
+    # well-defined midpoint but its direction is just noise, so a full-size
+    # arrow would point a random way. Threshold scales with the data extent so
+    # it's dataset-agnostic.
+    finite = np.isfinite(xv) & np.isfinite(yv)
+    if finite.any():
+        x_ext = float(np.nanmax(xv[finite]) - np.nanmin(xv[finite]))
+        y_ext = float(np.nanmax(yv[finite]) - np.nanmin(yv[finite]))
+        min_len = np.hypot(x_ext, y_ext) * _ARROW_MIN_LEN_FRAC
+    else:
+        min_len = 0.0
+    mid_x: list = []
+    mid_y: list = []
+    angles: list = []
+    for i in range(len(ordered) - 1):
+        x0, y0, x1, y1 = xv[i], yv[i], xv[i + 1], yv[i + 1]
+        if not np.isfinite((x0, y0, x1, y1)).all():
+            continue
+        dx, dy = x1 - x0, y1 - y0
+        seg_len = float(np.hypot(dx, dy))
+        if seg_len == 0.0 or seg_len < min_len:
+            continue
+        mid_x.append((x0 + x1) / 2.0)
+        mid_y.append((y0 + y1) / 2.0)
+        # marker.angle is clockwise from up; screen-up is decreasing data y
+        # (the y-axis is drawn reversed), so negate dy.
+        angles.append(float(np.degrees(np.arctan2(dx, -dy))))
+    return mid_x, mid_y, angles
+
+
 def build_word_boxes(words: pd.DataFrame, color: str = WORD_BOX_COLOR) -> list:
     shapes = []
     for row in words.itertuples():
@@ -412,6 +463,8 @@ def make_scanpath_figure(
     show_heatmap: bool,
     color_by: str,
     heatmap_metric: Optional[str],
+    show_saccade_arrows: bool = False,
+    heatmap_style: str = "Word boxes",
     marker_size_range: Tuple[int, int],
     order_font_size: int,
     order_font_color: str,
@@ -536,7 +589,22 @@ def make_scanpath_figure(
         y_max = (
             y_max_data if y_max_data is not None else float(fixations[y_field].max())
         )
-        if not words.empty:
+        if heatmap_style == "Interpolated":
+            # Smooth, word-box-independent density over the fixations themselves.
+            _add_interpolated_heatmap(
+                fig,
+                fixations,
+                x_field=x_field,
+                y_field=y_field,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+                weights=weights,
+                heatmap_colorscale=heatmap_colorscale,
+                show_colorbars=show_colorbars,
+            )
+        elif not words.empty:
             _add_word_level_heatmap(
                 fig,
                 words,
@@ -576,6 +644,31 @@ def make_scanpath_figure(
                     hoverinfo="skip",
                     showlegend=False,
                     name="saccades",
+                )
+            )
+
+    # Directional arrowheads on each saccade (opt-in). Independent of the line
+    # above so it can be toggled separately; rendered before the fixation
+    # markers so the dots sit on top.
+    if spatial_axes and show_saccade_arrows and len(fixations) > 1:
+        amx, amy, aang = _saccade_arrow_markers(fixations, x_field, y_field)
+        if amx:
+            fig.add_trace(
+                go.Scatter(
+                    x=amx,
+                    y=amy,
+                    mode="markers",
+                    marker=dict(
+                        symbol="arrow",
+                        size=12,
+                        angle=aang,
+                        angleref="up",
+                        color=SACCADE_COLOR,
+                        line=dict(width=0),
+                    ),
+                    hoverinfo="skip",
+                    showlegend=False,
+                    name="saccade direction",
                 )
             )
 
@@ -884,6 +977,126 @@ def _add_density_heatmap(
             z=weights,
             zmin=heatmap_range[0] if heatmap_range else None,
             zmax=heatmap_range[1] if heatmap_range else None,
+        )
+    )
+
+
+def _gaussian_kernel_1d(sigma: float) -> np.ndarray:
+    """Normalized 1-D Gaussian kernel, truncated at 3 sigma."""
+    radius = max(1, int(round(sigma * 3)))
+    offsets = np.arange(-radius, radius + 1)
+    kernel = np.exp(-(offsets**2) / (2.0 * sigma * sigma))
+    return kernel / kernel.sum()
+
+
+def _gaussian_blur_2d(
+    grid: np.ndarray, sigma_rows: float, sigma_cols: float
+) -> np.ndarray:
+    """Separable Gaussian blur (a numpy-only stand-in for scipy.ndimage)."""
+    out = grid.astype(float)
+    if sigma_rows and sigma_rows > 0:
+        k = _gaussian_kernel_1d(sigma_rows)
+        out = np.apply_along_axis(lambda v: np.convolve(v, k, mode="same"), 0, out)
+    if sigma_cols and sigma_cols > 0:
+        k = _gaussian_kernel_1d(sigma_cols)
+        out = np.apply_along_axis(lambda v: np.convolve(v, k, mode="same"), 1, out)
+    return out
+
+
+# Interpolated-heatmap tuning. The Gaussian sigma defaults to a fraction of the
+# larger data span — enough to merge a fixation cluster into one smooth blob
+# without bleeding across neighbouring text lines.
+_INTERP_GRID = 240  # cells along the wider axis
+_INTERP_SIGMA_FRAC = 0.02  # sigma as a fraction of the larger data span
+_INTERP_MIN_SIGMA_PX = 8.0
+_INTERP_OPACITY = 0.45
+_INTERP_FLOOR_FRAC = 0.02  # cells below this fraction of the peak render transparent
+
+
+def _add_interpolated_heatmap(
+    fig: go.Figure,
+    fixations: pd.DataFrame,
+    *,
+    x_field: str,
+    y_field: str,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    weights: Optional[pd.Series],
+    heatmap_colorscale: str,
+    show_colorbars: bool,
+) -> None:
+    """Smooth, word-box-independent fixation heatmap (Gaussian-interpolated).
+
+    Bins the fixations onto a fine grid (weighted by duration when ``weights``
+    is given), then blurs with a Gaussian — the classic eye-movement heatmap
+    (cf. PyGaze's gaze plotter). Empty cells render transparent so the reading
+    text stays legible underneath.
+    """
+    xs = pd.to_numeric(fixations[x_field], errors="coerce")
+    ys = pd.to_numeric(fixations[y_field], errors="coerce")
+    valid = xs.notna() & ys.notna()
+    if not valid.any():
+        return
+    if weights is not None:
+        w = (
+            pd.to_numeric(weights, errors="coerce")
+            .reindex(fixations.index)
+            .fillna(0.0)[valid]
+            .to_numpy()
+        )
+    else:
+        w = np.ones(int(valid.sum()))
+    xs = xs[valid].to_numpy()
+    ys = ys[valid].to_numpy()
+
+    x_span = max(x_max - x_min, 1.0)
+    y_span = max(y_max - y_min, 1.0)
+    nx = _INTERP_GRID
+    ny = max(10, int(round(_INTERP_GRID * y_span / x_span)))
+    x_edges = np.linspace(x_min, x_max, nx + 1)
+    y_edges = np.linspace(y_min, y_max, ny + 1)
+    # histogram2d returns shape (nx, ny); transpose so rows index y, cols index x
+    # (the orientation go.Heatmap's z expects).
+    hist, _, _ = np.histogram2d(xs, ys, bins=[x_edges, y_edges], weights=w)
+    grid = hist.T
+
+    sigma_px = max(_INTERP_MIN_SIGMA_PX, _INTERP_SIGMA_FRAC * max(x_span, y_span))
+    blurred = _gaussian_blur_2d(
+        grid, sigma_rows=sigma_px / (y_span / ny), sigma_cols=sigma_px / (x_span / nx)
+    )
+    peak = float(blurred.max())
+    if peak <= 0:
+        return
+    # Near-zero cells -> NaN so Plotly renders them transparent (only populated
+    # regions get tinted, keeping the text readable).
+    z = np.where(blurred < peak * _INTERP_FLOOR_FRAC, np.nan, blurred)
+
+    fig.add_trace(
+        go.Heatmap(
+            x=(x_edges[:-1] + x_edges[1:]) / 2.0,
+            y=(y_edges[:-1] + y_edges[1:]) / 2.0,
+            z=z,
+            colorscale=heatmap_colorscale,
+            opacity=_INTERP_OPACITY,
+            showscale=show_colorbars,
+            # z is a Gaussian-smoothed density in arbitrary (weighted) units, not
+            # the per-word counts/ms the `heatmap_range` slider is calibrated for,
+            # so it autoscales from 0 rather than borrowing that range.
+            zmin=0.0,
+            colorbar=dict(
+                title="Dwell-time density"
+                if weights is not None
+                else "Fixation density",
+                x=1.02,
+                lenmode="fraction",
+                len=COLORBAR_LEN_FRACTION,
+                y=0.5,
+                yanchor="middle",
+            ),
+            hoverinfo="skip",
+            name="Fixation heatmap",
         )
     )
 

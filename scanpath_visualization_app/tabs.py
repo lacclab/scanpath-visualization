@@ -285,7 +285,9 @@ def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) ->
         show_fixations=viz_settings["show_fix"],
         show_order=viz_settings["show_order"],
         show_saccades=viz_settings["show_saccades"],
+        show_saccade_arrows=viz_settings.get("show_saccade_arrows", False),
         show_heatmap=viz_settings["show_heatmap"],
+        heatmap_style=viz_settings.get("heatmap_style", "Word boxes"),
         show_raw_gaze=effective_show_raw_gaze,
         color_by=viz_settings["color_by"],
         heatmap_metric=(
@@ -782,12 +784,14 @@ def _render_plot_config_expander(
                 "fixations": figure_settings["show_fixations"],
                 "order_labels": figure_settings["show_order"],
                 "saccades": figure_settings["show_saccades"],
+                "saccade_arrows": figure_settings.get("show_saccade_arrows", False),
                 "heatmap": figure_settings["show_heatmap"],
                 "raw_gaze": figure_settings["show_raw_gaze"],
             },
             "coloring": {
                 "color_by": figure_settings["color_by"],
                 "heatmap_metric": viz_settings["heatmap_metric"],
+                "heatmap_style": figure_settings.get("heatmap_style", "Word boxes"),
                 "show_colorbars": figure_settings["show_colorbars"],
                 "fixation_range": (
                     list(figure_settings["fixation_color_range"])
