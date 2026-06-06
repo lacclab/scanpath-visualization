@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from scanpath_visualization_app.data import (
+from scanpath_studio.data import (
     compute_canvas_size,
     compute_word_metrics,
     default_filters,
@@ -40,7 +40,7 @@ class TestPickColumn:
 class TestInferWordSchema:
     """Tests for infer_word_schema function."""
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_word_schema_success(self, mock_st):
         df = pd.DataFrame(
             {
@@ -61,13 +61,13 @@ class TestInferWordSchema:
         assert schema["word_id"] == "IA_ID"
         assert schema["left"] == "IA_LEFT"
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_word_schema_missing_required(self, mock_st):
         df = pd.DataFrame({"col1": [1]})
         schema = infer_word_schema(df)
         assert schema is None
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_word_schema_missing_coordinates(self, mock_st):
         df = pd.DataFrame(
             {
@@ -83,7 +83,7 @@ class TestInferWordSchema:
 class TestInferFixSchema:
     """Tests for infer_fix_schema function."""
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_fix_schema_success(self, mock_st):
         df = pd.DataFrame(
             {
@@ -101,7 +101,7 @@ class TestInferFixSchema:
         assert schema["y"] == "CURRENT_FIX_Y"
         assert schema["duration"] == "CURRENT_FIX_DURATION"
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_fix_schema_missing_required(self, mock_st):
         df = pd.DataFrame({"col1": [1]})
         schema = infer_fix_schema(df)
@@ -111,7 +111,7 @@ class TestInferFixSchema:
 class TestInferRawGazeSchema:
     """Tests for infer_raw_gaze_schema function."""
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_raw_gaze_schema_success(self, mock_st):
         df = pd.DataFrame(
             {
@@ -129,7 +129,7 @@ class TestInferRawGazeSchema:
         assert schema["x"] == "x"
         assert schema["y"] == "y"
 
-    @patch("scanpath_visualization_app.data.st")
+    @patch("scanpath_studio.data.st")
     def test_infer_raw_gaze_schema_missing_required(self, mock_st):
         df = pd.DataFrame({"col1": [1]})
         schema = infer_raw_gaze_schema(df)

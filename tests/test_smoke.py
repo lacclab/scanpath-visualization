@@ -5,7 +5,7 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import pytest
 
-from scanpath_visualization_app.data import (
+from scanpath_studio.data import (
     compute_word_metrics,
     infer_fix_schema,
     infer_word_schema,
@@ -13,7 +13,7 @@ from scanpath_visualization_app.data import (
     normalize_fixations,
     normalize_words,
 )
-from scanpath_visualization_app.plots import (
+from scanpath_studio.plots import (
     make_comparison_figure,
     make_fixation_duration_histogram,
     make_scanpath_animation,
@@ -247,7 +247,7 @@ class TestPipelineFigures:
     def test_marker_sizes_consistent_across_figure_types(self, normalized_demo):
         """The same fixation should render at the same size in single-trial
         and comparison figures."""
-        from scanpath_visualization_app.plots import _compute_marker_sizes
+        from scanpath_studio.plots import _compute_marker_sizes
 
         words, fixations = normalized_demo
         pid = words["participant_id"].iloc[0]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scanpath_visualization_app.data import filter_to_keys, filter_trials
+from scanpath_studio.data import filter_to_keys, filter_trials
 
 
 def _words():

@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scanpath_visualization_app.measures import (
+from scanpath_studio.measures import (
     assign_fixation_lines,
     assign_fixations_to_words,
     cluster_word_lines,
@@ -83,14 +83,14 @@ def test_per_word_measures_exact():
 def test_synthetic_source_through_app_pipeline():
     """The 'Synthetic test trial' data source must survive infer + normalize
     (the app's load path) and still yield the ground-truth measures."""
-    from scanpath_visualization_app.data import (
+    from scanpath_studio.data import (
         compute_word_metrics,
         infer_fix_schema,
         infer_word_schema,
         normalize_fixations,
         normalize_words,
     )
-    from scanpath_visualization_app.synthetic import load_synthetic_data
+    from scanpath_studio.synthetic import load_synthetic_data
 
     words, fixations = load_synthetic_data()
     words_n = normalize_words(words, infer_word_schema(words))

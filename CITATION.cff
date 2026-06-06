@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Scanpath Studio"
+abstract: >-
+  An interactive Streamlit workbench for visualizing eye-tracking-while-reading
+  scanpaths: words at their true on-screen positions, fixations and saccades,
+  density heatmaps, per-word reading measures, side-by-side trial comparison,
+  and animated replay, all exportable as publication-ready figures.
+type: software
+authors:
+  - given-names: Omer
+    family-names: Shubi
+    affiliation: "LACC Lab, Technion – Israel Institute of Technology"
+  - given-names: Keren
+    family-names: "Gruteke Klein"
+    affiliation: "LACC Lab, Technion – Israel Institute of Technology"
+# NOTE: author list is provisional (a system-demo paper is in preparation).
+repository-code: "https://github.com/lacclab/scanpath-studio"
+url: "https://scanpath-studio.streamlit.app"
+license: MIT
+version: 0.14.0
+date-released: "2026-06-06"
+keywords:
+  - eye-tracking
+  - scanpath
+  - visualization
+  - reading
+  - psycholinguistics
+  - streamlit

@@ -6,7 +6,7 @@
     "codespaces": {
       "openFiles": [
         "README.md",
-        "scanpath_visualization_app/app.py"
+        "scanpath_studio/app.py"
       ]
     },
     "vscode": {
@@ -19,7 +19,7 @@
   },
   "updateContentCommand": "pip3 install --user -e .[test]",
   "postAttachCommand": {
-    "server": "streamlit run scanpath_visualization_app/app.py --server.enableCORS false --server.enableXsrfProtection false"
+    "server": "streamlit run scanpath_studio/app.py --server.enableCORS false --server.enableXsrfProtection false"
   },
   "portsAttributes": {
     "8501": {

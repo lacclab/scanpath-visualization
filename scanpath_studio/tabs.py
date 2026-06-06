@@ -1,4 +1,4 @@
-"""Tab rendering functions for the Scanpath Visualization app."""
+"""Tab rendering functions for the Scanpath Studio app."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from scanpath_visualization_app.annotations import render_trial_annotations
-from scanpath_visualization_app.constants import DEFAULT_LINE_SPACING
-from scanpath_visualization_app.data import compute_word_metrics
+from scanpath_studio.annotations import render_trial_annotations
+from scanpath_studio.constants import DEFAULT_LINE_SPACING
+from scanpath_studio.data import compute_word_metrics
 
-from scanpath_visualization_app.plots import (
+from scanpath_studio.plots import (
     animation_playback_ms,
     make_comparison_figure,
     make_fixation_duration_histogram,
@@ -21,12 +21,12 @@ from scanpath_visualization_app.plots import (
     make_scanpath_figure,
     make_word_measure_bar_figure,
 )
-from scanpath_visualization_app.export import (
+from scanpath_studio.export import (
     ExportProgress,
     bulk_export,
     render_export_options,
 )
-from scanpath_visualization_app.utils import (
+from scanpath_studio.utils import (
     build_comparison_options,
     compute_trial_stats,
     friendly_trial_label,
@@ -461,7 +461,7 @@ def _span_fixated_note(
     span_words = trial_words[trial_words[mask_col].fillna(False).astype(bool)]
     if span_words.empty:
         return ""
-    from scanpath_visualization_app.measures import fixation_in_text_mask
+    from scanpath_studio.measures import fixation_in_text_mask
 
     mask = fixation_in_text_mask(trial_fixations, span_words)
     n = int(mask.sum())
@@ -574,7 +574,7 @@ def _in_text_fixation_value(
     there's nothing to count."""
     if trial_words.empty or trial_fixations.empty:
         return None
-    from scanpath_visualization_app.measures import fixation_in_text_mask
+    from scanpath_studio.measures import fixation_in_text_mask
 
     mask = fixation_in_text_mask(trial_fixations, trial_words)
     n_total = len(mask)

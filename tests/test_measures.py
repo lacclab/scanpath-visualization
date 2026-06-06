@@ -1,4 +1,4 @@
-"""Tests for scanpath_visualization_app.measures."""
+"""Tests for scanpath_studio.measures."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanpath_visualization_app.measures import (
+from scanpath_studio.measures import (
     assign_fixations_to_words,
     compute_per_word_measures,
     enrich_fixations,

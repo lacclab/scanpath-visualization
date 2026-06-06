@@ -1,4 +1,4 @@
-# AGENTS.md — Scanpath Visualization App
+# AGENTS.md — Scanpath Studio
 
 Architectural map for AI agents (Claude, Copilot) modifying this code.
 
@@ -6,7 +6,7 @@ Architectural map for AI agents (Claude, Copilot) modifying this code.
 
 Interactive Streamlit workbench for **eye-tracking-while-reading** scanpath
 visualization. Targeted at reading-research / NLP audiences. Distributed as the
-PyPI package `scanpath-visualization-app`; deployable to Streamlit Community
+PyPI package `scanpath-studio`; deployable to Streamlit Community
 Cloud via `streamlit_app.py` at the repo root.
 
 Demo corpus: 3 participants × 2 articles × {Adv, Ele} from **OneStop Eye
@@ -20,7 +20,7 @@ docs at <https://lacclab.github.io/OneStop-Eye-Movements/>), shipped under
 ## Architecture
 
 ```text
-scanpath_visualization_app/
+scanpath_studio/
 ├─ app.py            entry point: page config, data load, trial filters, dispatch to tabs
 ├─ tabs.py           tab implementations (Interactive, Reading Measures, Animation, Raw Data, Statistics)
 ├─ controls.py       sidebar viz controls + column-mapping override UI + trial-filter panel
@@ -103,7 +103,7 @@ uv run streamlit run streamlit_app.py
 # Tests
 pytest                              # all 114 tests
 pytest tests/test_measures.py       # one file
-pytest --cov=scanpath_visualization_app --cov-report=term
+pytest --cov=scanpath_studio --cov-report=term
 
 # Lint
 ruff check --exclude other_vis .
@@ -111,7 +111,7 @@ ruff check --select I --fix --exclude other_vis .
 ruff format --exclude other_vis .
 
 # Regenerate bundled sample data (needs the full OneStop CSVs under sample_data/OneStop/)
-python -m scanpath_visualization_app.update_sample_data
+python -m scanpath_studio.update_sample_data
 ```
 
 CI on GitHub Actions runs pytest on Python 3.11/3.12/3.13 plus ruff lint+format
@@ -179,8 +179,8 @@ first existing column.
 
 ## Releasing
 
-1. Bump `version` in `pyproject.toml` and `scanpath_visualization_app/__init__.py`.
+1. Bump `version` in `pyproject.toml` and `scanpath_studio/__init__.py`.
 2. Commit; tag with `v<version>`; push the tag.
 3. The `Publish to PyPI` GitHub Actions workflow builds the wheel + sdist and
    publishes via PyPI Trusted Publishing (requires `pypi` environment set up
-   on GitHub with the project name `scanpath-visualization-app`).
+   on GitHub with the project name `scanpath-studio`).

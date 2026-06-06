@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from scanpath_visualization_app.plots import (
+from scanpath_studio.plots import (
     _saccade_arrow_markers,
     _width_fit_font,
     _word_label_font_px,
@@ -539,7 +539,7 @@ class TestAnimationPlaybackTiming:
     def test_frame_floor_clamps_tiny_gaps(self, normalized_words_df):
         # Gaps below the frame floor are clamped up so frames stay renderable
         # (browsers cap ~60fps); the Play frame duration is the floor itself.
-        from scanpath_visualization_app.plots import _ANIM_MIN_FRAME_MS
+        from scanpath_studio.plots import _ANIM_MIN_FRAME_MS
 
         fix = pd.DataFrame(
             {
@@ -589,7 +589,7 @@ class TestAnimationPlaybackTiming:
         # Degenerate direct call: only the second slot is populated. The lone
         # trail must still be the canonical single-replay blue, never the red
         # "B" colour.
-        from scanpath_visualization_app.constants import COMPARISON_PALETTE
+        from scanpath_studio.constants import COMPARISON_PALETTE
 
         fig = make_scanpath_animation(
             normalized_words_df,

@@ -9,7 +9,7 @@ import zipfile
 import pandas as pd
 import pytest
 
-from scanpath_visualization_app.export import ExportOptions, bulk_export
+from scanpath_studio.export import ExportOptions, bulk_export
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-# Test Suite for Scanpath Visualization App
+# Test Suite for Scanpath Studio
 
 This directory contains the test suite for the scanpath visualization Streamlit app.
 
@@ -9,10 +9,10 @@ This directory contains the test suite for the scanpath visualization Streamlit 
 ```bash
 # Using conda/mamba (recommended)
 conda env create -f environment.yml
-conda activate scanpath-visualization
+conda activate scanpath-studio
 # or with mamba (faster)
 mamba env create -f environment.yml
-mamba activate scanpath-visualization
+mamba activate scanpath-studio
 
 # Using pip (alternative)
 pip install -r requirements.txt
@@ -29,7 +29,7 @@ pytest
 ### Run with coverage
 
 ```bash
-pytest --cov=scanpath_visualization_app --cov-report=html
+pytest --cov=scanpath_studio --cov-report=html
 ```
 
 ### Run specific test files
