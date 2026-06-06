@@ -735,7 +735,9 @@ def _render_metadata_selector(
                 compare["words"], compare["fixations"], selected_metadata
             )
         ).rename(columns={"Value": label_b})
-        merged = primary.merge(other, on="Field", how="outer")
+        # Outer merge in case the two trials' sources expose different columns;
+        # fill any resulting gap with the same "—" placeholder the summary uses.
+        merged = primary.merge(other, on="Field", how="outer").fillna("—")
         order = {field: i for i, field in enumerate(selected_metadata)}
         merged = (
             merged.assign(_o=merged["Field"].map(order))
@@ -1222,7 +1224,7 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
     changes inside the anim tab are preserved across reruns until the
     single tab moves again.
 
-    Respects whichever selection mode (None/Text/Participant) the anim tab
+    Respects whichever selection mode (Trial/Text/Participant) the anim tab
     is currently in and writes to the matching state key, so the user's
     mode choice isn't reset every time the single tab advances.
     """
@@ -1245,9 +1247,9 @@ def _sync_anim_from_single(combos: pd.DataFrame) -> None:
         return
     row = match.iloc[0]
 
-    mode = st.session_state.get("anim_select_trial_mode", "None")
+    mode = st.session_state.get("anim_select_trial_mode", "Trial")
 
-    if mode == "None":
+    if mode == "Trial":
         trial_options = _ordered_trial_ids(combos)
         try:
             idx = trial_options.index(str(shared_trial))

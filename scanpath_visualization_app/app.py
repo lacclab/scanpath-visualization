@@ -163,7 +163,7 @@ def _apply_url_preset() -> Optional[str]:
     # Seed selection state for every tab that exposes a `select_trial` widget.
     # `?participant=` + `?trial=` map onto Participant mode with the matching
     # participant / slider value. Without this loop the Animated Scanpath tab
-    # (key_prefix="anim") would default to "None" mode and land on the
+    # (key_prefix="anim") would default to "Trial" mode and land on the
     # alphabetically-first trial instead of the deep-linked one.
     if "participant" in qp or "trial" in qp:
         for prefix in _SELECTION_PREFIXES:
