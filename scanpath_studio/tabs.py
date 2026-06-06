@@ -1551,15 +1551,6 @@ def render_animation_tab(
 # -----------------------------------------------------------------------------
 
 
-def _metric_help_text() -> str:
-    """One markdown line per similarity metric, flagging the placeholders."""
-    lines = []
-    for metric in METRICS:
-        tag = "" if metric.fn is not None else " *(placeholder)*"
-        lines.append(f"**{metric.label}**{tag}: {metric.description}")
-    return "  \n".join(lines)
-
-
 def _best_model_indices(table: pd.DataFrame) -> dict:
     """Row index of the best-scoring model per *real* metric column.
 
@@ -1849,12 +1840,6 @@ def render_multiple_comparison_tab(
 
         st.markdown("#### Similarity to the real scanpath")
         st.dataframe(_style_similarity_table(table), hide_index=True, width="stretch")
-        st.caption(
-            "Header arrows show which direction is **more similar** "
-            "(↓ lower is better · ↑ higher is better); the best model per metric "
-            "is highlighted."
-        )
-        st.caption(_metric_help_text())
 
         # Cumulative metric convergence over the full scanpaths. Memoized so
         # dragging the fixation slider — which does NOT change these curves —

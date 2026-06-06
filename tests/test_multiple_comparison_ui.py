@@ -13,7 +13,6 @@ import pandas as pd
 from scanpath_studio.similarity import METRICS
 from scanpath_studio.tabs import (
     _best_model_indices,
-    _metric_help_text,
     _style_similarity_table,
 )
 
@@ -64,12 +63,3 @@ def test_style_table_headers_carry_direction_arrows():
     assert "NLD ↓" in html
     # The higher-is-better placeholders (ScanMatch, MultiMatch) get an up arrow.
     assert "↑" in html
-
-
-def test_metric_help_text_flags_placeholders_and_cites_sources():
-    text = _metric_help_text()
-    assert text.count("*(placeholder)*") == len(_PLACEHOLDER_LABELS) == 3
-    assert "NLD" in text
-    # NLD's source is Levenshtein (1966); Eyettention is credited as a user.
-    assert "Levenshtein" in text
-    assert "Eyettention" in text
