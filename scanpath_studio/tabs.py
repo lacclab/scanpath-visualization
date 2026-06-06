@@ -1813,20 +1813,14 @@ def render_multiple_comparison_tab(
         real_fig = _make_fig(sliced_real, real_settings)
         _render_true_scale_chart(real_fig, key="multi_real")
 
-        st.markdown("#### Similarity to the real scanpath")
+        # Compute the similarity table once up front: the per-model NLD annotates
+        # each grid panel below, and the full table is shown beneath the grid.
         table = compute_similarity_table(sliced_real, sliced_models, trial_words)
-        st.dataframe(_style_similarity_table(table), hide_index=True, width="stretch")
-        st.caption(
-            "Header arrows show which direction is **more similar** "
-            "(↓ lower is better · ↑ higher is better); the best model per metric "
-            "is highlighted."
-        )
-        st.caption(_metric_help_text())
-
-        st.markdown("#### Model-generated scanpaths")
         nld_by_model = (
             dict(zip(table["Model"], table["NLD"])) if "NLD" in table.columns else {}
         )
+
+        st.markdown("#### Model-generated scanpaths")
         # Estimate a uniform cell height from the figure aspect + column count
         # so panels line up and don't leave a tall whitespace band below each.
         fig_w = float(real_fig.layout.width or 900)
@@ -1852,6 +1846,15 @@ def render_multiple_comparison_tab(
                         key=f"multi_model_{name.replace(' ', '_')}",
                         max_height=cell_h,
                     )
+
+        st.markdown("#### Similarity to the real scanpath")
+        st.dataframe(_style_similarity_table(table), hide_index=True, width="stretch")
+        st.caption(
+            "Header arrows show which direction is **more similar** "
+            "(↓ lower is better · ↑ higher is better); the best model per metric "
+            "is highlighted."
+        )
+        st.caption(_metric_help_text())
 
         # Cumulative metric convergence over the full scanpaths. Memoized so
         # dragging the fixation slider — which does NOT change these curves —
