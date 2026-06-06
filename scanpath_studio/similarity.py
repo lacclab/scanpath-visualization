@@ -33,6 +33,12 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .measures import (
+    LINE_MISREGISTRATION_PX,
+    _assign_word_ids_single,
+    rebased_fixation_onsets,
+)
+
 
 # -----------------------------------------------------------------------------
 # Edit distance
@@ -85,53 +91,24 @@ def assign_single_trial_word_ids(
     fixations: pd.DataFrame,
     words: pd.DataFrame,
     *,
-    nearest_within_px: float = 50.0,
+    nearest_within_px: float = LINE_MISREGISTRATION_PX,
 ) -> np.ndarray:
     """Word id for every fixation via bounding-box containment, single trial.
 
-    Mirrors :func:`scanpath_studio.measures.assign_fixations_to_words` but does
-    **not** group by ``participant_id`` / ``trial_id`` — the generated model
-    scanpaths carry synthetic ids (e.g. ``"Model 1"``) that don't match the real
-    trial's, so a grouped assigner would find no matching word boxes and return
-    all-NaN. Here every fixation is tested against the one ``words`` frame passed
-    in. Fixations outside every box snap to the nearest word centre within
-    ``nearest_within_px`` (line-misregistration tolerance), else NaN.
+    Thin wrapper over :func:`scanpath_studio.measures._assign_word_ids_single`
+    that does **not** group by ``participant_id`` / ``trial_id`` — the generated
+    model scanpaths carry synthetic ids (e.g. ``"Model 1"``) that don't match the
+    real trial's, so the grouped :func:`measures.assign_fixations_to_words` would
+    find no matching word boxes and return all-NaN. Here every fixation is tested
+    against the one ``words`` frame passed in. Fixations outside every box snap to
+    the nearest word centre within ``nearest_within_px`` (line-misregistration
+    tolerance), else NaN.
 
     Returns a float array aligned to ``fixations`` rows (NaN = out of text).
     """
     if fixations.empty or words.empty:
         return np.full(len(fixations), np.nan)
-
-    wx0 = pd.to_numeric(words["x"], errors="coerce").to_numpy(dtype=float)
-    wy0 = pd.to_numeric(words["y"], errors="coerce").to_numpy(dtype=float)
-    wx1 = wx0 + pd.to_numeric(words["width"], errors="coerce").to_numpy(dtype=float)
-    wy1 = wy0 + pd.to_numeric(words["height"], errors="coerce").to_numpy(dtype=float)
-    wids = words["word_id"].to_numpy()
-    wcx = (wx0 + wx1) / 2.0
-    wcy = (wy0 + wy1) / 2.0
-
-    fx = pd.to_numeric(fixations["x"], errors="coerce").to_numpy(dtype=float)
-    fy = pd.to_numeric(fixations["y"], errors="coerce").to_numpy(dtype=float)
-
-    in_box = (
-        (fx[:, None] >= wx0[None, :])
-        & (fx[:, None] <= wx1[None, :])
-        & (fy[:, None] >= wy0[None, :])
-        & (fy[:, None] <= wy1[None, :])
-    )
-    word_idx = np.where(in_box.any(axis=1), in_box.argmax(axis=1), -1)
-
-    unassigned = word_idx == -1
-    if unassigned.any() and nearest_within_px > 0:
-        dists = np.sqrt(
-            (fx[unassigned, None] - wcx[None, :]) ** 2
-            + (fy[unassigned, None] - wcy[None, :]) ** 2
-        )
-        nearest = dists.argmin(axis=1)
-        within = dists[np.arange(len(nearest)), nearest] <= nearest_within_px
-        word_idx[unassigned] = np.where(within, nearest, -1)
-
-    return np.where(word_idx >= 0, wids[np.clip(word_idx, 0, None)], np.nan)
+    return _assign_word_ids_single(fixations, words, nearest_within_px)
 
 
 def _ordered_fixations(fixations: pd.DataFrame) -> pd.DataFrame:
@@ -345,31 +322,12 @@ def nld_by_fixation_index(
 def _rebased_onsets(fixations: pd.DataFrame) -> np.ndarray:
     """Fixation onset times (ms) rebased so the first fixation is t=0.
 
-    Uses recorded ``timestamp_ms`` when they look like real times (recorded span
-    ≥ half the summed durations — the same heuristic as the animation), otherwise
-    lays fixations back-to-back by their durations, so a synthesised 0,1,2,…
-    index doesn't crush the time axis.
+    Orders the fixations by ``timestamp_ms`` and delegates the recorded-vs-
+    synthetic-timestamp heuristic to
+    :func:`scanpath_studio.measures.rebased_fixation_onsets` (shared with the
+    animation clock).
     """
-    ordered = _ordered_fixations(fixations)
-    if ordered.empty:
-        return np.array([], dtype=float)
-    if "duration_ms" in ordered.columns:
-        dur = (
-            pd.to_numeric(ordered["duration_ms"], errors="coerce")
-            .fillna(0)
-            .to_numpy(dtype=float)
-        )
-    else:
-        dur = np.zeros(len(ordered))
-    contiguous = np.concatenate(([0.0], np.cumsum(dur)[:-1])) if len(dur) else dur
-    if "timestamp_ms" in ordered.columns:
-        ts = pd.to_numeric(ordered["timestamp_ms"], errors="coerce").to_numpy(
-            dtype=float
-        )
-        total_dwell = float(dur.sum()) if len(dur) else 0.0
-        if len(ts) and not np.isnan(ts).any() and (ts[-1] - ts[0]) >= 0.5 * total_dwell:
-            return ts - ts[0]
-    return contiguous
+    return rebased_fixation_onsets(_ordered_fixations(fixations))
 
 
 def nld_by_time(

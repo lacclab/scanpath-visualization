@@ -32,6 +32,8 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
+from .measures import cluster_word_lines
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -123,14 +125,11 @@ def _ordered_word_rows(words: pd.DataFrame) -> pd.DataFrame:
     """
     if "word_id" in words.columns and words["word_id"].notna().all():
         return words.sort_values("word_id").reset_index(drop=True)
+    # Cluster rows into visual lines by vertical position (shared with the
+    # reading-measure geometry), then read each line left-to-right. NaN-safe
+    # line pitch and the all-NaN-height guard live in ``cluster_word_lines``.
     w = words.copy()
-    # NaN-safe line pitch: median() of an all-NaN height is NaN (and NaN is
-    # truthy, so a plain ``or 1.0`` would NOT fire) — guard explicitly.
-    median_h = pd.to_numeric(w["height"], errors="coerce").median()
-    typical_h = float(median_h) if pd.notna(median_h) and median_h > 0 else 1.0
-    w = w.sort_values("y")
-    line_ids = (w["y"].diff().fillna(0) > typical_h * 0.5).cumsum()
-    w["_line"] = line_ids
+    w["_line"] = cluster_word_lines(w)
     return w.sort_values(["_line", "x"]).drop(columns="_line").reset_index(drop=True)
 
 

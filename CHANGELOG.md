@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Internal: de-duplicated shared geometry/timing helpers** (no behaviour
+  change). Fixation→word-id bounding-box assignment now lives in a single
+  `measures._assign_word_ids_single` (used by both
+  `measures.assign_fixations_to_words` and
+  `similarity.assign_single_trial_word_ids`); the recorded-vs-synthetic
+  timestamp heuristic lives in `measures.rebased_fixation_onsets` (used by both
+  the similarity time-curve and the animation clock); and
+  `model_scanpaths._ordered_word_rows` now reuses `measures.cluster_word_lines`
+  for its line-clustering fallback. The 50 px line-misregistration tolerance and
+  the 0.5 real-timestamp threshold are now single module constants
+  (`LINE_MISREGISTRATION_PX`, `REAL_TIMESTAMP_DWELL_FRAC`). The animation clock's
+  threshold was reconciled to compare against the full summed durations (matching
+  the documented intent and the similarity time-curve).
+
 ## [0.15.0] - 2026-06-06
 
 ### Added

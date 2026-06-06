@@ -10,6 +10,7 @@ from scanpath_studio.model_scanpaths import (
     MAX_MODELS,
     _MAX_DUR_MS,
     _MIN_DUR_MS,
+    _ordered_word_rows,
     generate_model_scanpath,
     generate_model_scanpaths,
     MODEL_PROFILES,
@@ -34,6 +35,41 @@ _FIX_COLUMNS = {
     "noise_flag",
     "saccade_type",
 }
+
+
+def test_ordered_word_rows_uses_word_id_when_complete():
+    # With a complete word_id, reading order is simply word_id order.
+    words = pd.DataFrame(
+        {
+            "text": ["c", "a", "b"],
+            "word_id": [2, 0, 1],
+            "x": [200, 0, 100],
+            "y": [0, 0, 0],
+            "width": [40, 40, 40],
+            "height": [30, 30, 30],
+        }
+    )
+    ordered = _ordered_word_rows(words)
+    assert list(ordered["word_id"]) == [0, 1, 2]
+    assert list(ordered["text"]) == ["a", "b", "c"]
+
+
+def test_ordered_word_rows_falls_back_to_line_clustering():
+    # No usable word_id -> reading order is inferred from geometry: rows are
+    # clustered into visual lines by y (via the shared measures.cluster_word_lines
+    # helper), then read left-to-right. Input order is deliberately scrambled.
+    words = pd.DataFrame(
+        {
+            "text": ["A", "B", "C", "D", "E"],
+            "x": [200, 0, 100, 50, 150],
+            "y": [0, 0, 0, 100, 100],  # line 0 (y=0): A,B,C; line 1 (y=100): D,E
+            "width": [40, 40, 40, 40, 40],
+            "height": [30, 30, 30, 30, 30],
+        }
+    )
+    ordered = _ordered_word_rows(words)
+    # Line 0 left-to-right (B@0, C@100, A@200), then line 1 (D@50, E@150).
+    assert list(ordered["text"]) == ["B", "C", "A", "D", "E"]
 
 
 def test_generate_returns_canonical_columns():

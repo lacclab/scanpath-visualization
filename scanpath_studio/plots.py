@@ -1123,22 +1123,18 @@ def _scanpath_anim_specs(entries, marker_size_range):
     by their durations. Marker sizes are scaled over the COMBINED durations so
     equal durations render at equal sizes across scanpaths.
     """
+    from .measures import rebased_fixation_onsets
+
     specs = []
     for fix_df, color, label in entries:
         if fix_df is None or fix_df.empty:
             continue
         ordered = fix_df.sort_values("timestamp_ms").reset_index(drop=True)
         dur = pd.to_numeric(ordered["duration_ms"], errors="coerce").fillna(0)
-        contiguous = np.concatenate(([0.0], np.cumsum(dur.to_numpy())[:-1]))
-        ts = pd.to_numeric(ordered["timestamp_ms"], errors="coerce")
-        # Trust recorded timestamps only if they look like real times: fixations
-        # don't overlap, so a real sequence spans at least its total dwell. A
-        # synthesised 0,1,2,… index collapses to a few ms and must NOT be read as
-        # milliseconds (it would crush the whole replay onto the frame floor).
-        real_ts = bool(ts.notna().all()) and float(ts.iloc[-1] - ts.iloc[0]) >= (
-            0.5 * float(contiguous[-1])
-        )
-        onsets = (ts - ts.iloc[0]).to_numpy(dtype=float) if real_ts else contiguous
+        # Recorded-timestamp-vs-synthetic-index heuristic (shared with the
+        # similarity time-curve): trust recorded timestamps only when they look
+        # like real times, else lay fixations back-to-back by their durations.
+        onsets = rebased_fixation_onsets(ordered)
         specs.append(
             dict(
                 ordered=ordered,

@@ -31,6 +31,20 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
+# Default line-misregistration tolerance (px): a fixation that falls outside
+# every word box snaps to the nearest word centre within this radius before it
+# is left unassigned. Shared by the grouped assigner here and the single-frame
+# helper used for model scanpaths in :mod:`scanpath_studio.similarity`.
+LINE_MISREGISTRATION_PX = 50.0
+
+# A recorded ``timestamp_ms`` series is trusted as real reading time only when
+# its span covers at least this fraction of the summed fixation durations.
+# Fixations don't overlap, so a genuine recording spans at least its total
+# dwell; the 0,1,2,… row index ``data.normalize_fixations`` synthesises when the
+# source has no timestamps collapses to a few ms and must NOT be read as
+# milliseconds. Shared by the similarity time-curve and the animation clock.
+REAL_TIMESTAMP_DWELL_FRAC = 0.5
+
 
 def _within_box(
     fix_x: pd.Series, fix_y: pd.Series, word_row: pd.Series, pad: float = 0.0
@@ -43,12 +57,65 @@ def _within_box(
     )
 
 
+def _assign_word_ids_single(
+    fix_chunk: pd.DataFrame,
+    word_chunk: pd.DataFrame,
+    nearest_within_px: float = LINE_MISREGISTRATION_PX,
+) -> np.ndarray:
+    """Vectorized fixation→word_id assignment for a single trial's frames.
+
+    Tests every fixation in ``fix_chunk`` against every word box in
+    ``word_chunk`` (no participant/trial grouping — the caller is responsible
+    for slicing to one trial, or for passing frames whose ids deliberately
+    don't match, as the model scanpaths do). Fixations outside every box snap
+    to the nearest word centre within ``nearest_within_px`` (line-
+    misregistration tolerance), else NaN.
+
+    Returns a float array aligned to ``fix_chunk`` rows (NaN = out of text).
+    """
+    wx0 = pd.to_numeric(word_chunk["x"], errors="coerce").to_numpy(dtype=float)
+    wy0 = pd.to_numeric(word_chunk["y"], errors="coerce").to_numpy(dtype=float)
+    wx1 = wx0 + pd.to_numeric(word_chunk["width"], errors="coerce").to_numpy(
+        dtype=float
+    )
+    wy1 = wy0 + pd.to_numeric(word_chunk["height"], errors="coerce").to_numpy(
+        dtype=float
+    )
+    wids = word_chunk["word_id"].to_numpy()
+    wcx = (wx0 + wx1) / 2.0
+    wcy = (wy0 + wy1) / 2.0
+
+    fx = pd.to_numeric(fix_chunk["x"], errors="coerce").to_numpy(dtype=float)
+    fy = pd.to_numeric(fix_chunk["y"], errors="coerce").to_numpy(dtype=float)
+
+    in_box = (
+        (fx[:, None] >= wx0[None, :])
+        & (fx[:, None] <= wx1[None, :])
+        & (fy[:, None] >= wy0[None, :])
+        & (fy[:, None] <= wy1[None, :])
+    )
+    word_idx = np.where(in_box.any(axis=1), in_box.argmax(axis=1), -1)
+
+    # Fallback: nearest word center within nearest_within_px.
+    unassigned = word_idx == -1
+    if unassigned.any() and nearest_within_px > 0:
+        dists = np.sqrt(
+            (fx[unassigned, None] - wcx[None, :]) ** 2
+            + (fy[unassigned, None] - wcy[None, :]) ** 2
+        )
+        nearest = dists.argmin(axis=1)
+        within = dists[np.arange(len(nearest)), nearest] <= nearest_within_px
+        word_idx[unassigned] = np.where(within, nearest, -1)
+
+    return np.where(word_idx >= 0, wids[np.clip(word_idx, 0, None)], np.nan)
+
+
 def assign_fixations_to_words(
     fixations: pd.DataFrame,
     words: pd.DataFrame,
     *,
     overwrite: bool = False,
-    nearest_within_px: float = 50.0,
+    nearest_within_px: float = LINE_MISREGISTRATION_PX,
 ) -> pd.DataFrame:
     """Assign each fixation to a word via bounding-box containment.
 
@@ -83,40 +150,9 @@ def assign_fixations_to_words(
             continue
         if wchunk.empty:
             continue
-        wx0 = wchunk["x"].to_numpy()
-        wy0 = wchunk["y"].to_numpy()
-        wx1 = wx0 + wchunk["width"].to_numpy()
-        wy1 = wy0 + wchunk["height"].to_numpy()
-        wids = wchunk["word_id"].to_numpy()
-        wcx = (wx0 + wx1) / 2.0
-        wcy = (wy0 + wy1) / 2.0
-
-        fx = fix_chunk["x"].to_numpy()
-        fy = fix_chunk["y"].to_numpy()
-        in_box = (
-            (fx[:, None] >= wx0[None, :])
-            & (fx[:, None] <= wx1[None, :])
-            & (fy[:, None] >= wy0[None, :])
-            & (fy[:, None] <= wy1[None, :])
+        assignments.loc[fix_chunk.index] = _assign_word_ids_single(
+            fix_chunk, wchunk, nearest_within_px
         )
-        word_idx = np.where(in_box.any(axis=1), in_box.argmax(axis=1), -1)
-
-        # Fallback: nearest word center within nearest_within_px
-        unassigned = word_idx == -1
-        if unassigned.any() and nearest_within_px > 0:
-            dists = np.sqrt(
-                (fx[unassigned, None] - wcx[None, :]) ** 2
-                + (fy[unassigned, None] - wcy[None, :]) ** 2
-            )
-            nearest = dists.argmin(axis=1)
-            within = dists[np.arange(len(nearest)), nearest] <= nearest_within_px
-            word_idx_unassigned = np.where(within, nearest, -1)
-            word_idx[unassigned] = word_idx_unassigned
-
-        chunk_assignments = np.where(
-            word_idx >= 0, wids[np.clip(word_idx, 0, None)], np.nan
-        )
-        assignments.loc[fix_chunk.index] = chunk_assignments
 
     out.loc[need_idx, "word_id"] = assignments
     return out
@@ -145,6 +181,43 @@ def enrich_fixations(fixations: pd.DataFrame, words: pd.DataFrame) -> pd.DataFra
     running_max = g["word_id"].cummax()
     out["is_regression"] = (out["word_id"] < running_max).fillna(False).astype(bool)
     return out
+
+
+def rebased_fixation_onsets(ordered_fixations: pd.DataFrame) -> np.ndarray:
+    """Fixation onset times (ms), rebased so the first fixation is t=0.
+
+    ``ordered_fixations`` must already be in reading order (sorted by
+    ``timestamp_ms``); the returned array is aligned to its rows. Uses the
+    recorded ``timestamp_ms`` when they look like real times — their span is at
+    least ``REAL_TIMESTAMP_DWELL_FRAC`` of the summed durations — otherwise lays
+    fixations back-to-back by their durations, so a synthesised 0,1,2,… index
+    doesn't crush the time axis. Shared by the similarity time-curve
+    (:func:`scanpath_studio.similarity._rebased_onsets`) and the animation clock
+    (:func:`scanpath_studio.plots._scanpath_anim_specs`).
+    """
+    if ordered_fixations.empty:
+        return np.array([], dtype=float)
+    if "duration_ms" in ordered_fixations.columns:
+        dur = (
+            pd.to_numeric(ordered_fixations["duration_ms"], errors="coerce")
+            .fillna(0)
+            .to_numpy(dtype=float)
+        )
+    else:
+        dur = np.zeros(len(ordered_fixations))
+    contiguous = np.concatenate(([0.0], np.cumsum(dur)[:-1])) if len(dur) else dur
+    if "timestamp_ms" in ordered_fixations.columns:
+        ts = pd.to_numeric(ordered_fixations["timestamp_ms"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        total_dwell = float(dur.sum()) if len(dur) else 0.0
+        if (
+            len(ts)
+            and not np.isnan(ts).any()
+            and (ts[-1] - ts[0]) >= REAL_TIMESTAMP_DWELL_FRAC * total_dwell
+        ):
+            return ts - ts[0]
+    return contiguous
 
 
 # ---------------------------------------------------------------------------
