@@ -1,4 +1,4 @@
-name: scanpath-visualization
+name: scanpath-studio
 channels:
   - conda-forge
 dependencies:

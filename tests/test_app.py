@@ -2,13 +2,13 @@
 
 import pandas as pd
 
-from scanpath_visualization_app.app import (
+from scanpath_studio.app import (
     _build_comparison_options,
     build_combo_options,
     compute_trial_stats,
     gather_trial_metadata,
 )
-from scanpath_visualization_app.data import compute_canvas_size
+from scanpath_studio.data import compute_canvas_size
 
 
 class TestBuildComboOptions:

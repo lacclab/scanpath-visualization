@@ -3,8 +3,8 @@ requires = ["setuptools>=69.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scanpath-visualization-app"
-version = "0.13.0"
+name = "scanpath-studio"
+dynamic = ["version"]
 description = "Interactive Streamlit workbench for visualizing eye-tracking-while-reading scanpaths, computing reading measures, and exporting figures and tabular data."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,11 +40,15 @@ test = [
 ]
 
 [project.urls]
-Repository = "https://github.com/lacclab/scanpath-visualization"
-Issues = "https://github.com/lacclab/scanpath-visualization/issues"
+Repository = "https://github.com/lacclab/scanpath-studio"
+Issues = "https://github.com/lacclab/scanpath-studio/issues"
 
 [project.scripts]
-scanpath-visualization = "scanpath_visualization_app.__main__:main"
+scanpath-studio = "scanpath_studio.__main__:main"
+
+[tool.setuptools.dynamic]
+# Single source of truth for the version: scanpath_studio/__version__
+version = { attr = "scanpath_studio.__version__" }
 
 [tool.setuptools]
 include-package-data = true
@@ -52,10 +56,10 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["scanpath_visualization_app"]
+include = ["scanpath_studio"]
 
 [tool.setuptools.package-data]
-"scanpath_visualization_app" = [
+"scanpath_studio" = [
     "sample_data/*.csv",
     "sample_data/*.parquet",
     "sample_data/*.feather",

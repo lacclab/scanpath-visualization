@@ -1,4 +1,4 @@
-"""CSS styles for the Scanpath Visualization Streamlit app."""
+"""CSS styles for the Scanpath Studio Streamlit app."""
 
 from __future__ import annotations
 

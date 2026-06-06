@@ -1,4 +1,4 @@
-"""Scanpath Visualization Streamlit app.
+"""Scanpath Studio Streamlit app.
 
 This is the main entry point for the Streamlit application that visualizes
 eye-tracking scanpaths over text.
@@ -18,12 +18,12 @@ Data Pipeline:
 
 Usage:
     # Development mode (watch for changes):
-    $ streamlit run scanpath_visualization_app/app.py
+    $ streamlit run scanpath_studio/app.py
 
     # Package mode:
-    $ python -m scanpath_visualization_app
+    $ python -m scanpath_studio
     # or
-    $ scanpath-visualization
+    $ scanpath-studio
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from typing import Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-# Allow running via `streamlit run scanpath_visualization_app/app.py` by adding the
+# Allow running via `streamlit run scanpath_studio/app.py` by adding the
 # repository root to sys.path when executed as a script instead of a package.
 if __package__ is None or __package__ == "":
     import sys
@@ -43,12 +43,12 @@ if __package__ is None or __package__ == "":
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-from scanpath_visualization_app.annotations import (
+from scanpath_studio.annotations import (
     filter_keys,
     render_annotations_sidebar,
 )
-from scanpath_visualization_app.constants import DEFAULT_LINE_SPACING, FONT_FAMILY
-from scanpath_visualization_app.controls import (
+from scanpath_studio.constants import DEFAULT_LINE_SPACING, FONT_FAMILY
+from scanpath_studio.controls import (
     FIX_FIELD_SPECS,
     RAW_GAZE_FIELD_SPECS,
     WORD_FIELD_SPECS,
@@ -57,7 +57,7 @@ from scanpath_visualization_app.controls import (
     sidebar_controls,
     sidebar_trial_filters,
 )
-from scanpath_visualization_app.data import (
+from scanpath_studio.data import (
     compute_canvas_size,
     default_filters,
     filter_data,
@@ -82,14 +82,14 @@ from scanpath_visualization_app.data import (
     validate_raw_gaze_schema,
     validate_word_schema,
 )
-from scanpath_visualization_app.styles import get_app_css
-from scanpath_visualization_app.tabs import (
+from scanpath_studio.styles import get_app_css
+from scanpath_studio.tabs import (
     render_animation_tab,
     render_data_statistics_tab,
     render_raw_data_tab,
     render_single_trial_tab,
 )
-from scanpath_visualization_app.utils import (  # noqa: F401
+from scanpath_studio.utils import (  # noqa: F401
     build_combo_options,
     build_comparison_options as _build_comparison_options,
     compute_trial_stats,
@@ -99,7 +99,7 @@ from scanpath_visualization_app.utils import (  # noqa: F401
 
 UPLOAD_CHOICE = "Upload tables"
 DEMO_CHOICE = "Use bundled demo"
-# A tiny, fully-specified synthetic trial (scanpath_visualization_app.synthetic)
+# A tiny, fully-specified synthetic trial (scanpath_studio.synthetic)
 # with known ground-truth reading measures — handy for sanity-checking the viz
 # against documented expected values.
 SYNTHETIC_CHOICE = "Synthetic test trial"
@@ -207,7 +207,7 @@ def configure_page() -> None:
     """
     is_embed = (st.query_params.get("embed") or "").lower() in {"true", "1"}
     st.set_page_config(
-        page_title="Scanpath Visualization",
+        page_title="Scanpath Studio",
         page_icon="👀",
         layout="wide",
         initial_sidebar_state="collapsed" if is_embed else "auto",
@@ -217,7 +217,7 @@ def configure_page() -> None:
 
 def _render_about_panel() -> None:
     """Compact header with title + Lab/Code pill links."""
-    from scanpath_visualization_app.constants import CITATION
+    from scanpath_studio.constants import CITATION
 
     title_col, links_col = st.columns([5, 2])
     with title_col:
@@ -260,7 +260,7 @@ def load_words_and_fixations(
         - Falls back to sample data if uploads missing
     """
     if data_choice == SYNTHETIC_CHOICE:
-        from scanpath_visualization_app.synthetic import load_synthetic_data
+        from scanpath_studio.synthetic import load_synthetic_data
 
         return load_synthetic_data()
     if data_choice == UPLOAD_CHOICE:

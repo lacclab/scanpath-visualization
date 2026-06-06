@@ -1,6 +1,6 @@
 """Re-export the synthetic ground-truth trial from the package.
 
-The dataset now lives in ``scanpath_visualization_app.synthetic`` so it is a
+The dataset now lives in ``scanpath_studio.synthetic`` so it is a
 single source of truth shared by the test suite and the in-app "Synthetic test
 trial" data source. This shim keeps the historical ``tests.synthetic_data``
 import path working.
@@ -8,7 +8,7 @@ import path working.
 
 from __future__ import annotations
 
-from scanpath_visualization_app.synthetic import (
+from scanpath_studio.synthetic import (
     EXPECTED,
     PARAGRAPH,
     PARTICIPANT,

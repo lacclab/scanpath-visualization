@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scanpath_visualization_app.annotations import (
+from scanpath_studio.annotations import (
     deserialize,
     is_empty_entry,
     records_to_store,

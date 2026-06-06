@@ -1,7 +1,11 @@
-streamlit>=1.52.2
-pandas>=2.3.3
-plotly>=6.5.0
-numpy>=2.3.5
-pyarrow>=22.0.0
-kaleido>=0.2.1
-watchdog>=4.0.0
+# Deployment manifest for the Streamlit Cloud demo. Compatible-release pins
+# (`~=`) keep the live app on a known-good minor while still picking up patch
+# releases. The library dependency bounds (looser, `>=`) live in pyproject.toml;
+# keep both in sync when adding or upgrading a dependency.
+streamlit~=1.52.2
+pandas~=2.3.3
+plotly~=6.5.0
+numpy~=2.3.5
+pyarrow~=22.0.0
+kaleido~=1.2.0
+watchdog~=6.0.0

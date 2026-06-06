@@ -17,7 +17,7 @@ page loads in under a second instead of ~3 min.
 
 Usage:
 
-    python -m scanpath_visualization_app.onestop_shard \\
+    python -m scanpath_studio.onestop_shard \\
         --data-dir /path/to/onestop_<cohort>/reports/<source>/<date>/full/
 
 By default skips pids whose shards already exist; pass `--rebuild` to force.

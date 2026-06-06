@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scanpath_visualization_app.update_sample_data import (
+from scanpath_studio.update_sample_data import (
     _RAW_GAZE_COLUMNS,
     synthesize_raw_gaze,
 )
@@ -63,7 +63,7 @@ def test_bundled_raw_gaze_overlaps_a_bundled_trial():
     to 0 rows (the original bug)."""
     import pytest
 
-    from scanpath_visualization_app.data import load_sample_data, load_sample_raw_gaze
+    from scanpath_studio.data import load_sample_data, load_sample_raw_gaze
 
     _, fixations = load_sample_data()
     raw_gaze = load_sample_raw_gaze()

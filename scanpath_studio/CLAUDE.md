@@ -1,13 +1,13 @@
-# scanpath_visualization_app
+# scanpath_studio
 
 Streamlit workbench for exploring eye-tracking-while-reading scanpaths: word boxes, fixations, saccades, density heatmaps, and per-word reading measures (FFD/FPRT/RPD/TFD, regressions). Top-level [README](../README.md) covers install/release.
 
 ## Run
 
 ```bash
-streamlit run scanpath_visualization_app/app.py        # dev
-python -m scanpath_visualization_app                    # packaged
-scanpath-visualization                                  # console entry point
+streamlit run scanpath_studio/app.py        # dev
+python -m scanpath_studio                    # packaged
+scanpath-studio                                  # console entry point
 ```
 
 `__main__.py` wraps `streamlit.web.cli` and forwards `sys.argv`. Default port 8501.
@@ -49,7 +49,7 @@ scanpath-visualization                                  # console entry point
 - When the source data lacks a `unique_trial_id` column (e.g. OneStop L2 shards), `normalize_*` falls back to `unique_paragraph_id` and disambiguates repeated readings by ranking on `TRIAL_INDEX` — the 2nd reading gets a `_r2` suffix on `trial_id`. Without this, both readings of a repeated-reading trial collapse into one scanpath.
 - Bulk export iterates *all* filtered trials — narrow the filter before clicking export on the full OneStop set.
 - Static image export (PNG/SVG/PDF) goes through Kaleido v1, which needs a Chrome/Chromium binary. Locally run `plotly_get_chrome -y` once; on Streamlit Cloud it's installed via the repo-root `packages.txt` (`chromium`). The **HTML** save format is a browser-free fallback (`fig.to_html`) when no Chrome is available.
-- The bundled `raw_gaze.{csv,parquet}` is **synthesized** from one real bundled trial's fixations (`update_sample_data.synthesize_raw_gaze`) — OneStop ships no sample-level gaze. It must stay keyed to a (participant, trial) present in the bundled fixations or the app filters it to 0 rows (regression-guarded in `tests/test_raw_gaze_sample.py`). Regenerate with `python -m scanpath_visualization_app.update_sample_data --raw-gaze-only`.
+- The bundled `raw_gaze.{csv,parquet}` is **synthesized** from one real bundled trial's fixations (`update_sample_data.synthesize_raw_gaze`) — OneStop ships no sample-level gaze. It must stay keyed to a (participant, trial) present in the bundled fixations or the app filters it to 0 rows (regression-guarded in `tests/test_raw_gaze_sample.py`). Regenerate with `python -m scanpath_studio.update_sample_data --raw-gaze-only`.
 - AOIs are taken from the data's word boxes, not computed. Only fixation→word assignment is derived (`measures.assign_fixations_to_words`); "out-of-text" = a fixation inside no box; "by-line" infers lines from word-box `y` because `line_idx` is usually constant.
 - **Don't render the spatial plots with `st.plotly_chart`.** Streamlit pins the chart *width* to the column while keeping the layout *height*, which re-lays-out Plotly to an unknown scale and leaves the px-sized word labels mismatched to the boxes (the true-to-scale text breaks). The single/animation/comparison plots go through `tabs._render_true_scale_chart`, which embeds the figure's own HTML at its exact pixel size and CSS-scales the whole block uniformly to the column width. Figure size is capped (`plots._DISPLAY_MAX_*`) so it fits a research display; PNG export bumps `scale` to stay crisp (SVG/PDF are vector). The embed loads plotly from CDN (needs network) and re-mounts each rerun.
 - Annotations (favorites/tags/notes) live in `st.session_state` only — persistence is via the sidebar JSON download/restore. They don't survive a hard refresh unless re-imported, and on the shared cloud demo they're per-session. Annotation-based trial filters reflect a star/tag on the *next* rerun (the editor writes the store after the sidebar filter reads it).

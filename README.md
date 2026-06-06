@@ -1,8 +1,8 @@
-# Scanpath Visualization
+# Scanpath Studio
 
-[![PyPI](https://img.shields.io/pypi/v/scanpath-visualization-app.svg)](https://pypi.org/project/scanpath-visualization-app/)
-[![Live demo](https://img.shields.io/badge/Live_demo-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://scanpath-visualization.streamlit.app)
-[![CI](https://github.com/lacclab/scanpath-visualization/actions/workflows/ci.yml/badge.svg)](https://github.com/lacclab/scanpath-visualization/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/scanpath-studio.svg)](https://pypi.org/project/scanpath-studio/)
+[![Live demo](https://img.shields.io/badge/Live_demo-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://scanpath-studio.streamlit.app)
+[![CI](https://github.com/lacclab/scanpath-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/lacclab/scanpath-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An interactive workbench for visualizing **eye-tracking-while-reading** data.
@@ -17,19 +17,21 @@ with zero setup.
 
 > **Authors:** Omer Shubi, Keren Gruteke Klein, and others (TBD) — LACC Lab, Technion.
 
-![The Scanpath Visualization app](https://raw.githubusercontent.com/lacclab/scanpath-visualization/main/assets/app_screenshot.png)
+![A reading scanpath replayed fixation by fixation](https://raw.githubusercontent.com/lacclab/scanpath-studio/main/assets/scanpath_animation.gif)
+
+*A scanpath replayed fixation by fixation over the text the reader saw (bundled OneStop demo).*
 
 ---
 
 ## Try it
 
-**Live demo (zero install):** <https://scanpath-visualization.streamlit.app>
+**Live demo (zero install):** <https://scanpath-studio.streamlit.app>
 
 **Or run locally:**
 
 ```bash
-pip install scanpath-visualization-app
-scanpath-visualization      # launches the app in your browser
+pip install scanpath-studio
+scanpath-studio      # launches the app in your browser
 ```
 
 ---
@@ -52,6 +54,10 @@ On top of the layered view:
 - **Out-of-text & by-line** — flag fixations that land outside every word box, or color fixations by the text line they fall on.
 - **Fully customizable** — map any field to color, size, or axes; set the plot background (white or a neutral gray); every toggle, palette, and scale is independent.
 
+![Two readers of the same paragraph, animated on a shared real-time clock](https://raw.githubusercontent.com/lacclab/scanpath-studio/main/assets/demo_dual_scanpath.gif)
+
+*Overlay a second reading to compare two readers of the same text on a shared real-time clock.*
+
 ---
 
 ## The four tabs
@@ -62,6 +68,8 @@ On top of the layered view:
 | **Animated Scanpath** | Frame-by-frame replay; each frame lasts the actual fixation duration ÷ playback speed. |
 | **Raw Data** | Paginated word, fixation, and raw-gaze tables, each with CSV + Parquet download. |
 | **Data Statistics** | Summary stats (mean fixation duration, saccade amplitude, regression rate, reading speed), a fixation-duration distribution, and a per-word reading-measure bar plot. |
+
+![The Scanpath Studio app](https://raw.githubusercontent.com/lacclab/scanpath-studio/main/assets/app_screenshot.png)
 
 ---
 
@@ -118,8 +126,8 @@ for paper figures or building an image dataset of scanpaths for vision models.
 ## Run from source
 
 ```bash
-git clone https://github.com/lacclab/scanpath-visualization.git
-cd scanpath-visualization
+git clone https://github.com/lacclab/scanpath-studio.git
+cd scanpath-studio
 pip install -e ".[test]"          # or: uv sync
 streamlit run streamlit_app.py
 ```
@@ -132,7 +140,9 @@ architectural overview.
 
 ## Citation
 
-A system-demo paper is in preparation — **citation TBD**.
+A system-demo paper is in preparation — **citation TBD**. Until then, cite the
+software via GitHub's **"Cite this repository"** button (generated from
+[`CITATION.cff`](CITATION.cff)).
 
 If you use the bundled demo data, please cite the OneStop corpus:
 

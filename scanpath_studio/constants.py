@@ -1,8 +1,8 @@
-"""Shared constants for the Scanpath Visualization app."""
+"""Shared constants for the Scanpath Studio app."""
 
 from __future__ import annotations
 
-PACKAGE_NAME = "scanpath_visualization_app"
+PACKAGE_NAME = "scanpath_studio"
 
 # Default text font. A single generic family that renders (monospaced) on every
 # platform including the Streamlit Cloud demo; the sidebar field accepts any CSS
@@ -71,8 +71,8 @@ CANVAS_PAD_FRACTION = 0.05
 
 CITATION = {
     "authors": "Omer Shubi, LACC Lab (Technion)",
-    "title": "Scanpath Visualization App",
-    "url": "https://github.com/lacclab/scanpath-visualization",
+    "title": "Scanpath Studio",
+    "url": "https://github.com/lacclab/scanpath-studio",
     "corpus_note": (
         "Bundled demo data is a subset of OneStop Eye Movements: "
         "Berzak, Malmaud, Shubi, Meiri, Lion, Levy (2025), "
