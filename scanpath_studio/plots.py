@@ -2184,3 +2184,69 @@ def make_fixation_duration_histogram(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+def make_metric_convergence_figure(
+    series: dict,
+    *,
+    x_title: str,
+    y_title: str,
+    title: str,
+    canvas_width: int,
+    base_font_size: int,
+    font_family: str,
+    height: int = 340,
+    y_range: Tuple[float, float] = (0.0, 1.02),
+    highlight_x_range: Optional[Tuple[float, float]] = None,
+) -> go.Figure:
+    """Line chart of a metric (one line per model) over a cumulative x axis.
+
+    ``series`` maps a model name to ``(xs, ys)``. Used by the Multiple Comparison
+    tab to show how each model's NLD vs. the real scanpath evolves as more of the
+    reading is included — either by cumulative fixation index or by elapsed time.
+    Optionally shades ``highlight_x_range`` (e.g. the selected fixation window).
+    """
+    fig = go.Figure()
+    font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
+    has_data = False
+    for i, (name, xy) in enumerate(series.items()):
+        xs, ys = xy
+        if not len(xs):
+            continue
+        has_data = True
+        color = _QUALITATIVE_PALETTE[i % len(_QUALITATIVE_PALETTE)]
+        fig.add_trace(
+            go.Scatter(
+                x=list(xs),
+                y=list(ys),
+                mode="lines+markers",
+                name=str(name),
+                line=dict(color=color, width=2),
+                marker=dict(size=4, color=color),
+                hovertemplate=(
+                    f"{name}<br>{x_title}: %{{x}}<br>{y_title}: %{{y:.3f}}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    if has_data and highlight_x_range is not None:
+        lo, hi = highlight_x_range
+        if hi > lo:
+            fig.add_vrect(x0=lo, x1=hi, fillcolor="#6c757d", opacity=0.10, line_width=0)
+    fig.update_layout(
+        height=height,
+        width=canvas_width,
+        autosize=False,
+        margin=dict(l=55, r=10, t=40, b=45),
+        template="plotly_white",
+        font=font_settings,
+        xaxis=dict(title=x_title),
+        yaxis=dict(title=y_title, range=list(y_range)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        title=title,
+    )
+    if not has_data:
+        fig.add_annotation(
+            text="No data", showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper"
+        )
+    return fig

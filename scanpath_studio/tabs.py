@@ -12,11 +12,22 @@ import streamlit.components.v1 as components
 from scanpath_studio.annotations import render_trial_annotations
 from scanpath_studio.constants import DEFAULT_LINE_SPACING
 from scanpath_studio.data import compute_word_metrics
+from scanpath_studio.model_scanpaths import (
+    DEFAULT_N_MODELS,
+    generate_model_scanpaths,
+)
+from scanpath_studio.similarity import (
+    METRICS,
+    compute_similarity_table,
+    nld_by_fixation_index,
+    nld_by_time,
+)
 
 from scanpath_studio.plots import (
     animation_playback_ms,
     make_comparison_figure,
     make_fixation_duration_histogram,
+    make_metric_convergence_figure,
     make_scanpath_animation,
     make_scanpath_figure,
     make_word_measure_bar_figure,
@@ -45,7 +56,9 @@ def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(text))
 
 
-def _render_true_scale_chart(fig, *, key: str) -> None:
+def _render_true_scale_chart(
+    fig, *, key: str, max_height: Optional[int] = None
+) -> None:
     """Display a spatial figure true-to-scale, fitted to the column width.
 
     ``st.plotly_chart`` pins the chart width to the column but keeps the layout
@@ -58,6 +71,11 @@ def _render_true_scale_chart(fig, *, key: str) -> None:
     stays faithful to the experiment at any column width — and never needs
     horizontal scrolling. It is only scaled down to fit (capped at 1×), so on a
     wide monitor it sits at true size with margin rather than being stretched.
+
+    ``max_height`` caps the rendered (scaled) height in px — used for the small
+    multiples in the *Multiple Comparison* grid, where the figure should also
+    shrink to fit a fixed cell height (whichever of width/height binds), and the
+    iframe is sized to that cap so panels don't leave a tall band of whitespace.
     """
     width = int(fig.layout.width or 900)
     height = int(fig.layout.height or 600)
@@ -67,6 +85,14 @@ def _render_true_scale_chart(fig, *, key: str) -> None:
         config={"responsive": False, "displaylogo": False},
         div_id=f"truescale-{key}",
     )
+    # Scale factor: shrink to the available width, and (when capped) also to the
+    # cell height, never upscaling past 1×.
+    if max_height is not None:
+        scale_js = f"Math.min(1, avail / W, {int(max_height)} / H)"
+        iframe_height = int(max_height) + 12
+    else:
+        scale_js = "Math.min(1, avail / W)"
+        iframe_height = height + 12
     # Wrap the fixed-size plot and scale it to the available (iframe) width.
     # transform-origin top-left keeps it flush-left; the outer box height tracks
     # the scaled height so there's no dead space below.
@@ -82,7 +108,7 @@ def _render_true_scale_chart(fig, *, key: str) -> None:
       var box = document.getElementById("box-{key}");
       function fit() {{
         var avail = outer.clientWidth || W;
-        var s = Math.min(1, avail / W);
+        var s = {scale_js};
         box.style.transform = "scale(" + s + ")";
         outer.style.height = Math.round(H * s) + "px";
       }}
@@ -92,9 +118,9 @@ def _render_true_scale_chart(fig, *, key: str) -> None:
     }})();
     </script>
     """
-    # Iframe height = full true height (the most it can be, at 1× on wide
-    # monitors); the script trims the visible block to the scaled height.
-    components.html(html, height=height + 12, scrolling=False)
+    # Iframe height = full true height (or the cap); the script trims the
+    # visible block to the scaled height.
+    components.html(html, height=iframe_height, scrolling=False)
 
 
 def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
@@ -1518,6 +1544,383 @@ def render_animation_tab(
             key="anim_export_html",
             help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
         )
+
+
+# -----------------------------------------------------------------------------
+# Multiple Comparison Tab
+# -----------------------------------------------------------------------------
+
+
+def _metric_help_text() -> str:
+    """One markdown line per similarity metric, flagging the placeholders."""
+    lines = []
+    for metric in METRICS:
+        tag = "" if metric.fn is not None else " *(placeholder)*"
+        lines.append(f"**{metric.label}**{tag}: {metric.description}")
+    return "  \n".join(lines)
+
+
+def _best_model_indices(table: pd.DataFrame) -> dict:
+    """Row index of the best-scoring model per *real* metric column.
+
+    Min when the metric is lower-is-better, max otherwise. Placeholder metrics
+    (``fn is None``) and all-NaN columns are skipped, so they get no entry.
+    """
+    best_index: dict[str, object] = {}
+    for metric in METRICS:
+        if metric.fn is None or metric.label not in table.columns:
+            continue
+        col = pd.to_numeric(table[metric.label], errors="coerce")
+        if col.notna().any():
+            best_index[metric.label] = (
+                col.idxmin() if metric.lower_is_better else col.idxmax()
+            )
+    return best_index
+
+
+def _metric_arrow(metric) -> str:
+    """Direction arrow for a metric header: ↓ when lower is more similar, ↑ when
+    higher is."""
+    return "↓" if metric.lower_is_better else "↑"
+
+
+def _style_similarity_table(table: pd.DataFrame):
+    """Format the similarity table and highlight the best model per metric.
+
+    Each metric header gets a direction arrow (↓ lower-is-better / ↑
+    higher-is-better) so it's clear which way means *more similar*. Placeholder
+    metrics (all-NaN columns) render as "—"; for each real metric the
+    best-scoring model's cell is tinted green.
+    """
+    # Header relabelling: "NLD" -> "NLD ↓", etc. Keep the original-label
+    # best-index, then translate its keys to the arrowed headers for highlighting.
+    header_map = {
+        m.label: f"{m.label} {_metric_arrow(m)}"
+        for m in METRICS
+        if m.label in table.columns
+    }
+    best_index = _best_model_indices(table)
+    best_by_header = {
+        header_map[label]: idx
+        for label, idx in best_index.items()
+        if label in header_map
+    }
+
+    display = table.copy()
+    for label in header_map:
+        display[label] = display[label].map(
+            lambda v: f"{v:.3f}" if pd.notna(v) else "—"
+        )
+    display = display.rename(columns=header_map)
+
+    def _highlight(row: pd.Series) -> list[str]:
+        styles = []
+        for col in display.columns:
+            style = ""
+            if col in best_by_header and row.name == best_by_header[col]:
+                style = "background-color: #d4edda; font-weight: 600;"
+            styles.append(style)
+        return styles
+
+    return display.style.apply(_highlight, axis=1)
+
+
+def render_multiple_comparison_tab(
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    combos: pd.DataFrame,
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    base_font_size: int,
+    font_family: str,
+    viz_settings: dict,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
+) -> None:
+    """Render the Multiple Comparison tab.
+
+    Shows the real scanpath for the selected trial on top, then a configurable
+    grid of model-generated scanpaths over the SAME text, and a similarity
+    table scoring each model against the real reading (NLD plus placeholder
+    metrics). The model scanpaths are synthetic placeholders until real model
+    outputs are connected — see :mod:`scanpath_studio.model_scanpaths`.
+    """
+    st.caption(
+        "Compare a real scanpath with several **model-generated** scanpaths over "
+        "the same text, and score how close each model is to the real reading. "
+        "⚠️ The model scanpaths are **synthetic placeholders** (reproducible, "
+        "reading-like random paths) until real model outputs are connected."
+    )
+
+    col_side, col_main = st.columns([3, 7], gap="medium")
+
+    with col_side:
+        selected_participant, selected_trial, _mode, _text = select_trial(
+            combos, key_prefix="multi"
+        )
+    if not (selected_participant and selected_trial):
+        return
+
+    trial_words = words_filtered[
+        (words_filtered["participant_id"] == selected_participant)
+        & (words_filtered["trial_id"] == selected_trial)
+    ]
+    trial_fixations = fixations_filtered[
+        (fixations_filtered["participant_id"] == selected_participant)
+        & (fixations_filtered["trial_id"] == selected_trial)
+    ]
+    if trial_words.empty or trial_fixations.empty:
+        with col_main:
+            st.warning("The selected trial has no words/fixations after filtering.")
+        return
+
+    with col_side:
+        # The number of models is inferred from the model-scanpath data. Until
+        # real model outputs are connected we generate a fixed set of example
+        # scanpaths behind the scenes — so there's no user control for it.
+        n_models = DEFAULT_N_MODELS
+        n_cols = st.slider(
+            "Grid columns",
+            min_value=1,
+            max_value=4,
+            value=3,
+            key="multi_n_cols",
+            help="Columns in the model grid (rows fill automatically).",
+        )
+        if st.button(
+            "🎲 Regenerate",
+            key="multi_regen",
+            help="Re-draw the synthetic model scanpaths with a fresh random seed.",
+        ):
+            st.session_state["multi_nonce"] = (
+                int(st.session_state.get("multi_nonce", 0)) + 1
+            )
+        nonce = int(st.session_state.get("multi_nonce", 0))
+
+        paragraph_id = _trial_text_id(trial_words)
+        models = generate_model_scanpaths(
+            trial_words,
+            n_models=n_models,
+            reference_trial_id=selected_trial,
+            paragraph_id=paragraph_id,
+            nonce=nonce,
+        )
+
+        # Fixation-index window: restrict which fixations are drawn (and scored
+        # in the snapshot table) for the real scanpath and every model.
+        max_fix = max([len(trial_fixations)] + [len(m) for m in models.values()])
+        if max_fix >= 2:
+            # The slider value persists across trial / model-count changes, which
+            # shift max_fix. Seed/clamp it via session_state *only* (no value=
+            # arg), so the stored value is always inside [1, max_fix] — passing
+            # both a value= and a session-state value raises a Streamlit warning,
+            # and an out-of-range stored value would otherwise raise outright.
+            stored = st.session_state.get("multi_fix_range")
+            if isinstance(stored, (tuple, list)) and len(stored) == 2:
+                lo = max(1, min(int(stored[0]), int(max_fix)))
+                hi = max(lo, min(int(stored[1]), int(max_fix)))
+                st.session_state["multi_fix_range"] = (lo, hi)
+            else:
+                st.session_state["multi_fix_range"] = (1, int(max_fix))
+            fix_start, fix_end = st.slider(
+                "Fixation index range",
+                min_value=1,
+                max_value=int(max_fix),
+                key="multi_fix_range",
+                help="Plot (and score, in the table) only fixations whose index "
+                "falls in this range — applied to the real scanpath and every "
+                "model. The convergence plots below always span the full reading.",
+            )
+        else:
+            fix_start, fix_end = 1, int(max_fix)
+
+        _render_trial_header(
+            selected_participant,
+            selected_trial,
+            trial_words,
+            prefix="Real scanpath:",
+        )
+        _render_paragraph_panel(
+            trial_words, trial_fixations=trial_fixations, expanded=False
+        )
+
+    def _slice_range(fix: pd.DataFrame) -> pd.DataFrame:
+        """Keep only fixations whose 1-based order index is in [start, end]."""
+        if "order_in_trial" in fix.columns and not fix.empty:
+            return fix[
+                (fix["order_in_trial"] >= fix_start)
+                & (fix["order_in_trial"] <= fix_end)
+            ]
+        return fix
+
+    # Reuse the user's viz toggles, but force a clean comparison view (no
+    # heatmap / raw gaze). The small model panels additionally drop word labels
+    # and order numbers, which are illegible at grid scale.
+    #
+    # Normalize to a clean, comparable spatial view regardless of the sidebar
+    # choices. The grid is an inherently spatial scanpath view, and the synthetic
+    # model frames only carry the canonical fixation columns with *synthetic*
+    # participant ids — so any option that (a) reads a real-only column or (b)
+    # routes through a (participant_id, trial_id) groupby against the real
+    # trial_words would either KeyError or silently mis-render the model panels:
+    #   - x/y axes + color_by: a real-only column (saccade_amplitude, surprisal…)
+    #     KeyErrors / falls back to a flat colour → pin axes to x/y, colour by
+    #     duration_ms (present in every frame);
+    #   - color_by_line / highlight_out_of_text: call measures helpers that group
+    #     by (participant_id, trial_id); the model frames' "Model N" id never
+    #     matches trial_words, so every model fixation would land off-line /
+    #     out-of-text → pin both off.
+    base_settings = _build_figure_settings(viz_settings, False)
+    base_settings["raw_gaze"] = None
+    base_settings["line_spacing"] = line_spacing
+    base_settings["scale_text_to_boxes"] = scale_text_to_boxes
+    real_settings = {
+        **base_settings,
+        "show_heatmap": False,
+        "show_raw_gaze": False,
+        "color_by": "duration_ms",
+        "color_by_line": False,
+        "highlight_out_of_text": False,
+    }
+    panel_settings = {**real_settings, "show_word_labels": False, "show_order": False}
+
+    def _make_fig(fix: pd.DataFrame, settings: dict):
+        return make_scanpath_figure(
+            trial_words,
+            fix,
+            canvas_width=int(canvas_width),
+            canvas_height=int(canvas_height),
+            base_font_size=int(base_font_size),
+            font_family=font_family,
+            x_field="x",
+            y_field="y",
+            **settings,
+        )
+
+    # Sliced (windowed) frames feed the spatial figures and the snapshot table;
+    # the convergence plots below use the FULL scanpaths.
+    sliced_real = _slice_range(trial_fixations)
+    sliced_models = {name: _slice_range(m) for name, m in models.items()}
+    windowed = fix_start > 1 or fix_end < max_fix
+
+    with col_main:
+        st.markdown("#### Real scanpath")
+        if windowed:
+            st.caption(
+                f"Showing fixations **{fix_start}–{fix_end}** of up to {max_fix}."
+            )
+        real_fig = _make_fig(sliced_real, real_settings)
+        _render_true_scale_chart(real_fig, key="multi_real")
+
+        st.markdown("#### Similarity to the real scanpath")
+        table = compute_similarity_table(sliced_real, sliced_models, trial_words)
+        st.dataframe(_style_similarity_table(table), hide_index=True, width="stretch")
+        st.caption(
+            "Header arrows show which direction is **more similar** "
+            "(↓ lower is better · ↑ higher is better); the best model per metric "
+            "is highlighted."
+        )
+        st.caption(_metric_help_text())
+
+        st.markdown("#### Model-generated scanpaths")
+        nld_by_model = (
+            dict(zip(table["Model"], table["NLD"])) if "NLD" in table.columns else {}
+        )
+        # Estimate a uniform cell height from the figure aspect + column count
+        # so panels line up and don't leave a tall whitespace band below each.
+        fig_w = float(real_fig.layout.width or 900)
+        fig_h = float(real_fig.layout.height or 600)
+        aspect = fig_h / fig_w if fig_w else 0.5
+        assumed_col_px = max(200, int(780 / max(1, n_cols)))
+        cell_h = max(150, int(assumed_col_px * aspect) + 16)
+
+        names = list(models.keys())
+        for start in range(0, len(names), n_cols):
+            row_names = names[start : start + n_cols]
+            grid_cols = st.columns(n_cols)
+            for cell, name in zip(grid_cols, row_names):
+                with cell:
+                    fix = sliced_models[name]
+                    nld = nld_by_model.get(name)
+                    if nld is not None and pd.notna(nld):
+                        st.caption(f"**{name}** · NLD {nld:.2f} · {len(fix)} fix")
+                    else:
+                        st.caption(f"**{name}** · {len(fix)} fix")
+                    _render_true_scale_chart(
+                        _make_fig(fix, panel_settings),
+                        key=f"multi_model_{name.replace(' ', '_')}",
+                        max_height=cell_h,
+                    )
+
+        # Cumulative metric convergence over the full scanpaths. Memoized so
+        # dragging the fixation slider — which does NOT change these curves —
+        # doesn't recompute the per-prefix NLDs. The key includes a fingerprint
+        # of the real fixation content (not just the participant/trial id
+        # strings), so a different dataset that happens to reuse the same ids
+        # (e.g. two uploads both labelled participant "1") can't serve stale
+        # curves.
+        st.markdown("#### Metric convergence")
+        st.caption(
+            "NLD between the real scanpath and each model, computed cumulatively "
+            "over the first *k* fixations (left) and the first *t* seconds of "
+            "reading (right). Lower = more similar; computed on the full reading "
+            "regardless of the fixation-range slider."
+        )
+        if trial_fixations.empty:
+            fix_fingerprint: tuple = (0,)
+        else:
+            fix_fingerprint = (
+                len(trial_fixations),
+                len(trial_words),
+                round(float(pd.to_numeric(trial_fixations["x"]).sum()), 3),
+                round(float(pd.to_numeric(trial_fixations["y"]).sum()), 3),
+                round(float(pd.to_numeric(trial_fixations["duration_ms"]).sum()), 3),
+            )
+        conv_key = (
+            str(selected_participant),
+            str(selected_trial),
+            int(nonce),
+            int(n_models),
+            fix_fingerprint,
+        )
+        if st.session_state.get("_multi_conv_key") != conv_key:
+            st.session_state["_multi_conv_key"] = conv_key
+            st.session_state["_multi_conv_fix"] = {
+                name: nld_by_fixation_index(trial_fixations, m, trial_words)
+                for name, m in models.items()
+            }
+            st.session_state["_multi_conv_time"] = {
+                name: nld_by_time(trial_fixations, m, trial_words)
+                for name, m in models.items()
+            }
+        fix_curves = st.session_state["_multi_conv_fix"]
+        time_curves = st.session_state["_multi_conv_time"]
+
+        conv_cols = st.columns(2)
+        with conv_cols[0]:
+            fig_idx = make_metric_convergence_figure(
+                fix_curves,
+                x_title="Cumulative fixation index",
+                y_title="NLD",
+                title="NLD vs fixation index",
+                canvas_width=520,
+                base_font_size=int(base_font_size),
+                font_family=font_family,
+                highlight_x_range=(fix_start, fix_end) if windowed else None,
+            )
+            st.plotly_chart(fig_idx, width="stretch", config={"responsive": True})
+        with conv_cols[1]:
+            fig_time = make_metric_convergence_figure(
+                time_curves,
+                x_title="Elapsed reading time (s)",
+                y_title="NLD",
+                title="NLD vs time",
+                canvas_width=520,
+                base_font_size=int(base_font_size),
+                font_family=font_family,
+            )
+            st.plotly_chart(fig_time, width="stretch", config={"responsive": True})
 
 
 # -----------------------------------------------------------------------------

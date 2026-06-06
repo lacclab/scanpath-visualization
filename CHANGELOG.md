@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-06-06
+
+### Added
+- **Multiple Comparison tab.** Shows a real scanpath on top, then a grid of
+  model-generated scanpaths over the same text, and a similarity table scoring
+  each model against the real reading. Until real model outputs are connected,
+  the model scanpaths are reproducible, reading-like **synthetic placeholders**
+  (deterministic per trial; a 🎲 Regenerate button re-rolls them). The number of
+  models is inferred from the data; a "Grid columns" control sets the layout.
+- **Scanpath similarity metrics** (`scanpath_studio/similarity.py`): **NLD**
+  (Normalized Levenshtein Distance on the word-index/AOI sequence — the metric
+  reported by Eyettention) computed for real, with ScanMatch / MultiMatch /
+  Scasim registered as labeled placeholders. Table headers carry a direction
+  arrow (↓ lower-is-better / ↑ higher-is-better) and highlight the best model.
+- **Fixation-index range slider** to window which fixations are drawn and scored.
+- **Metric-convergence plots**: NLD vs cumulative fixation index and NLD vs
+  elapsed reading time, one line per model, computed over the full reading.
+
 ## [0.14.0] - 2026-06-06
 
 ### Changed

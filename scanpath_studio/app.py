@@ -86,6 +86,7 @@ from scanpath_studio.styles import get_app_css
 from scanpath_studio.tabs import (
     render_animation_tab,
     render_data_statistics_tab,
+    render_multiple_comparison_tab,
     render_raw_data_tab,
     render_single_trial_tab,
 )
@@ -117,7 +118,7 @@ ONESTOP_CHOICE = "OneStop server bundle"
 # so a URL deep link has to seed all of them or only the first tab lands on
 # the requested trial. Keep this list in sync with the `key_prefix=` values
 # passed to `select_trial` in tabs.py.
-_SELECTION_PREFIXES = ("single", "anim")
+_SELECTION_PREFIXES = ("single", "anim", "multi")
 _URL_PRESETS = {
     # viz prefs (`controls.sidebar_controls`)
     "show_order": ("global_show_order", lambda v: v not in {"0", "false", "no"}),
@@ -695,10 +696,11 @@ def main() -> None:
         st.info("🎬 For the animated view, click the **Animated Scanpath** tab below.")
 
     # Render tabbed interface
-    tab_single, tab_animation, tab_raw, tab_stats = st.tabs(
+    tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
         [
             "Interactive Plot",
             "Animated Scanpath",
+            "Multiple Comparison",
             "Raw Data",
             "Data Statistics",
         ]
@@ -721,6 +723,20 @@ def main() -> None:
 
     with tab_animation:
         render_animation_tab(
+            words_filtered,
+            fixations_filtered,
+            combos,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            base_font_size=base_font_size,
+            font_family=font_family,
+            viz_settings=viz_settings,
+            line_spacing=line_spacing,
+            scale_text_to_boxes=scale_text_to_boxes,
+        )
+
+    with tab_multi:
+        render_multiple_comparison_tab(
             words_filtered,
             fixations_filtered,
             combos,
