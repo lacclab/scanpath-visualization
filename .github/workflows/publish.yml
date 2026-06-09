@@ -48,7 +48,14 @@ jobs:
             exit 0
           fi
           VERSION="${TAG#v}"
-          TEXT=":rocket: *scanpath-studio ${TAG}* published to PyPI — https://pypi.org/project/scanpath-studio/${VERSION}/"
+          URL="https://pypi.org/project/scanpath-studio/${VERSION}/"
+          NOTES="$(python scripts/changelog_notes.py "$VERSION")"
+          HEADER=":rocket: *scanpath-studio ${TAG}* published to PyPI"
+          if [ -n "$NOTES" ]; then
+            TEXT="$(printf '%s\n%s\n\n*Release notes:*\n%s' "$HEADER" "$URL" "$NOTES")"
+          else
+            TEXT="$HEADER — $URL"
+          fi
           curl -sSf -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
             --data "$(jq -n --arg text "$TEXT" '{text: $text}')"

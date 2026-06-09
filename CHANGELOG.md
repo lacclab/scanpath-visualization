@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-06-09
+
+### Internal
+- **Slack release notifications.** A successful PyPI publish now posts a message
+  to the lab Slack (`#scanpath-studio`) — including these release notes — via a
+  webhook in the `publish.yml` workflow. `scripts/changelog_notes.py` renders the
+  matching changelog section to Slack mrkdwn. No changes to the packaged app.
+
 ## [0.16.0] - 2026-06-09
 
 ### Added
