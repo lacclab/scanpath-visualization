@@ -48,7 +48,7 @@ The plot is built from layers you can toggle independently:
 
 On top of the layered view:
 
-- **Animated replay** — watch the scanpath unfold fixation by fixation, at real or scaled speed.
+- **Animated replay** — watch the scanpath unfold fixation by fixation, at real or scaled speed; export it as interactive HTML or a self-playing **GIF / MP4** clip for slides and papers.
 - **Compare two trials** — overlaid on one canvas or side-by-side (e.g. ordinary vs. information-seeking reading, first vs. repeated reading, L1 vs. L2).
 - **Critical-span highlight** — mark a region of interest (e.g. an answer span) by color or border to see at a glance whether it was read.
 - **Out-of-text & by-line** — flag fixations that land outside every word box, or color fixations by the text line they fall on.
@@ -65,7 +65,7 @@ On top of the layered view:
 | Tab | What's there |
 |-----|--------------|
 | **Interactive Plot** | The layered scanpath view, trial picker (by trial / text / participant), trial metadata, and two-trial comparison. |
-| **Animated Scanpath** | Frame-by-frame replay; each frame lasts the actual fixation duration ÷ playback speed. |
+| **Animated Scanpath** | Frame-by-frame replay; each frame lasts the actual fixation duration ÷ playback speed. Export as interactive HTML, GIF, or MP4. |
 | **Raw Data** | Paginated word, fixation, and raw-gaze tables, each with CSV + Parquet download. |
 | **Data Statistics** | Summary stats (mean fixation duration, saccade amplitude, regression rate, reading speed), a fixation-duration distribution, and a per-word reading-measure bar plot. |
 

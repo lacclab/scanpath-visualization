@@ -9,3 +9,7 @@ numpy~=2.3.5
 pyarrow~=22.0.0
 kaleido~=1.2.0
 watchdog~=6.0.0
+# Rasterized animation export (GIF/MP4). imageio's ffmpeg extra bundles an
+# ffmpeg binary, so MP4 needs no system package; Pillow encodes the GIF.
+pillow~=12.0.0
+imageio[ffmpeg]~=2.37.0

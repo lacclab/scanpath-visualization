@@ -31,6 +31,10 @@ dependencies = [
     "pyarrow>=22.0.0",
     "kaleido>=1.0",
     "watchdog>=4.0.0",
+    # Rasterized animation export (GIF/MP4): Pillow encodes GIF; imageio's ffmpeg
+    # extra bundles an ffmpeg binary for MP4 (no system package needed).
+    "pillow>=10.0",
+    "imageio[ffmpeg]>=2.34",
 ]
 
 [project.optional-dependencies]
