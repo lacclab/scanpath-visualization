@@ -72,6 +72,19 @@ class TestAppLaunches:
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
 
+    def test_animation_export_controls_render(self):
+        # The animated-scanpath export selector offers HTML/GIF/MP4; selecting a
+        # rasterized format must render its options + Render button without
+        # crashing (and without triggering the expensive Kaleido render).
+        at = _make_apptest()
+        at.run(timeout=30)
+        fmt_radios = [r for r in at.radio if list(r.options) == ["HTML", "GIF", "MP4"]]
+        assert fmt_radios, "animation export-format radio not found"
+        at.session_state["anim_export_format"] = "MP4"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+
     def test_new_viz_toggles_build_without_error(self):
         # Flip the new plot options (color-by-line, out-of-text, gray
         # background) and re-run the whole app to exercise those code paths.

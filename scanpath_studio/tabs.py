@@ -37,6 +37,11 @@ from scanpath_studio.export import (
     bulk_export,
     render_export_options,
 )
+from scanpath_studio.animation_export import (
+    AnimationExportError,
+    export_animation,
+    mime_for,
+)
 from scanpath_studio.utils import (
     build_comparison_options,
     compute_trial_stats,
@@ -54,6 +59,21 @@ from scanpath_studio.utils import (
 
 def _safe_filename(text: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in str(text))
+
+
+def _embed_html_iframe(html: str, *, height: int) -> None:
+    """Render an HTML string (scripts included) inside a sandboxed iframe.
+
+    ``st.iframe`` (Streamlit >= 1.56) supersedes ``st.components.v1.html``, which
+    is deprecated and scheduled for removal. We need an *iframe* — not
+    ``st.html`` — because the embedded block runs ``<script>`` (Plotly from the
+    CDN plus the fit/scale script), which ``st.html`` strips. Fall back to the
+    old API on older Streamlit so the app still runs against the pinned baseline.
+    """
+    if hasattr(st, "iframe"):
+        st.iframe(html, height=height)
+    else:
+        components.html(html, height=height, scrolling=False)
 
 
 def _render_true_scale_chart(
@@ -120,7 +140,7 @@ def _render_true_scale_chart(
     """
     # Iframe height = full true height (or the cap); the script trims the
     # visible block to the scaled height.
-    components.html(html, height=iframe_height, scrolling=False)
+    _embed_html_iframe(html, height=iframe_height)
 
 
 def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
@@ -301,6 +321,151 @@ def _render_save_plot_button(
         mime=_MIME_FOR_FORMAT[fmt],
         key=f"{key_prefix}_save_button",
     )
+
+
+# Above this many frames, offer to cap the rendered frame count: each frame is a
+# headless-Chrome render (~0.1-0.25 s), so a long reading would otherwise spin for
+# a minute or more. Capping holds each kept frame proportionally longer, so the
+# clip's total duration is unchanged.
+_ANIM_FRAME_CAP = 250
+# Rough per-frame render cost (warm browser) + one-off browser cold start, for the
+# "~Ns to render" estimate. Approximate by design.
+_ANIM_RENDER_S_PER_FRAME = 0.18
+_ANIM_RENDER_COLD_START_S = 3.0
+
+
+def _render_animation_export(fig, *, file_stem: str, playback_ms: float) -> None:
+    """Export the animated scanpath as interactive HTML or a rasterized GIF/MP4.
+
+    HTML is one click (no browser needed to generate, keeps interactivity). GIF and
+    MP4 rasterize every frame through Kaleido (headless Chrome) — too slow to run on
+    every rerun — so they follow the same Render-then-download pattern as the static
+    image export, with a progress bar and a result cached in session state so the
+    download button survives reruns (and a re-render isn't needed unless an option
+    changes). The clip reproduces the on-screen Play: every frame held for the same
+    average duration, so its runtime equals the quoted playback time.
+    """
+    n_frames = len(fig.frames or ())
+    fmt = st.radio(
+        "Export format",
+        options=["HTML", "GIF", "MP4"],
+        index=0,
+        horizontal=True,
+        key="anim_export_format",
+        help=(
+            "HTML keeps the interactive play/slider and needs no browser to "
+            "generate. GIF and MP4 are self-playing clips (great for slides or "
+            "papers) rendered via Kaleido/Chrome — MP4 is far smaller than GIF."
+        ),
+    )
+
+    if fmt == "HTML":
+        html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
+        st.download_button(
+            "⬇ Download HTML",
+            data=html_bytes,
+            file_name=f"{file_stem}.html",
+            mime="text/html",
+            key="anim_export_html",
+            help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
+        )
+        return
+
+    if n_frames == 0:
+        st.info("Nothing to animate for this trial.")
+        return
+
+    frame_ms = playback_ms / n_frames if n_frames else 16.0
+    clip_s = playback_ms / 1000.0
+
+    scale = st.select_slider(
+        "Resolution",
+        options=[0.5, 0.75, 1.0, 1.5, 2.0],
+        value=1.0,
+        format_func=lambda s: f"{s:g}×",
+        key="anim_export_scale",
+        help="Render scale: 1× matches the on-screen size. Lower is smaller/faster; "
+        "higher is crisper/larger.",
+    )
+
+    max_frames = None
+    if n_frames > _ANIM_FRAME_CAP:
+        if st.checkbox(
+            f"Limit to {_ANIM_FRAME_CAP} frames for a faster render",
+            value=True,
+            key="anim_export_limit",
+            help="This reading has many fixations. Capping the rendered frames keeps "
+            "the export quick; the clip's total duration is unchanged (each kept "
+            "frame is held a little longer).",
+        ):
+            max_frames = _ANIM_FRAME_CAP
+
+    render_frames = min(n_frames, max_frames) if max_frames else n_frames
+    est_s = render_frames * _ANIM_RENDER_S_PER_FRAME + _ANIM_RENDER_COLD_START_S
+    note = f"{n_frames} frames · clip ≈ {clip_s:.1f}s · ~{est_s:.0f}s to render"
+    if render_frames != n_frames:
+        note += f" ({render_frames} frames rendered)"
+    st.caption(note)
+    if fmt == "GIF":
+        st.caption(
+            "GIF embeds anywhere but is large for long readings — prefer MP4, or "
+            "lower the resolution, to shrink the file."
+        )
+
+    # Re-render only when an output-affecting option changes; otherwise reuse the
+    # cached bytes so the download button persists across reruns.
+    sig = (file_stem, fmt, float(scale), max_frames, n_frames, round(frame_ms, 2))
+    cache = st.session_state.get("_anim_export_cache")
+
+    if st.button(
+        f"Render {fmt}",
+        key="anim_export_generate",
+        help="Renders each frame via Kaleido (headless Chrome); the download "
+        "appears once it's ready.",
+    ):
+        bar = st.progress(0.0, text=f"Rendering 0/{render_frames} frames…")
+
+        def _on_progress(done: int, total: int) -> None:
+            bar.progress(done / total, text=f"Rendering {done}/{total} frames…")
+
+        try:
+            data = export_animation(
+                fig,
+                fmt=fmt.lower(),
+                frame_duration_ms=frame_ms,
+                scale=float(scale),
+                max_frames=max_frames,
+                progress_callback=_on_progress,
+            )
+        except AnimationExportError as exc:
+            bar.empty()
+            st.warning(
+                f"Could not render {fmt}: {exc}\n\n"
+                "GIF/MP4 export rasterizes each frame with a Chrome/Chromium browser "
+                "(Kaleido). On Streamlit Cloud this is installed via `packages.txt`; "
+                "if it still fails, use the **HTML** format above — it needs no browser."
+            )
+            cache = None
+        else:
+            bar.empty()
+            cache = {"sig": sig, "data": data}
+            st.session_state["_anim_export_cache"] = cache
+
+    if cache and cache.get("sig") == sig:
+        data = cache["data"]
+        size = len(data)
+        size_label = (
+            f"{size / 1_048_576:.1f} MB"
+            if size >= 1_048_576
+            else f"{size / 1024:.0f} KB"
+        )
+        st.download_button(
+            f"⬇ Download {fmt} ({size_label})",
+            data=data,
+            file_name=f"{file_stem}.{fmt.lower()}",
+            mime=mime_for(fmt.lower()),
+            key="anim_export_download",
+        )
 
 
 def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) -> dict:
@@ -1519,11 +1684,11 @@ def render_animation_tab(
                 "Each orange highlight, ringed in its scanpath's colour, marks "
                 "that reader's current fixation."
             )
-            file_name = (
+            file_stem = (
                 f"animation_{_safe_filename(selected_participant)}__"
                 f"{_safe_filename(selected_trial)}__vs__"
                 f"{_safe_filename(sel_b_participant)}__"
-                f"{_safe_filename(sel_b_trial)}.html"
+                f"{_safe_filename(sel_b_trial)}"
             )
         else:
             st.caption(
@@ -1531,19 +1696,11 @@ def render_animation_tab(
                 "speed, ⏸ Pause stops, and the slider scrubs by elapsed reading "
                 "time. Orange highlight shows the current fixation."
             )
-            file_name = (
+            file_stem = (
                 f"animation_{_safe_filename(selected_participant)}__"
-                f"{_safe_filename(selected_trial)}.html"
+                f"{_safe_filename(selected_trial)}"
             )
-        html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
-        st.download_button(
-            "Export animation (HTML)",
-            data=html_bytes,
-            file_name=file_name,
-            mime="text/html",
-            key="anim_export_html",
-            help="Self-contained HTML you can open in any browser; keeps play/slider interactivity.",
-        )
+        _render_animation_export(fig, file_stem=file_stem, playback_ms=playback_ms)
 
 
 # -----------------------------------------------------------------------------

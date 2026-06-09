@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-06-09
+
+### Added
+- **Export the animated scanpath as GIF or MP4** (in addition to the existing
+  interactive HTML). The Animated Scanpath tab gains an export-format selector;
+  GIF/MP4 rasterize every animation frame through Kaleido (the same headless
+  Chrome the PNG/SVG/PDF export uses) and encode them — Pillow for GIF,
+  imageio-ffmpeg (bundled ffmpeg, no system package) for MP4. The clip
+  reproduces the on-screen Play exactly: every frame held for the average
+  duration so the runtime equals the quoted playback time, the slider's
+  "Elapsed: X.Xs" readout re-drawn as a per-frame annotation, and the
+  play/slider chrome stripped. A single browser is kept warm across frames
+  (`kaleido.start_sync_server` → `calc_fig_sync`), so rendering is ~0.1–0.25 s
+  per frame instead of a ~10 s cold start each. A progress bar tracks the
+  render, the result is cached in session state (so the download button
+  survives reruns), and long readings can be capped to a fixed frame count
+  (duration preserved) to keep export quick. MP4 is far smaller than GIF and is
+  recommended for long readings. New module `scanpath_studio/animation_export.py`
+  (+ `tests/test_animation_export.py`).
+
 ## [0.15.1] - 2026-06-06
 
 ### Changed
