@@ -412,9 +412,14 @@ def _render_animation_export(fig, *, file_stem: str, playback_ms: float) -> None
             "lower the resolution, to shrink the file."
         )
 
-    # Re-render only when an output-affecting option changes; otherwise reuse the
-    # cached bytes so the download button persists across reruns.
-    sig = (file_stem, fmt, float(scale), max_frames, n_frames, round(frame_ms, 2))
+    # Re-render only when an output-affecting input changes; otherwise reuse the
+    # cached bytes so the download button persists across reruns. The figure's
+    # own JSON fingerprints every visual choice that feeds the clip — trial,
+    # playback speed, saccades/order/marker-size/background, true-to-scale text —
+    # so toggling any of them invalidates a stale render instead of serving the
+    # previous bytes. `scale`/`max_frames` are export-only (not in the figure),
+    # so they're keyed separately.
+    sig = (file_stem, fmt, float(scale), max_frames, hash(fig.to_json()))
     cache = st.session_state.get("_anim_export_cache")
 
     if st.button(
