@@ -689,6 +689,18 @@ def _render_trial_header(
                 break
     if text_id is not None:
         lines.append(f"Text: `{text_id}`")
+    # When the trial id was composed from several columns, surface its remaining
+    # parts on their own labeled lines too — the same way Participant and Text
+    # are shown — so the opaque `a_b_c` id is spelled out. Participant and the
+    # paragraph/text column are already covered above, so they're skipped.
+    composite_cols = st.session_state.get("_composite_trial_columns") or []
+    already_shown = {"participant_id", "unique_paragraph_id", "paragraph_id"}
+    for col in composite_cols:
+        if col in already_shown or col not in trial_words.columns or trial_words.empty:
+            continue
+        value = trial_words[col].iloc[0]
+        if pd.notna(value):
+            lines.append(f"{col.replace('_', ' ').capitalize()}: `{value}`")
     # Participant and Text sit on their own lines under the trial id (a markdown
     # hard line break is two trailing spaces + newline).
     st.markdown("  \n".join(lines))

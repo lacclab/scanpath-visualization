@@ -94,6 +94,62 @@ class TestCompositeTrialPicker:
         _, trial, _, _ = at.session_state["_picked"]
         assert trial == "B_p1_False"
 
+    def test_header_breaks_out_composite_parts(self):
+        # The trial-info header spells out the composite id's remaining parts on
+        # their own labeled lines (like Participant / Text), instead of only the
+        # opaque joined id.
+        def _header_app():
+            import pandas as pd
+            import streamlit as st
+
+            from scanpath_studio.tabs import _render_trial_header
+
+            trial_words = pd.DataFrame(
+                {
+                    "participant_id": ["l37_1129"],
+                    "unique_paragraph_id": ["2_1_1_Ele"],
+                    "paragraph_id": ["2_1_1_Ele"],
+                    "repeated_reading_trial": [False],
+                }
+            )
+            st.session_state["_composite_trial_columns"] = [
+                "unique_paragraph_id",
+                "participant_id",
+                "repeated_reading_trial",
+            ]
+            _render_trial_header(
+                "l37_1129", "2_1_1_Ele_l37_1129_False", trial_words
+            )
+
+        at = AppTest.from_function(_header_app)
+        at.run(timeout=15)
+        assert not at.exception
+        body = " ".join(m.value for m in at.markdown)
+        assert "Participant:" in body
+        assert "Text:" in body
+        # The extra (non participant/text) component is spelled out, humanized.
+        assert "Repeated reading trial:" in body
+        assert "False" in body
+
+    def test_header_no_extra_rows_without_composite(self):
+        def _header_app():
+            import pandas as pd
+            import streamlit as st
+
+            from scanpath_studio.tabs import _render_trial_header
+
+            trial_words = pd.DataFrame(
+                {"participant_id": ["p1"], "paragraph_id": ["A"]}
+            )
+            st.session_state["_composite_trial_columns"] = None
+            _render_trial_header("p1", "t1", trial_words)
+
+        at = AppTest.from_function(_header_app)
+        at.run(timeout=15)
+        assert not at.exception
+        body = " ".join(m.value for m in at.markdown)
+        assert "Repeated reading trial:" not in body
+
     def test_single_column_mapping_keeps_plain_dropdown(self):
         # Sanity: with no composite columns flagged, Trial mode still shows the
         # single unique-trial dropdown.
