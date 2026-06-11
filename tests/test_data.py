@@ -17,6 +17,9 @@ from scanpath_studio.data import (
     normalize_raw_gaze,
     normalize_words,
     pick_column,
+    propose_word_schema,
+    trial_id_series,
+    trial_mapping_columns,
 )
 
 
@@ -282,6 +285,163 @@ class TestNormalizeRawGaze:
         assert "x" in result.columns
         assert "y" in result.columns
         assert "timestamp_ms" in result.columns
+
+
+class TestCompositeTrialId:
+    """Composite (multi-column) trial mapping: build unique_trial_id on the fly."""
+
+    WORD_SCHEMA = {
+        "participant": "participant_id",
+        "trial": ["participant_id", "para", "rep"],
+        "paragraph": "para",
+        "word_id": "word_id",
+        "text": None,
+        "line": None,
+        "x": "x",
+        "y": "y",
+        "width": "width",
+        "height": "height",
+        "left": None,
+        "right": None,
+        "top": None,
+        "bottom": None,
+    }
+
+    FIX_SCHEMA = {
+        "participant": "participant_id",
+        "trial": ["participant_id", "para", "rep"],
+        "paragraph": "para",
+        "fixation_id": None,
+        "timestamp": None,
+        "duration": "dur",
+        "x": "x",
+        "y": "y",
+        "word_id": None,
+        "pass_index": None,
+        "saccade_type": None,
+        "saccade_amplitude": None,
+        "eye": None,
+        "noise_flag": None,
+    }
+
+    @staticmethod
+    def _words(**extra):
+        return pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p2", "p2"],
+                "para": ["A", "A", "A", "B"],
+                "rep": [False, True, False, False],
+                "word_id": [1, 1, 1, 1],
+                "x": [0, 0, 0, 0],
+                "y": [0, 0, 0, 0],
+                "width": [10, 10, 10, 10],
+                "height": [10, 10, 10, 10],
+                **extra,
+            }
+        )
+
+    def test_trial_mapping_columns(self):
+        assert trial_mapping_columns("trial_id") == ["trial_id"]
+        assert trial_mapping_columns(["a", "b"]) == ["a", "b"]
+        assert trial_mapping_columns(("a",)) == ["a"]
+
+    def test_trial_id_series_joins_with_underscore(self):
+        df = pd.DataFrame({"p": ["p1"], "t": [3], "r": [True]})
+        assert trial_id_series(df, ["p", "t", "r"]).tolist() == ["p1_3_True"]
+        assert trial_id_series(df, "t").tolist() == ["3"]
+
+    def test_words_composite_builds_unique_trial_id(self):
+        result = normalize_words(self._words(), self.WORD_SCHEMA)
+        assert result["trial_id"].tolist() == [
+            "p1_A_False",
+            "p1_A_True",
+            "p2_A_False",
+            "p2_B_False",
+        ]
+        assert (result["unique_trial_id"] == result["trial_id"]).all()
+
+    def test_composite_wins_over_raw_unique_trial_id_column(self):
+        # An explicit multi-column choice is authoritative even when the data
+        # already carries a unique_trial_id column.
+        words = self._words(unique_trial_id=["u1", "u1", "u2", "u3"])
+        result = normalize_words(words, self.WORD_SCHEMA)
+        assert result["trial_id"].tolist() == [
+            "p1_A_False",
+            "p1_A_True",
+            "p2_A_False",
+            "p2_B_False",
+        ]
+
+    def test_single_element_list_matches_plain_string_mapping(self):
+        words = self._words()
+        as_list = normalize_words(words, {**self.WORD_SCHEMA, "trial": ["para"]})
+        as_str = normalize_words(words, {**self.WORD_SCHEMA, "trial": "para"})
+        assert as_list["trial_id"].tolist() == as_str["trial_id"].tolist()
+
+    def test_fixations_align_with_words_on_same_composite(self):
+        words = normalize_words(self._words(), self.WORD_SCHEMA)
+        fixations = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p2"],
+                "para": ["A", "A", "B"],
+                "rep": [False, True, False],
+                "x": [1, 2, 3],
+                "y": [1, 2, 3],
+                "dur": [100, 120, 90],
+            }
+        )
+        result = normalize_fixations(fixations, self.FIX_SCHEMA)
+        assert (result["unique_trial_id"] == result["trial_id"]).all()
+        assert set(result["trial_id"]) <= set(words["trial_id"])
+
+    def test_raw_gaze_composite(self):
+        raw = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1"],
+                "para": ["A", "A"],
+                "rep": [False, False],
+                "x": [1.0, 2.0],
+                "y": [3.0, 4.0],
+            }
+        )
+        schema = {
+            "participant": "participant_id",
+            "trial": ["participant_id", "para", "rep"],
+            "text": None,
+            "x": "x",
+            "y": "y",
+            "timestamp": None,
+        }
+        result = normalize_raw_gaze(raw, schema)
+        assert result["trial_id"].tolist() == ["p1_A_False", "p1_A_False"]
+        assert (result["unique_trial_id"] == result["trial_id"]).all()
+
+    def test_onestop_composite_reproduces_unique_trial_id_partition(self):
+        # OneStop's unique trial id is participant + paragraph + repeated
+        # reading; composing those three columns must partition the bundled
+        # OneStop sample exactly like the precomputed unique_trial_id.
+        from scanpath_studio.data import load_sample_data
+
+        words, _ = load_sample_data()
+        composite_cols = [
+            "participant_id",
+            "unique_paragraph_id",
+            "repeated_reading_trial",
+        ]
+        stripped = words.drop(columns=["unique_trial_id"])
+        schema = propose_word_schema(stripped)
+        schema["trial"] = composite_cols
+        result = normalize_words(stripped, schema)
+
+        pairs = pd.DataFrame(
+            {
+                "composite": result["trial_id"].to_numpy(),
+                "original": words["unique_trial_id"].astype(str).to_numpy(),
+            }
+        ).drop_duplicates()
+        # Bijection: every composite id maps to exactly one original unique
+        # trial id and vice versa.
+        assert pairs["composite"].nunique() == pairs["original"].nunique() == len(pairs)
 
 
 class TestFilterData:

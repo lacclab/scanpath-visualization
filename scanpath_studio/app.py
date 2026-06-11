@@ -78,6 +78,7 @@ from scanpath_studio.data import (
     propose_raw_gaze_schema,
     propose_word_schema,
     read_table,
+    trial_mapping_columns,
     validate_fix_schema,
     validate_raw_gaze_schema,
     validate_word_schema,
@@ -332,6 +333,15 @@ def prepare_data(
         fix_schema = infer_fix_schema(fixations_df)
         if not word_schema or not fix_schema:
             st.stop()
+
+    # Remember whether the trial id was composed from several columns, so the
+    # trial picker can offer one cascading selector per component (see
+    # utils._select_trial_composite_mode). Recomputed every run so it clears
+    # when switching to a single-column / non-upload data source.
+    trial_cols = trial_mapping_columns(word_schema["trial"])
+    st.session_state["_composite_trial_columns"] = (
+        trial_cols if len(trial_cols) > 1 else None
+    )
 
     return normalize_words(words_df, word_schema), normalize_fixations(
         fixations_df, fix_schema

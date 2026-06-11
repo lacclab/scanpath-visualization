@@ -33,6 +33,11 @@ def build_combo_options(
     for col in ["unique_trial_id", "unique_paragraph_id", "TRIAL_INDEX", "trial_index"]:
         if col in fixations.columns and col not in combo_cols:
             combo_cols.append(col)
+    # Carry the composite trial id's component columns through, so the trial
+    # picker can offer one cascading selector per part (see select_trial).
+    for col in st.session_state.get("_composite_trial_columns") or []:
+        if col in fixations.columns and col not in combo_cols:
+            combo_cols.append(col)
 
     combos = (
         fixations[combo_cols]
@@ -234,10 +239,28 @@ def _select_trial_participant_mode(
     if not slider_options:
         return None, None, None
 
+    state_key = f"{key_prefix}_slider" if key_prefix else "slider"
+
+    if len(slider_options) == 1:
+        # st.select_slider breaks in the browser with a single option
+        # (RangeError: min (0) is equal/bigger than max (0)) — common when the
+        # data holds a single trial or the filters narrow a participant down
+        # to one. Show the lone value as plain text instead.
+        slider_value = slider_options[0]
+        st.session_state[state_key] = slider_value
+        st.caption(f"{slider_label}: **{slider_value}** (only one available)")
+        return _resolve_participant_trial(
+            participant_trials,
+            selected_participant,
+            slider_field,
+            slider_value,
+            paragraph_field,
+            key_prefix,
+        )
+
     # Prev/Next buttons flank the slider so reviewers can step through trials
     # without dragging. Mutations live in an `on_click` callback (the slider's
     # session-state key can't be mutated after the widget instantiates).
-    state_key = f"{key_prefix}_slider" if key_prefix else "slider"
 
     def _step_slider(direction: int) -> None:
         opts = slider_options
@@ -283,6 +306,26 @@ def _select_trial_participant_mode(
     if slider_value is None:
         return None, None, None
 
+    return _resolve_participant_trial(
+        participant_trials,
+        selected_participant,
+        slider_field,
+        slider_value,
+        paragraph_field,
+        key_prefix,
+    )
+
+
+def _resolve_participant_trial(
+    participant_trials: pd.DataFrame,
+    selected_participant: str,
+    slider_field: str,
+    slider_value,
+    paragraph_field: str,
+    key_prefix: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Map a Participant-mode slider value to a concrete (participant, trial, text),
+    offering a 'Reading' selectbox when the value matches several trials."""
     if slider_field == paragraph_field:
         trial_candidates = participant_trials[
             participant_trials[slider_field].astype(str) == str(slider_value)
@@ -319,10 +362,95 @@ def _select_trial_participant_mode(
     return selected_participant, selected_trial, selected_text
 
 
+# Friendly labels for the cascading selectors in composite-trial mode. Unknown
+# component columns fall back to their raw name (most informative for arbitrary
+# uploads); the two canonical ids reuse the Participant / Text wording so the UI
+# reads the same as the dedicated modes.
+_COMPONENT_LABELS = {
+    "participant_id": "Participant",
+    "unique_paragraph_id": "Text",
+    "paragraph_id": "Text",
+}
+
+
+def _component_label(col: str) -> str:
+    return _COMPONENT_LABELS.get(col, col)
+
+
+def _composite_columns_for(combos: pd.DataFrame) -> list[str]:
+    """Composite trial-id component columns that are actually present in
+    ``combos`` — empty unless the trial id was built from several columns
+    (set in ``app.prepare_data`` / preserved by ``data._preserve_composite_columns``)."""
+    cols = st.session_state.get("_composite_trial_columns") or []
+    return [c for c in cols if c in combos.columns]
+
+
+def _select_trial_composite_mode(
+    combos: pd.DataFrame,
+    component_cols: list[str],
+    paragraph_field: str,
+    key_prefix: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Trial selection when the trial id was composed from several columns.
+
+    Renders one cascading selector per component (each narrowed by the previous
+    picks), mirroring the Text / Participant modes instead of a single opaque
+    ``a_b_c`` dropdown."""
+    st.caption("Composite trial id — pick each part to narrow to a trial.")
+    filtered = combos
+    for col in component_cols:
+        options = sorted(filtered[col].dropna().astype(str).unique())
+        if not options:
+            st.warning("No trials available after filtering.")
+            return None, None, None
+        state_key = (
+            f"{key_prefix}_composite_{col}" if key_prefix else f"composite_{col}"
+        )
+        # A change to an earlier selector can drop the stored value out of this
+        # selector's (now narrower) option set — clear it so st.selectbox falls
+        # back to the first valid option instead of raising.
+        if state_key in st.session_state and st.session_state[state_key] not in options:
+            del st.session_state[state_key]
+        chosen = st.selectbox(_component_label(col), options=options, key=state_key)
+        filtered = filtered[filtered[col].astype(str) == str(chosen)]
+        if filtered.empty:
+            st.warning("No trial matches the selected combination.")
+            return None, None, None
+
+    candidates = filtered.drop_duplicates(subset=["trial_id"]).sort_values("trial_id")
+    if candidates.empty:
+        return None, None, None
+    if len(candidates) > 1:
+        # The components didn't fully determine a single trial — offer the
+        # remaining ones, like the other modes' "Reading" selector.
+        trial_options = candidates["trial_id"].astype(str).tolist()
+        selected_trial = st.selectbox(
+            "Reading (multiple trials available)",
+            options=trial_options,
+            key=f"{key_prefix}_composite_reading"
+            if key_prefix
+            else "composite_reading",
+            help="More than one trial shares these values.",
+        )
+        row = candidates[
+            candidates["trial_id"].astype(str) == str(selected_trial)
+        ].iloc[0]
+    else:
+        row = candidates.iloc[0]
+        selected_trial = row["trial_id"]
+
+    text = str(row[paragraph_field]) if paragraph_field in row.index else None
+    return row["participant_id"], selected_trial, text
+
+
 def select_trial(
     combos: pd.DataFrame, key_prefix: str = ""
 ) -> Tuple[Optional[str], Optional[str], str, Optional[str]]:
-    """Select a trial using a three-mode UI (None/Text/Participant).
+    """Select a trial using a three-mode UI (Trial/Text/Participant).
+
+    In ``Trial`` mode a composite trial id (built from several mapped columns)
+    is broken into one cascading selector per component; otherwise a single
+    unique-trial dropdown is shown.
 
     Returns:
         Tuple of (participant_id, trial_id, selection_mode, selected_text).
@@ -351,9 +479,15 @@ def select_trial(
     )
 
     if selection_mode == "Trial":
-        participant, trial, text = _select_trial_none_mode(
-            combos, trial_field, paragraph_field, key_prefix
-        )
+        composite_cols = _composite_columns_for(combos)
+        if len(composite_cols) >= 2:
+            participant, trial, text = _select_trial_composite_mode(
+                combos, composite_cols, paragraph_field, key_prefix
+            )
+        else:
+            participant, trial, text = _select_trial_none_mode(
+                combos, trial_field, paragraph_field, key_prefix
+            )
     elif selection_mode == "Text":
         participant, trial, text = _select_trial_text_mode(
             combos, paragraph_field, key_prefix

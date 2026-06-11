@@ -167,6 +167,50 @@ def pick_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
     return None
 
 
+def trial_mapping_columns(trial_mapping) -> list:
+    """Column list behind a trial mapping — a plain column name or a list of
+    names (the column-mapping UI returns a list when the user composes a
+    unique trial ID from several columns)."""
+    if isinstance(trial_mapping, str):
+        return [trial_mapping]
+    return list(trial_mapping)
+
+
+def trial_id_series(source: pd.DataFrame, trial_mapping) -> pd.Series:
+    """Trial-id values for a single-column or composite (multi-column) mapping.
+
+    A multi-column mapping builds a unique trial ID on the fly by joining the
+    columns' string values with ``_`` — for datasets that ship no precomputed
+    unique-trial column (e.g. OneStop-style participant + paragraph +
+    repeated-reading)."""
+    cols = trial_mapping_columns(trial_mapping)
+    if len(cols) == 1:
+        return source[cols[0]].astype(str)
+    return source[cols].astype(str).agg("_".join, axis=1)
+
+
+def _preserve_composite_columns(
+    df: pd.DataFrame, source: pd.DataFrame, trial_mapping
+) -> pd.DataFrame:
+    """Carry a composite mapping's source columns into the normalized frame
+    under their original names.
+
+    A multi-column trial mapping gets joined into a single opaque ``trial_id``
+    (e.g. ``2_1_1_Ele_l37_1129_False``). Keeping the individual component
+    columns lets the trial picker offer one cascading selector per part —
+    mirroring the Text / Participant modes (see
+    ``utils._select_trial_composite_mode``). No-op for single-column mappings.
+    Rows are 1:1 with ``source`` here (no filtering in the composite path), so a
+    positional copy stays aligned."""
+    cols = trial_mapping_columns(trial_mapping)
+    if len(cols) < 2:
+        return df
+    for col in cols:
+        if col not in df.columns and col in source.columns:
+            df[col] = source[col].to_numpy()
+    return df
+
+
 # Candidate column names checked during auto-inference. Centralised so the
 # proposal step and the override UI share the same defaults.
 PARTICIPANT_CANDIDATES = [
@@ -408,12 +452,20 @@ def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.Dat
     """Normalize raw gaze data to canonical column names."""
     df = pd.DataFrame()
     df["participant_id"] = raw_gaze[schema["participant"]].astype(str)
-    trial_col = (
-        "unique_trial_id" if "unique_trial_id" in raw_gaze.columns else schema["trial"]
-    )
-    df["trial_id"] = raw_gaze[trial_col].astype(str)
-    if "unique_trial_id" in raw_gaze.columns:
-        df["unique_trial_id"] = raw_gaze["unique_trial_id"].astype(str)
+    trial_cols = trial_mapping_columns(schema["trial"])
+    if len(trial_cols) > 1:
+        # User-composed unique trial ID — see normalize_words.
+        df["trial_id"] = trial_id_series(raw_gaze, trial_cols)
+        df["unique_trial_id"] = df["trial_id"]
+    else:
+        trial_col = (
+            "unique_trial_id"
+            if "unique_trial_id" in raw_gaze.columns
+            else trial_cols[0]
+        )
+        df["trial_id"] = raw_gaze[trial_col].astype(str)
+        if "unique_trial_id" in raw_gaze.columns:
+            df["unique_trial_id"] = raw_gaze["unique_trial_id"].astype(str)
     if schema.get("text"):
         df["text"] = raw_gaze[schema["text"]].astype(str)
     else:
@@ -427,6 +479,7 @@ def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.Dat
     else:
         # Each row represents one millisecond, so use row index within trial as timestamp
         df["timestamp_ms"] = df.groupby(["participant_id", "trial_id"]).cumcount()
+    df = _preserve_composite_columns(df, raw_gaze, schema["trial"])
     return df
 
 
@@ -489,13 +542,22 @@ def _disambiguate_repeated_readings(
 def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
     df = pd.DataFrame()
     df["participant_id"] = words[schema["participant"]].astype(str)
-    trial_col = (
-        "unique_trial_id" if "unique_trial_id" in words.columns else schema["trial"]
-    )
-    df["trial_id"] = words[trial_col].astype(str)
-    df = _disambiguate_repeated_readings(df, words, schema["participant"], trial_col)
-    if "unique_trial_id" in words.columns:
-        df["unique_trial_id"] = words["unique_trial_id"].astype(str)
+    trial_cols = trial_mapping_columns(schema["trial"])
+    if len(trial_cols) > 1:
+        # User-composed unique trial ID: authoritative, so it wins over a raw
+        # `unique_trial_id` column and needs no repeated-reading suffixing.
+        df["trial_id"] = trial_id_series(words, trial_cols)
+        df["unique_trial_id"] = df["trial_id"]
+    else:
+        trial_col = (
+            "unique_trial_id" if "unique_trial_id" in words.columns else trial_cols[0]
+        )
+        df["trial_id"] = words[trial_col].astype(str)
+        df = _disambiguate_repeated_readings(
+            df, words, schema["participant"], trial_col
+        )
+        if "unique_trial_id" in words.columns:
+            df["unique_trial_id"] = words["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in words.columns:
         df["unique_paragraph_id"] = words["unique_paragraph_id"].astype(str)
         df["paragraph_id"] = df["unique_paragraph_id"]
@@ -605,6 +667,7 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         else:
             df[dest] = words[source].fillna(False).astype(bool)
 
+    df = _preserve_composite_columns(df, words, schema["trial"])
     return df
 
 
@@ -613,15 +676,23 @@ def normalize_fixations(
 ) -> pd.DataFrame:
     df = pd.DataFrame()
     df["participant_id"] = fixations[schema["participant"]].astype(str)
-    trial_col = (
-        "unique_trial_id" if "unique_trial_id" in fixations.columns else schema["trial"]
-    )
-    df["trial_id"] = fixations[trial_col].astype(str)
-    df = _disambiguate_repeated_readings(
-        df, fixations, schema["participant"], trial_col
-    )
-    if "unique_trial_id" in fixations.columns:
-        df["unique_trial_id"] = fixations["unique_trial_id"].astype(str)
+    trial_cols = trial_mapping_columns(schema["trial"])
+    if len(trial_cols) > 1:
+        # User-composed unique trial ID — see normalize_words.
+        df["trial_id"] = trial_id_series(fixations, trial_cols)
+        df["unique_trial_id"] = df["trial_id"]
+    else:
+        trial_col = (
+            "unique_trial_id"
+            if "unique_trial_id" in fixations.columns
+            else trial_cols[0]
+        )
+        df["trial_id"] = fixations[trial_col].astype(str)
+        df = _disambiguate_repeated_readings(
+            df, fixations, schema["participant"], trial_col
+        )
+        if "unique_trial_id" in fixations.columns:
+            df["unique_trial_id"] = fixations["unique_trial_id"].astype(str)
     paragraph_col = (
         "unique_paragraph_id"
         if "unique_paragraph_id" in fixations.columns
@@ -704,6 +775,8 @@ def normalize_fixations(
     for bool_col in ("repeated_reading_trial", "question_preview"):
         if bool_col in fixations.columns:
             df[bool_col] = fixations[bool_col].fillna(False).astype(bool)
+
+    df = _preserve_composite_columns(df, fixations, schema["trial"])
 
     df["order_in_trial"] = (
         df.sort_values(["timestamp_ms", "duration_ms"])

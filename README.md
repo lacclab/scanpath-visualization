@@ -106,7 +106,9 @@ sidecar and restore it in a later session.
 Upload **CSV, Parquet, or Feather** tables for words/AoIs, fixations, and
 (optionally) raw gaze. Columns are auto-detected from common EyeLink,
 Gazepoint, and snake-case conventions; a sidebar **Column mapping** panel lets
-you override any guess.
+you override any guess. No single column uniquely identifies a trial? Map
+**Trial ID** to several columns (e.g. participant + paragraph + repeated
+reading) and a combined unique trial ID is built on the fly.
 
 **Areas of interest** come straight from your word boxes — given as
 `(x, y, width, height)` or EyeLink's `IA_LEFT/RIGHT/TOP/BOTTOM` — the app never

@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.2] - 2026-06-11
+
+### Added
+- **Composite trial IDs in the column mapping.** The *Trial ID* row of every
+  Column mapping panel (Words/IA, Fixations, Raw gaze) is now a multiselect:
+  pick several columns and the app builds a unique trial ID on the fly by
+  joining their values with `_` — for datasets with no precomputed
+  unique-trial column (e.g. OneStop-style participant + paragraph +
+  repeated-reading). A multi-column choice is authoritative: it overrides any
+  raw `unique_trial_id` column and skips the repeated-reading `_r2` suffix
+  fallback. Selections that reference columns missing from a newly uploaded
+  file are dropped and re-proposed automatically.
+- **Composite trials are selectable by their parts.** When the trial id is
+  composite, *Select trials by → Trial* breaks it into one cascading selector
+  per component (e.g. Text → Participant → repeated-reading) — each narrowed by
+  the previous picks — instead of a single opaque `a_b_c` dropdown, mirroring
+  the existing Text / Participant modes. Single-column trial ids keep the plain
+  unique-trial dropdown.
+
+### Fixed
+- **Single-trial data no longer breaks "Select trials by → Participant".**
+  With one trial per participant (a one-trial upload, the synthetic source, or
+  filters narrowing to one), the Participant picker rendered a one-option
+  `st.select_slider`, which crashes the Streamlit frontend (`RangeError: min
+  (0) is equal/bigger than max (0)`) and blanks the tab. The picker now shows
+  the lone trial as static text. Affected every tab's trial picker (Interactive
+  Plot, Animated Scanpath + its overlay, Multiple Comparison, Data Statistics).
+
 ## [0.16.1] - 2026-06-09
 
 ### Internal

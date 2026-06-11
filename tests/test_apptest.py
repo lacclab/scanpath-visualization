@@ -85,6 +85,53 @@ class TestAppLaunches:
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
 
+    def test_single_trial_participant_mode_skips_slider(self):
+        # With a single trial (the synthetic source), Participant mode used to
+        # instantiate st.select_slider with ONE option — the Python side
+        # accepts it, but the browser slider throws `RangeError: min (0) is
+        # equal/bigger than max (0)` and the tab dies. The picker must render
+        # the lone value as static text instead of a slider.
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["data_source_choice"] = "Synthetic test trial"
+        at.run(timeout=30)
+        at.session_state["single_select_trial_mode"] = "Participant"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        slider_keys = [s.key for s in at.select_slider]
+        assert "single_slider" not in slider_keys, (
+            "single-option select_slider rendered — this crashes the browser"
+        )
+        captions = [c.value for c in at.caption]
+        assert any("only one available" in c for c in captions)
+
+    def test_single_trial_all_selection_modes(self):
+        # Trial / Text / Participant must all resolve the lone synthetic trial.
+        for mode in ["Trial", "Text", "Participant"]:
+            at = _make_apptest()
+            at.run(timeout=30)
+            at.session_state["data_source_choice"] = "Synthetic test trial"
+            at.run(timeout=30)
+            at.session_state["single_select_trial_mode"] = mode
+            at.run(timeout=30)
+            assert not at.exception, f"{mode}: {at.exception}"
+            assert at.error == [], f"{mode}: {[e.value for e in at.error]}"
+            markdown = " ".join(m.value for m in at.markdown)
+            assert "synthetic_2line_demo" in markdown, (
+                f"{mode} mode did not resolve the single trial"
+            )
+
+    def test_multi_trial_participant_mode_keeps_slider(self):
+        # Guard the fix's other side: with several trials per participant
+        # (bundled demo), Participant mode still gets its select_slider.
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["single_select_trial_mode"] = "Participant"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        slider_keys = [s.key for s in at.select_slider]
+        assert "single_slider" in slider_keys
+
     def test_new_viz_toggles_build_without_error(self):
         # Flip the new plot options (color-by-line, out-of-text, gray
         # background) and re-run the whole app to exercise those code paths.

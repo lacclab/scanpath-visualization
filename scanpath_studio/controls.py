@@ -11,9 +11,23 @@ from .constants import BACKGROUND_PRESETS, DEFAULT_BACKGROUND_COLOR
 NONE_OPTION = "(none)"
 
 
+# Help text for the (multi-capable) Trial ID mapping, shared by all tables.
+_TRIAL_MAPPING_HELP = (
+    "Pick the column holding your unique trial ID — or pick SEVERAL columns "
+    "to build one on the fly (values joined with '_'), e.g. participant + "
+    "paragraph + repeated-reading when no single column identifies a trial. "
+    "Use the same columns for every uploaded table so trials line up."
+)
+
 WORD_FIELD_SPECS: List[Dict] = [
     {"key": "participant", "label": "Participant ID", "required": True},
-    {"key": "trial", "label": "Trial ID", "required": True},
+    {
+        "key": "trial",
+        "label": "Trial ID",
+        "required": True,
+        "multi": True,
+        "help": _TRIAL_MAPPING_HELP,
+    },
     {"key": "word_id", "label": "Word/IA ID", "required": True},
     {"key": "text", "label": "Word text/label", "required": False},
     {"key": "paragraph", "label": "Paragraph ID", "required": False},
@@ -35,7 +49,13 @@ WORD_FIELD_SPECS: List[Dict] = [
 
 FIX_FIELD_SPECS: List[Dict] = [
     {"key": "participant", "label": "Participant ID", "required": True},
-    {"key": "trial", "label": "Trial ID", "required": True},
+    {
+        "key": "trial",
+        "label": "Trial ID",
+        "required": True,
+        "multi": True,
+        "help": _TRIAL_MAPPING_HELP,
+    },
     {"key": "x", "label": "X coordinate", "required": True},
     {"key": "y", "label": "Y coordinate", "required": True},
     {"key": "duration", "label": "Duration (ms)", "required": True},
@@ -51,7 +71,13 @@ FIX_FIELD_SPECS: List[Dict] = [
 
 RAW_GAZE_FIELD_SPECS: List[Dict] = [
     {"key": "participant", "label": "Participant ID", "required": True},
-    {"key": "trial", "label": "Trial ID", "required": True},
+    {
+        "key": "trial",
+        "label": "Trial ID",
+        "required": True,
+        "multi": True,
+        "help": _TRIAL_MAPPING_HELP,
+    },
     {"key": "x", "label": "X coordinate", "required": True},
     {"key": "y", "label": "Y coordinate", "required": True},
     {"key": "timestamp", "label": "Timestamp (ms)", "required": False},
@@ -70,7 +96,10 @@ def column_mapping_ui(
 ) -> Dict[str, Optional[str]]:
     """Render a sidebar expander letting users override the inferred column mapping.
 
-    Returns a mapping {field_key: column_name_or_None} based on user selections.
+    Returns a mapping {field_key: column_name_or_None}. Fields marked
+    ``multi: True`` (Trial ID) render as a multiselect: picking several columns
+    yields a list, meaning "build this ID on the fly by joining the columns'
+    values" (see ``data.trial_id_series``); a single pick stays a plain string.
     """
     options = [NONE_OPTION] + list(df.columns)
     expanded = bool(expand_on_problem and problems)
@@ -88,6 +117,36 @@ def column_mapping_ui(
             key = spec["key"]
             default = proposed.get(key)
             label = spec["label"] + (" *" if spec.get("required") else "")
+            if spec.get("multi"):
+                state_key = f"{state_key_prefix}_{key}"
+                proposed_default = [default] if default in df.columns else []
+                stored = st.session_state.get(state_key)
+                if stored is None:
+                    # Seed via session state instead of `default=` so the
+                    # stale-column reset below never fights a default arg.
+                    st.session_state[state_key] = proposed_default
+                else:
+                    # A new upload changes the column universe — silently
+                    # keeping stale picks would leave the field empty (the
+                    # selectboxes self-heal via their index fallback; a
+                    # multiselect doesn't). Drop unknown columns and fall
+                    # back to the auto-proposal when nothing survives.
+                    valid = [c for c in stored if c in df.columns]
+                    if len(valid) != len(stored):
+                        st.session_state[state_key] = valid or proposed_default
+                chosen_cols = st.multiselect(
+                    label,
+                    options=list(df.columns),
+                    key=state_key,
+                    help=spec.get("help"),
+                )
+                if not chosen_cols:
+                    mapping[key] = None
+                elif len(chosen_cols) == 1:
+                    mapping[key] = chosen_cols[0]
+                else:
+                    mapping[key] = list(chosen_cols)
+                continue
             index = options.index(default) if default in options else 0
             chosen = st.selectbox(
                 label,
@@ -114,6 +173,9 @@ def data_dictionary_help_text() -> str:
         "Each row represents one timepoint.\n"
         "If your columns are named differently, after uploading expand the "
         "*Column mapping* sections in the sidebar to map each field to your column.\n"
+        "No single column uniquely identifies a trial? Map *Trial ID* to several "
+        "columns (e.g. participant + paragraph + repeated reading) and the app "
+        "builds a combined unique trial ID on the fly.\n"
         "Only fields present in your data are used for filters, coloring, and tooltips.\n"
         "Areas of interest (word boxes) are taken from your data, not computed; "
         "fixations are tied to words by bounding-box containment with a small "
