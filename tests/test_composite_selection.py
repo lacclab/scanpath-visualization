@@ -117,9 +117,7 @@ class TestCompositeTrialPicker:
                 "participant_id",
                 "repeated_reading_trial",
             ]
-            _render_trial_header(
-                "l37_1129", "2_1_1_Ele_l37_1129_False", trial_words
-            )
+            _render_trial_header("l37_1129", "2_1_1_Ele_l37_1129_False", trial_words)
 
         at = AppTest.from_function(_header_app)
         at.run(timeout=15)
