@@ -310,6 +310,19 @@ def _restore_plot_config(
     applied = 0
     skipped: list = []
 
+    def section(name):
+        """A config sub-section as a dict — empty if absent or the wrong type,
+        so a hand-edited upload with a malformed section can't crash the rest."""
+        value = config.get(name)
+        return value if isinstance(value, dict) else {}
+
+    def number(value):
+        """Coerce a JSON scalar to float, or None for a non-numeric upload."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def put(key, value):
         nonlocal applied
         st.session_state[key] = value
@@ -322,15 +335,20 @@ def _restore_plot_config(
         else:
             skipped.append(skip_label)
 
-    def clamp_int(value, lo, hi):
-        return max(lo, min(int(value), hi))
+    def put_int(value, key, lo, hi, skip_label):
+        """Apply an int clamped to ``[lo, hi]``; skip a non-numeric upload."""
+        n = number(value)
+        if n is None:
+            skipped.append(skip_label)
+        else:
+            put(key, max(lo, min(int(n), hi)))
 
-    layers = config.get("layers") or {}
+    layers = section("layers")
     for cfg_key, state_key in _PLOT_CONFIG_LAYER_KEYS.items():
         if cfg_key in layers:
             put(state_key, bool(layers[cfg_key]))
 
-    coloring = config.get("coloring") or {}
+    coloring = section("coloring")
     if "heatmap_style" in coloring:
         style = coloring["heatmap_style"]
         put_valid(
@@ -364,37 +382,52 @@ def _restore_plot_config(
             put_valid(val in COLORSCALES, state_key, val, cfg_key.replace("_", " "))
     # Range sliders only render when colour bars are on; store them anyway —
     # the widgets clamp to the current data via `controls._clamp_range`.
-    for cfg_key, state_key in (
-        ("fixation_range", "global_fixation_color_range"),
-        ("heatmap_range", "global_heatmap_color_range"),
+    for cfg_key, state_key, label in (
+        ("fixation_range", "global_fixation_color_range", "fixation color range"),
+        ("heatmap_range", "global_heatmap_color_range", "heatmap color range"),
     ):
         rng = coloring.get(cfg_key)
         if isinstance(rng, (list, tuple)) and len(rng) == 2:
-            put(state_key, (float(rng[0]), float(rng[1])))
+            lo, hi = number(rng[0]), number(rng[1])
+            put_valid(lo is not None and hi is not None, state_key, (lo, hi), label)
 
-    sizing = config.get("sizing") or {}
+    sizing = section("sizing")
     marker = sizing.get("marker_size_range")
     if isinstance(marker, (list, tuple)) and len(marker) == 2:
-        lo, hi = (clamp_int(m, *_MARKER_BOUNDS) for m in marker)
-        put("global_marker_size_range", (min(lo, hi), max(lo, hi)))
+        lo, hi = number(marker[0]), number(marker[1])
+        if lo is None or hi is None:
+            skipped.append("marker size range")
+        else:
+            lo = max(_MARKER_BOUNDS[0], min(int(lo), _MARKER_BOUNDS[1]))
+            hi = max(_MARKER_BOUNDS[0], min(int(hi), _MARKER_BOUNDS[1]))
+            put("global_marker_size_range", (min(lo, hi), max(lo, hi)))
     if "order_font_size" in sizing:
-        put(
+        put_int(
+            sizing["order_font_size"],
             "global_order_font_size",
-            clamp_int(sizing["order_font_size"], *_FONT_BOUNDS),
+            *_FONT_BOUNDS,
+            "order label size",
         )
     color = sizing.get("order_font_color")
     if isinstance(color, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
         put("global_order_font_color", color)
     if "base_font_size" in sizing:
-        put("global_base_font_size", clamp_int(sizing["base_font_size"], *_FONT_BOUNDS))
+        put_int(
+            sizing["base_font_size"],
+            "global_base_font_size",
+            *_FONT_BOUNDS,
+            "figure font size",
+        )
 
-    canvas = config.get("canvas_px") or {}
+    canvas = section("canvas_px")
     if "width" in canvas:
-        put("global_canvas_width", clamp_int(canvas["width"], *_CANVAS_BOUNDS))
+        put_int(canvas["width"], "global_canvas_width", *_CANVAS_BOUNDS, "canvas width")
     if "height" in canvas:
-        put("global_canvas_height", clamp_int(canvas["height"], *_CANVAS_BOUNDS))
+        put_int(
+            canvas["height"], "global_canvas_height", *_CANVAS_BOUNDS, "canvas height"
+        )
 
-    axes = config.get("axes") or {}
+    axes = section("axes")
     numeric = numeric_field_options(fixations)
     for cfg_key, state_key, label in (
         ("x_field", "global_x_field", "X axis field"),
@@ -404,7 +437,7 @@ def _restore_plot_config(
         if val is not None:
             put_valid(val in numeric, state_key, val, label)
 
-    selection = config.get("selection") or {}
+    selection = section("selection")
     if selection:
         if _restore_selection(selection, combos):
             applied += 1
@@ -439,7 +472,11 @@ def _apply_uploaded_plot_config(combos: pd.DataFrame, fixations: pd.DataFrame) -
     except (ValueError, UnicodeDecodeError) as exc:
         st.toast(f"Couldn't read plot config: {exc}", icon="⚠️")
         return
-    applied, skipped = _restore_plot_config(config, combos, fixations)
+    try:
+        applied, skipped = _restore_plot_config(config, combos, fixations)
+    except Exception as exc:  # backstop for an unexpectedly shaped config
+        st.toast(f"Couldn't apply plot config: {exc}", icon="⚠️")
+        return
     st.session_state["_plot_config_skipped"] = skipped
     if applied:
         st.toast(f"Restored {applied} setting(s) from plot config.", icon="✅")
