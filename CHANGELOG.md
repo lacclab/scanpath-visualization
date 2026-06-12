@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of eight, and column auto-detection matches names case- and
   separator-insensitively (`IA_LEFT`, `ia_left` and `Participant ID` all
   resolve). Required-field markers now match what the loader actually needs.
+- **Search-engine discoverability.** Keyword-rich page title and tagline, so the
+  `<title>` and the social/search description Streamlit Cloud serves to crawlers
+  are no longer brand-only.
 
 ### Fixed
 - The tutorial's Skip/Done buttons now close the dialog instantly instead of
