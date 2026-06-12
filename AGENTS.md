@@ -116,8 +116,8 @@ ruff format --exclude other_vis .
 python -m scanpath_studio.update_sample_data
 ```
 
-CI on GitHub Actions runs pytest on Python 3.11/3.12/3.13 plus ruff lint+format
-checks on every push/PR.
+CI on GitHub Actions runs pytest on Python 3.11/3.12/3.13/3.14 plus ruff
+lint+format checks on every pull request.
 
 ## Code style
 

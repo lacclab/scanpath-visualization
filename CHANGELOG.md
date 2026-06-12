@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The tutorial's Skip/Done buttons now close the dialog instantly instead of
   leaving it on screen for the ~10 s full-app rerun.
 
+### CI
+- Test on Python 3.14 (the version Streamlit Cloud runs); CI now runs on pull
+  requests only. Added a supported-Python-versions badge to the README.
+
 ## [0.18.0] - 2026-06-11
 
 ### Added

@@ -1,6 +1,7 @@
 # Scanpath Studio
 
 [![PyPI](https://img.shields.io/pypi/v/scanpath-studio.svg)](https://pypi.org/project/scanpath-studio/)
+[![Python versions](https://img.shields.io/pypi/pyversions/scanpath-studio.svg)](https://pypi.org/project/scanpath-studio/)
 [![Live demo](https://img.shields.io/badge/Live_demo-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://scanpath-studio.streamlit.app)
 [![CI](https://github.com/lacclab/scanpath-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/lacclab/scanpath-studio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -120,7 +121,7 @@ pip install -e ".[test]"          # or: uv sync
 streamlit run streamlit_app.py
 ```
 
-Tested on Python 3.11–3.13. Run the tests with `pytest`; see
+Tested on Python 3.11–3.14. Run the tests with `pytest`; see
 [AGENTS.md](AGENTS.md) for an architectural overview.
 
 ## Citation
