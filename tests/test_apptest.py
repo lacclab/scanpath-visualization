@@ -275,12 +275,18 @@ class TestUnmappedRawDataView:
 
 @pytest.mark.timeout(90)
 class TestWelcomeTour:
-    """First-visit tour dialog: opens once per session, navigates, and stays
-    out of the way of embeds / deep links."""
+    """Dialog-style tour (TOUR_STYLE="dialog"): opens once per session,
+    navigates, and stays out of the way of embeds / deep links."""
 
     @staticmethod
     def _tour_buttons(at):
         return {b.key for b in at.button if b.key and b.key.startswith("tour_")}
+
+    @pytest.fixture(autouse=True)
+    def _dialog_style(self, monkeypatch):
+        from scanpath_studio import tour
+
+        monkeypatch.setattr(tour, "TOUR_STYLE", "dialog")
 
     def test_tour_opens_on_first_run_only(self):
         at = _make_apptest()
@@ -323,4 +329,69 @@ class TestWelcomeTour:
         at.run(timeout=30)
         assert "tour_next" in self._tour_buttons(at)
         assert at.session_state["tour_step"] == 0  # replay restarts the tour
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+
+
+@pytest.mark.timeout(90)
+class TestSpotlightTour:
+    """Spotlight-style tour (the default): floating card + per-step highlight,
+    armed once per session via tour_mode, dismissed by Exit/Done."""
+
+    @staticmethod
+    def _sp_buttons(at):
+        return {b.key for b in at.button if b.key and b.key.startswith("tour_sp_")}
+
+    def test_spotlight_arms_on_first_run(self):
+        at = _make_apptest()
+        at.run(timeout=30)
+        assert at.session_state["tour_seen"] is True
+        assert at.session_state["tour_mode"] == "spotlight"
+        assert "tour_sp_next" in self._sp_buttons(at)
+        # The dialog style must NOT also open.
+        assert not any(b.key == "tour_next" for b in at.button)
+
+    def test_spotlight_navigates_and_exits(self):
+        from scanpath_studio.tour import _SPOTLIGHT_STEPS
+
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.button(key="tour_sp_next").click()
+        at.run(timeout=30)
+        assert at.session_state["tour_step"] == 1
+        at.button(key="tour_sp_exit").click()
+        at.run(timeout=30)
+        assert at.session_state["tour_mode"] is None
+        assert self._sp_buttons(at) == set(), "card must vanish after Exit"
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        # Step list sanity: every selector-bearing step targets a keyed
+        # wrapper or a stable testid that exists in the app.
+        selectors = [s["selector"] for s in _SPOTLIGHT_STEPS if s["selector"]]
+        assert all(
+            sel.startswith(".st-key-tour_grp_") or "data-testid" in sel
+            for sel in selectors
+        )
+
+    def test_spotlight_done_on_last_step(self):
+        from scanpath_studio.tour import _SPOTLIGHT_STEPS
+
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["tour_step"] = len(_SPOTLIGHT_STEPS) - 1
+        at.run(timeout=30)
+        assert "tour_sp_done" in self._sp_buttons(at)
+        at.button(key="tour_sp_done").click()
+        at.run(timeout=30)
+        assert at.session_state["tour_mode"] is None
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+
+    def test_spotlight_replay(self):
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.button(key="tour_sp_exit").click()
+        at.run(timeout=30)
+        assert self._sp_buttons(at) == set()
+        at.button(key="tour_replay").click()
+        at.run(timeout=30)
+        assert "tour_sp_next" in self._sp_buttons(at)
+        assert at.session_state["tour_step"] == 0
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
