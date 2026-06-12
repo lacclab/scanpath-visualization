@@ -990,8 +990,9 @@ def _load_and_map_uploads() -> _UploadResult:
         multi=False,
     )
 
-    # Nothing uploaded yet → preview the bundled demo (unchanged behavior).
-    if raw_words.empty and raw_fixations.empty:
+    # Nothing uploaded at all → preview the bundled demo. (Raw gaze alone is a
+    # valid dataset — see below — so only fall back when all three are empty.)
+    if raw_words.empty and raw_fixations.empty and raw_gaze.empty:
         st.sidebar.info(
             "Upload words and/or fixations tables — or switch to demo data."
         )
@@ -1024,9 +1025,23 @@ def _load_and_map_uploads() -> _UploadResult:
             problems,
         )
 
-    words_norm, fixations_norm = _normalize_pair(
-        raw_words, words_schema, raw_fixations, fix_schema
-    )
+    if not raw_words.empty or not raw_fixations.empty:
+        words_norm, fixations_norm = _normalize_pair(
+            raw_words, words_schema, raw_fixations, fix_schema
+        )
+    else:
+        # Raw-gaze-only dataset — no words/fixations to normalize. Record the
+        # composite-trial columns from the raw-gaze mapping so the trial picker
+        # still offers one selector per component.
+        words_norm, fixations_norm = empty_words_frame(), empty_fixations_frame()
+        rg_trial_cols = (
+            trial_mapping_columns(raw_gaze_schema["trial"])
+            if raw_gaze_schema and raw_gaze_schema.get("trial")
+            else []
+        )
+        st.session_state["_composite_trial_columns"] = (
+            rg_trial_cols if len(rg_trial_cols) > 1 else None
+        )
 
     raw_gaze_norm = pd.DataFrame()
     if not raw_gaze.empty:
@@ -1381,8 +1396,12 @@ def main() -> None:
         )
         words_df, fixations_df = filter_to_keys(words_df, fixations_df, kept)
 
-    # Apply filters (participant/trial/paragraph selection)
-    filters = default_filters(words_df, fixations_df)
+    # Apply filters (participant/trial/paragraph selection). For a raw-gaze-only
+    # dataset (no words/fixations) derive the participant/trial options from the
+    # raw gaze so it isn't filtered away (filter_raw_gaze drops on empty lists).
+    filters = default_filters(
+        words_df, fixations_df if not fixations_df.empty else raw_gaze_df
+    )
     words_filtered, fixations_filtered = filter_data(words_df, fixations_df, filters)
 
     # Filter raw gaze data to match selected participants/trials
@@ -1405,19 +1424,23 @@ def main() -> None:
         raw_gaze_filtered = pd.DataFrame()
 
     # Check for empty data after filtering. A single empty frame is fine
-    # (words-only / fixations-only datasets); both empty means the filters
-    # removed everything.
-    if words_filtered.empty and fixations_filtered.empty:
+    # (words-only / fixations-only / raw-gaze-only datasets); all empty means the
+    # filters removed everything.
+    if words_filtered.empty and fixations_filtered.empty and raw_gaze_filtered.empty:
         st.warning(
             "No data after filtering. Loosen the **Filter trials** panel "
             "(participants, condition, or annotation filters) in the sidebar."
         )
         return
 
-    # Build trial combinations for selection UI — from fixations normally,
-    # from words for words-only datasets.
+    # Build trial combinations for selection UI — from fixations normally, then
+    # words (words-only datasets), then raw gaze (raw-gaze-only datasets).
     combos, _, _ = build_combo_options(
-        fixations_filtered if not fixations_filtered.empty else words_filtered
+        fixations_filtered
+        if not fixations_filtered.empty
+        else words_filtered
+        if not words_filtered.empty
+        else raw_gaze_filtered
     )
 
     # Restore settings from an uploaded plot-config JSON BEFORE the sidebar
@@ -1426,7 +1449,12 @@ def main() -> None:
     # "Plot configuration" panel below; its file persists across reruns.
     _apply_uploaded_plot_config(combos, fixations_filtered)
 
-    # Canvas and visualization controls (sidebar)
+    # Canvas and visualization controls (sidebar). For a raw-gaze-only dataset,
+    # size the canvas from the gaze extent and default the raw-gaze overlay on —
+    # it's the only layer there, so the plot would otherwise be blank.
+    raw_gaze_only = words_filtered.empty and fixations_filtered.empty
+    if raw_gaze_only and "global_show_raw_gaze" not in st.session_state:
+        st.session_state["global_show_raw_gaze"] = True
     _sidebar_group("🎨 Visualization")
     (
         canvas_width,
@@ -1435,7 +1463,11 @@ def main() -> None:
         font_family,
         line_spacing,
         scale_text_to_boxes,
-    ) = render_sidebar_canvas_controls(words_filtered, fixations_filtered, data_choice)
+    ) = render_sidebar_canvas_controls(
+        words_filtered,
+        fixations_filtered if not fixations_filtered.empty else raw_gaze_filtered,
+        data_choice,
+    )
 
     has_raw_gaze = not raw_gaze_filtered.empty
     viz_settings = sidebar_controls(

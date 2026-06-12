@@ -1637,7 +1637,10 @@ def render_animation_tab(
         )
 
         if trial_fixations.empty:
-            st.warning("No fixations available for this trial.")
+            st.info(
+                "The Animated Scanpath needs a **fixations** table — there's no "
+                "fixation scanpath to animate for this selection."
+            )
         else:
             # Quote the REAL animation runtime (see `animation_playback_ms`) so
             # the stated playback time matches what the user observes; "reading
@@ -1872,7 +1875,11 @@ def render_multiple_comparison_tab(
     ]
     if trial_words.empty or trial_fixations.empty:
         with col_main:
-            st.warning("The selected trial has no words/fixations after filtering.")
+            st.info(
+                "Multiple Comparison needs a **words + fixations** table for the "
+                "selected trial — it scores model scanpaths against the real "
+                "reading over the text."
+            )
         return
 
     with col_side:
@@ -2327,6 +2334,10 @@ def render_data_statistics_tab(
     trial_ids = set(words_filtered["trial_id"].unique()) | set(
         fixations_filtered["trial_id"].unique()
     )
+    # Raw-gaze-only datasets have no words/fixations — count from the gaze.
+    if "participant_id" in raw_gaze_filtered.columns:
+        participant_ids |= set(raw_gaze_filtered["participant_id"].unique())
+        trial_ids |= set(raw_gaze_filtered["trial_id"].unique())
     paragraph_col = (
         "unique_paragraph_id"
         if "unique_paragraph_id" in words_filtered.columns

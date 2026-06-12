@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Raw-gaze-only datasets.** Upload just a raw-gaze table (no words or
+  fixations) and visualize the gaze trace — the Interactive Plot draws the
+  time-coloured gaze scatter, the trial picker and Data Statistics work off the
+  raw gaze, and the fixation-centric tabs (Animation, Multiple Comparison) show a
+  "needs a fixations table" note.
 - **Upload a plot config to restore it.** The sidebar *Plot configuration* panel
   (now grouped under 🎨 Visualization) gains a JSON uploader that re-applies a
   previously downloaded config — layers, coloring, sizing, canvas, axes, and the

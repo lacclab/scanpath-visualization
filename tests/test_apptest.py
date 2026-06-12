@@ -345,6 +345,40 @@ class TestGroupedUploadMapping:
         warnings = " ".join(w.value for w in at.warning)
         assert "Finish the column mapping" not in warnings
 
+    def test_raw_gaze_only_renders(self, monkeypatch):
+        # A raw-gaze-only dataset (no words, no fixations) must load and render
+        # the gaze instead of falling back to the demo or halting on "no data".
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        sample_rg = app.load_sample_raw_gaze()
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: (
+                sample_rg
+                if kw["state_prefix"] == "col_map_raw_gaze"
+                else pd.DataFrame()
+            ),
+        )
+
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error: {[e.value for e in at.error]}"
+        keys = {s.key for s in at.selectbox}
+        # Raw-gaze mapping rendered; words/fixations did not; and the app neither
+        # halted on "no data" nor fell back to the demo.
+        assert "col_map_raw_gaze_participant" in keys
+        assert "col_map_words_participant" not in keys
+        warnings = " ".join(w.value for w in at.warning)
+        assert "No data after filtering" not in warnings
+        # The raw-gaze overlay is defaulted on so the Interactive Plot isn't blank.
+        assert at.session_state["global_show_raw_gaze"] is True
+
 
 def _box_mapping_script():
     """Render only the Words/IA column-mapping panel for an edges-format table,

@@ -567,6 +567,10 @@ def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.Dat
         df["trial_id"] = raw_gaze[trial_col].astype(str)
         if "unique_trial_id" in raw_gaze.columns:
             df["unique_trial_id"] = raw_gaze["unique_trial_id"].astype(str)
+    # Raw gaze has no paragraph concept; mirror trial_id so a raw-gaze-only
+    # dataset still works with the trial picker (utils.build_combo_options needs
+    # a paragraph column).
+    df["paragraph_id"] = df["trial_id"]
     if schema.get("text"):
         df["text"] = raw_gaze[schema["text"]].astype(str)
     else:
