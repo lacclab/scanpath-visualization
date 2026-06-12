@@ -13,6 +13,7 @@ jobs:
       url: https://pypi.org/p/scanpath-studio
     permissions:
       id-token: write  # required for trusted publishing
+      contents: write  # required to create the GitHub release
     steps:
       - uses: actions/checkout@v6
 
@@ -36,6 +37,26 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
+
+      - name: Create GitHub release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          NOTES_FILE="$(mktemp)"
+          python scripts/changelog_notes.py "$VERSION" --format markdown > "$NOTES_FILE"
+          if [ ! -s "$NOTES_FILE" ]; then
+            printf 'Release %s of scanpath-studio.' "$TAG" > "$NOTES_FILE"
+          fi
+          printf '\n\n---\nInstall/upgrade: `pip install -U scanpath-studio`\n' >> "$NOTES_FILE"
+          # Idempotent: edit notes if the release already exists, else create it.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES_FILE"
+          fi
 
       - name: Notify Slack
         if: success()

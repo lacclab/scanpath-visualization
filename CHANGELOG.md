@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a pull request template (`.github/pull_request_template.md`) with a
   summary/verification prompt and a checklist mirroring the CONTRIBUTING and CI
   checks (tests, ruff, `[Unreleased]` changelog, dependency manifests).
+- The publish workflow now creates a GitHub release (with the matching CHANGELOG
+  section as the body) on every `v*` tag, alongside the PyPI publish and Slack
+  post; `scripts/changelog_notes.py` gained a `--format markdown` mode for it.
 
 ## [0.18.0] - 2026-06-11
 
