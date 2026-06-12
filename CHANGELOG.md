@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drop to a corner card that scrolls the relevant panel into view and pulses
   an outline around it. The previous all-dialog style remains one constant
   away (`tour.TOUR_STYLE = "dialog"`).
+- **README trimmed and refreshed** — a concise rewrite (264 → 157 lines)
+  reflecting the current five-tab app, with a regenerated hero GIF and
+  screenshot.
 - **Simpler, more general column mapping.** The Words/IA word-box mapping is now
   a single coordinate-format selector (edges ↔ origin+size) plus four fields
   instead of eight, and column auto-detection matches names case- and
