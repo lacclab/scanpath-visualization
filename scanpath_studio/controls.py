@@ -90,15 +90,35 @@ FIX_FIELD_SPECS: List[Dict] = [
         "multi": True,
         "help": _TRIAL_MAPPING_HELP,
     },
-    {"key": "x", "label": "X coordinate", "required": True},
-    {"key": "y", "label": "Y coordinate", "required": True},
+    {
+        "key": "x",
+        "label": "X coordinate",
+        "required": False,
+        "help": "Fixation pixel X. Leave empty for AOI-only data and map "
+        "Word/IA ID instead — those fixations are placed at word-box centers.",
+    },
+    {"key": "y", "label": "Y coordinate", "required": False},
     {"key": "duration", "label": "Duration (ms)", "required": True},
     {"key": "timestamp", "label": "Timestamp (ms)", "required": False},
     {"key": "fixation_id", "label": "Fixation ID", "required": False},
     {"key": "paragraph", "label": "Paragraph ID", "required": False},
-    {"key": "word_id", "label": "Word/IA ID", "required": False},
+    {
+        "key": "word_id",
+        "label": "Word/IA ID",
+        "required": False,
+        "help": "Which word/AOI each fixation landed on. Authoritative when "
+        "present (overrides geometric assignment), and supplies the location "
+        "when X/Y are absent.",
+    },
     {"key": "pass_index", "label": "Pass index", "required": False},
     {"key": "saccade_type", "label": "Saccade type", "required": False},
+    {
+        "key": "saccade_amplitude",
+        "label": "Saccade amplitude",
+        "required": False,
+        "help": "Pixel distance from the previous fixation; computed from X/Y "
+        "when not provided.",
+    },
     {"key": "eye", "label": "Eye", "required": False},
     {"key": "noise_flag", "label": "Noise flag", "required": False},
 ]
@@ -235,7 +255,9 @@ def data_dictionary_help_text() -> str:
         "pick which in the *Word box* selector.\n"
         "- Fixations: tries `participant_id`/`subject_id`, `unique_trial_id`/`trial_id`/`unique_paragraph_id`, "
         "`CURRENT_FIX_DURATION`, `CURRENT_FIX_X`/`CURRENT_FIX_Y`, and optionally `CURRENT_FIX_START`, "
-        "`IA_ID`, `pass_index`/`reread`, `saccade_type`, `eye`, `noise_flag`.\n"
+        "`IA_ID`, `pass_index`/`reread`, `saccade_type`, `saccade_amplitude`, "
+        "`eye`, `noise_flag`. X/Y are optional when `IA_ID` is mapped "
+        "(AOI-only fixations are placed at word-box centers).\n"
         "- Raw gaze (optional): millisecond-level data with `participant_id`, `trial_id`, `x`, `y`. "
         "Each row represents one timepoint.\n"
         "If your columns are named differently, after uploading expand the "

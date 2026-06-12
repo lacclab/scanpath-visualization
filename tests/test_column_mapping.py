@@ -103,3 +103,42 @@ class TestTrialMappingMultiselect:
         result = normalize_fixations(df, mapping)
         assert result["trial_id"].tolist() == ["p1_A_False", "p1_A_True"]
         assert (result["unique_trial_id"] == result["trial_id"]).all()
+
+
+class TestFixationFieldSpecs:
+    """The Fixations panel's required markers must match validate_fix_schema:
+    Participant/Trial/Duration are required; X/Y are conditional on a Word/IA ID
+    (AOI-sequence data), so they must not be hard-required."""
+
+    def test_required_flags_match_validator(self):
+        from scanpath_studio.controls import FIX_FIELD_SPECS
+
+        required = {s["key"] for s in FIX_FIELD_SPECS if s.get("required")}
+        assert required == {"participant", "trial", "duration"}
+
+    def test_aoi_only_fixations_pass_validation(self):
+        # A Word/IA ID with no X/Y is valid (AOI-sequence fixations).
+        from scanpath_studio.data import validate_fix_schema
+
+        schema = {
+            "participant": "p",
+            "trial": "t",
+            "duration": "d",
+            "x": None,
+            "y": None,
+            "word_id": "w",
+        }
+        assert validate_fix_schema(schema) == []
+
+    def test_no_location_fails_validation(self):
+        from scanpath_studio.data import validate_fix_schema
+
+        schema = {"participant": "p", "trial": "t", "duration": "d"}
+        problems = validate_fix_schema(schema)
+        assert any("X, Y" in p or "Word/IA" in p for p in problems)
+
+    def test_saccade_amplitude_is_mappable(self):
+        # It is proposed + normalized, so it must be exposed for override too.
+        from scanpath_studio.controls import FIX_FIELD_SPECS
+
+        assert "saccade_amplitude" in {s["key"] for s in FIX_FIELD_SPECS}
