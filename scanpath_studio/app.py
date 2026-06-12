@@ -597,8 +597,7 @@ def _render_unmapped_view(
         "**Finish the column mapping to draw scanpaths.** Map the missing "
         "field(s) in the **Column mapping** panel below each upload box in the "
         "sidebar — the raw uploaded data is shown in the **Raw Data** tab below "
-        "to help you choose. Still needed:\n\n"
-        + "\n".join(f"- {p}" for p in problems)
+        "to help you choose. Still needed:\n\n" + "\n".join(f"- {p}" for p in problems)
     )
     tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
         [
