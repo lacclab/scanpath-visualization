@@ -241,7 +241,7 @@ def configure_page() -> None:
     """
     is_embed = (st.query_params.get("embed") or "").lower() in {"true", "1"}
     st.set_page_config(
-        page_title="Scanpath Studio",
+        page_title="Scanpath Studio - Visualization of Eye Movements in Reading",
         page_icon="👀",
         layout="wide",
         initial_sidebar_state=(
@@ -259,7 +259,7 @@ def _render_about_panel() -> None:
     title_col, about_col = st.columns([5, 1], vertical_alignment="center")
     with title_col:
         st.title("Scanpath Studio")
-        st.caption("Interactive exploration of eye movements in reading.")
+        st.caption("Interactive visualization of eye movements in reading.")
     bibtex = (
         "@software{Shubi_Scanpath_Studio_2026,\n"
         "author = {Shubi, Omer and Gruteke Klein, Keren and Berzak, Yevgeni},\n"
