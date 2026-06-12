@@ -313,6 +313,38 @@ class TestGroupedUploadMapping:
         assert "col_map_fix_participant" in keys
         assert "col_map_raw_gaze_participant" in keys
 
+    def test_words_only_upload_renders(self, monkeypatch):
+        # Single-report upload: only a Words/IA table — the missing fixations
+        # side becomes a canonical empty frame and the app still renders.
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        sample_words, _ = app.load_sample_data()
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: (
+                sample_words
+                if kw["state_prefix"] == "col_map_words"
+                else pd.DataFrame()
+            ),
+        )
+
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error: {[e.value for e in at.error]}"
+        keys = {s.key for s in at.selectbox}
+        # The Words/IA mapping renders; the (un-uploaded) Fixations table gets no
+        # mapping panel, and the app got past mapping (no unmapped-view warning).
+        assert "col_map_words_participant" in keys
+        assert "col_map_fix_participant" not in keys
+        warnings = " ".join(w.value for w in at.warning)
+        assert "Finish the column mapping" not in warnings
+
 
 def _box_mapping_script():
     """Render only the Words/IA column-mapping panel for an edges-format table,

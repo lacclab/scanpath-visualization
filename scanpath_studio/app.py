@@ -29,7 +29,7 @@ Usage:
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -649,9 +649,9 @@ def _upload_table_group(
     upload_help: str,
     table_label: str,
     state_prefix: str,
-    field_specs,
-    propose_fn,
-    validate_fn,
+    field_specs: List[Dict],
+    propose_fn: Callable[[pd.DataFrame], Dict],
+    validate_fn: Callable[[Dict], list],
     multi: bool,
 ) -> Tuple[pd.DataFrame, Optional[Dict], list]:
     """Render a table's [upload box → column-mapping expander] group in the
@@ -678,18 +678,30 @@ def _upload_table_group(
     return raw, schema, validate_fn(schema)
 
 
-def _load_and_map_uploads() -> Tuple[
-    pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list
-]:
+class _UploadResult(NamedTuple):
+    """Result of the grouped-upload flow.
+
+    ``words``/``fixations``/``raw_gaze`` are normalized (empty when absent or, for
+    words/fixations, when the mapping is incomplete). ``raw_words``/``raw_fixations``
+    are the pre-normalization frames shown by ``_render_unmapped_view`` when
+    ``problems`` is non-empty."""
+
+    words: pd.DataFrame
+    fixations: pd.DataFrame
+    raw_gaze: pd.DataFrame
+    raw_words: pd.DataFrame
+    raw_fixations: pd.DataFrame
+    problems: list
+
+
+def _load_and_map_uploads() -> _UploadResult:
     """Upload data source: render Words/IA, Fixations and Raw gaze as
     [upload box → mapping] groups in the sidebar, then normalize.
 
-    Returns ``(words_norm, fixations_norm, raw_gaze_norm, raw_words,
-    raw_fixations, problems)``. When a words/fixations mapping is incomplete the
-    normalized frames come back empty and ``problems`` is non-empty (the caller
-    shows the raw tables). The raw-gaze group is always rendered — so its mapping
-    is reachable even before words/fixations validate — but only normalized once
-    they do."""
+    When a words/fixations mapping is incomplete the normalized frames come back
+    empty and ``problems`` is non-empty (the caller shows the raw tables). The
+    raw-gaze group is always rendered — so its mapping is reachable even before
+    words/fixations validate — but only normalized once they do."""
     raw_words, words_schema, words_problems = _upload_table_group(
         uploader_label="Words/IA table(s)",
         upload_help="Multi-file datasets (e.g. one file per text) are concatenated; "
@@ -733,7 +745,7 @@ def _load_and_map_uploads() -> Tuple[
         words_norm, fixations_norm, problems = prepare_data(
             sample_words, sample_fixations, allow_override=False
         )
-        return (
+        return _UploadResult(
             words_norm,
             fixations_norm,
             pd.DataFrame(),
@@ -749,7 +761,7 @@ def _load_and_map_uploads() -> Tuple[
         problems.append("Fixations: " + "; ".join(fix_problems))
     if problems:
         st.session_state["_composite_trial_columns"] = None
-        return (
+        return _UploadResult(
             empty_words_frame(),
             empty_fixations_frame(),
             pd.DataFrame(),
@@ -769,7 +781,9 @@ def _load_and_map_uploads() -> Tuple[
         else:
             raw_gaze_norm = normalize_raw_gaze(raw_gaze, raw_gaze_schema)
 
-    return words_norm, fixations_norm, raw_gaze_norm, raw_words, raw_fixations, problems
+    return _UploadResult(
+        words_norm, fixations_norm, raw_gaze_norm, raw_words, raw_fixations, problems
+    )
 
 
 def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
@@ -1047,14 +1061,11 @@ def main() -> None:
     deep_link_pid = st.session_state.get("single_participant")
     raw_gaze_df: Optional[pd.DataFrame] = None
     if data_choice == UPLOAD_CHOICE:
-        (
-            words_df,
-            fixations_df,
-            raw_gaze_df,
-            raw_words_df,
-            raw_fixations_df,
-            mapping_problems,
-        ) = _load_and_map_uploads()
+        uploaded = _load_and_map_uploads()
+        words_df, fixations_df = uploaded.words, uploaded.fixations
+        raw_gaze_df = uploaded.raw_gaze
+        raw_words_df, raw_fixations_df = uploaded.raw_words, uploaded.raw_fixations
+        mapping_problems = uploaded.problems
     else:
         raw_words_df, raw_fixations_df = load_words_and_fixations(
             data_choice, participant=deep_link_pid
