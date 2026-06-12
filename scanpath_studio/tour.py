@@ -354,7 +354,10 @@ def render_spotlight_tour() -> None:
         )
         if step_idx < n - 1:
             exit_col.button(
-                "Exit tour", key="tour_sp_exit", width="stretch", on_click=_exit_spotlight
+                "Exit tour",
+                key="tour_sp_exit",
+                width="stretch",
+                on_click=_exit_spotlight,
             )
             next_col.button(
                 "Next →",
