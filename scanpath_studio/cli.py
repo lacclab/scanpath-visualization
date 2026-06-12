@@ -41,9 +41,7 @@ def _render_parser() -> argparse.ArgumentParser:
             "(`plotly_get_chrome -y`)."
         ),
     )
-    src = parser.add_argument_group(
-        "input (bundled sample, or words and/or fixations)"
-    )
+    src = parser.add_argument_group("input (bundled sample, or words and/or fixations)")
     src.add_argument(
         "--sample",
         action="store_true",

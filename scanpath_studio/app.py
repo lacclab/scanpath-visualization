@@ -128,6 +128,8 @@ def public_datasets_enabled() -> bool:
     default to release it. Read at call time so tests can toggle the env var."""
     raw = os.environ.get("SCANPATH_PUBLIC_DATASETS", "").strip().lower()
     return raw not in ("", "0", "false", "no")
+
+
 # Server-side OneStop lacclab bundle. Only offered when $ONESTOP_DATA_DIR is
 # set; selected automatically when the page is opened with `?source=onestop`
 # in the URL. See data.load_onestop_server_bundle().
@@ -300,7 +302,10 @@ If you use the bundled demo data, also cite
 
 @st.cache_data(show_spinner="Loading PoTeC…")
 def _cached_potec_raw_frames(
-    root: str, readers: Optional[Tuple[int, ...]], texts: Tuple[str, ...], download: bool
+    root: str,
+    readers: Optional[Tuple[int, ...]],
+    texts: Tuple[str, ...],
+    download: bool,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Cached raw PoTeC frames (pre-normalization) for the GUI data source.
 
@@ -356,9 +361,7 @@ def _load_potec_source() -> Tuple[pd.DataFrame, pd.DataFrame]:
         st.sidebar.info("Pick at least one PoTeC text to load.")
         return load_sample_data()
     try:
-        readers = tuple(
-            int(part) for part in readers_raw.replace(",", " ").split()
-        )
+        readers = tuple(int(part) for part in readers_raw.replace(",", " ").split())
     except ValueError:
         st.sidebar.error("Readers must be integers, e.g. `0, 1, 2`.")
         return load_sample_data()

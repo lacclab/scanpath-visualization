@@ -1032,9 +1032,7 @@ def filter_data(
     participants = filters.get("participants") or _union_column_values(
         words, fixations, "participant_id"
     )
-    trials = filters.get("trials") or _union_column_values(
-        words, fixations, "trial_id"
-    )
+    trials = filters.get("trials") or _union_column_values(words, fixations, "trial_id")
     word_mask = words["participant_id"].isin(participants) & words["trial_id"].isin(
         trials
     )

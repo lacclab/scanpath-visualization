@@ -316,9 +316,7 @@ def test_load_potec(potec_root):
 
 
 def test_load_potec_reader_subset(potec_root):
-    words, fixations = datasets_module.load_potec(
-        potec_root, readers=[1], texts=["b0"]
-    )
+    words, fixations = datasets_module.load_potec(potec_root, readers=[1], texts=["b0"])
     assert set(fixations["participant_id"]) == {"1"}
     assert set(words["participant_id"]) == {"1"}
 

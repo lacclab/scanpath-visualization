@@ -177,9 +177,7 @@ def _potec_fixations(
     fixation's (x, y) is the center of the fixated character's box from the
     per-text ``.ias`` file — PoTeC discards the original screen coordinates."""
     base = root / "eyetracking_data"
-    source = next(
-        (s for s in ("scanpaths", "fixations") if (base / s).is_dir()), None
-    )
+    source = next((s for s in ("scanpaths", "fixations") if (base / s).is_dir()), None)
     if source is None:
         raise FileNotFoundError(
             f"No PoTeC fixation data under {base} — expected a 'scanpaths' or "

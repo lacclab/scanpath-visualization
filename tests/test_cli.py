@@ -177,9 +177,7 @@ def test_render_fixations_only_multifile(tmp_path):
         group.to_csv(tmp_path / f"{pid}.csv", index=False)
 
     out_file = tmp_path / "out.html"
-    cli.main(
-        ["render", "--fixations", str(tmp_path / "*.csv"), "-o", str(out_file)]
-    )
+    cli.main(["render", "--fixations", str(tmp_path / "*.csv"), "-o", str(out_file)])
     assert out_file.is_file()
 
 

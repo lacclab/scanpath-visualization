@@ -209,9 +209,9 @@ class TestUnmappedRawDataView:
         assert "Word/IA ID" in warnings
         # …and the raw uploaded table is rendered so the user can inspect it.
         frames = [df.value for df in at.dataframe]
-        assert any(
-            list(f.columns) == ["reader", "stim", "token"] for f in frames
-        ), "raw uploaded columns should be visible in the Raw Data tab"
+        assert any(list(f.columns) == ["reader", "stim", "token"] for f in frames), (
+            "raw uploaded columns should be visible in the Raw Data tab"
+        )
 
     def test_public_datasets_hidden_by_default(self, monkeypatch):
         """The Public datasets source is feature-flagged off until release."""
