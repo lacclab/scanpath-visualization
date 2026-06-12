@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### CI
 - Test on Python 3.14 (the version Streamlit Cloud runs); CI now runs on pull
   requests only. Added a supported-Python-versions badge to the README.
+- Added a pull request template (`.github/pull_request_template.md`) with a
+  summary/verification prompt and a checklist mirroring the CONTRIBUTING and CI
+  checks (tests, ruff, `[Unreleased]` changelog, dependency manifests).
 
 ## [0.18.0] - 2026-06-11
 
