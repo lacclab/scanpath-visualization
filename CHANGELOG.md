@@ -17,10 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release.
 
 ### Changed
-- **The tutorial is now a guided spotlight tour.** Instead of a modal, a
-  floating card walks through the real UI — each step scrolls the relevant
-  panel into view and pulses an outline around it. The previous dialog style
-  remains one constant away (`tour.TOUR_STYLE = "dialog"`).
+- **The tutorial is now a guided spotlight tour.** The welcome opens centered
+  like a modal; the following steps drop to a corner card that scrolls the
+  relevant panel into view and pulses an outline around it. The previous
+  all-dialog style remains one constant away (`tour.TOUR_STYLE = "dialog"`).
 
 ### Fixed
 - The tutorial's Skip/Done buttons now close the dialog instantly instead of

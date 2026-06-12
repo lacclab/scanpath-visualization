@@ -349,6 +349,9 @@ class TestSpotlightTour:
         assert "tour_sp_next" in self._sp_buttons(at)
         # The dialog style must NOT also open.
         assert not any(b.key == "tour_next" for b in at.button)
+        # The welcome step renders centered with a dimmed backdrop.
+        markdown = " ".join(m.value for m in at.markdown)
+        assert "tour-backdrop" in markdown
 
     def test_spotlight_navigates_and_exits(self):
         from scanpath_studio.tour import _SPOTLIGHT_STEPS
@@ -358,6 +361,9 @@ class TestSpotlightTour:
         at.button(key="tour_sp_next").click()
         at.run(timeout=30)
         assert at.session_state["tour_step"] == 1
+        # From step 2 on, the card drops to the corner: no backdrop.
+        markdown = " ".join(m.value for m in at.markdown)
+        assert "tour-backdrop" not in markdown
         at.button(key="tour_sp_exit").click()
         at.run(timeout=30)
         assert at.session_state["tour_mode"] is None

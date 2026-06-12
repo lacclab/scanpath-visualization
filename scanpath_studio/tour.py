@@ -249,7 +249,7 @@ _SPOTLIGHT_STEPS = [
 ]
 
 # The floating card: a keyed st.container pinned bottom-right via its
-# `.st-key-tour_card` class. Plain string (no .format) so the CSS braces
+# `.st-key-tour_card` class. Plain strings (no .format) so the CSS braces
 # don't need escaping.
 _CARD_CSS = """
 .st-key-tour_card {
@@ -262,6 +262,27 @@ _CARD_CSS = """
     border-radius: 0.75rem;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     padding: 1rem 1.25rem;
+}
+"""
+
+# Welcome step only: center the card like a modal and dim the app behind it
+# (the `.tour-backdrop` div is rendered only on that step). From step 2 on,
+# the card drops to the bottom-right corner so it never covers the
+# highlighted section.
+_WELCOME_CSS = """
+.st-key-tour_card {
+    top: 50%;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    transform: translate(-50%, -50%);
+    width: 500px;
+}
+.tour-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 999980;
+    background: rgba(0, 0, 0, 0.45);
 }
 """
 
@@ -311,10 +332,13 @@ def render_spotlight_tour() -> None:
         "<style>"
         + _CARD_CSS
         + f".st-key-tour_card {{ background: {bg}; border: 1px solid {border}; }}"
+        + (_WELCOME_CSS if step_idx == 0 else "")
         + highlight
         + "</style>",
         unsafe_allow_html=True,
     )
+    if step_idx == 0:
+        st.markdown('<div class="tour-backdrop"></div>', unsafe_allow_html=True)
 
     with st.container(key="tour_card"):
         st.markdown(f"#### {step['title']}")
