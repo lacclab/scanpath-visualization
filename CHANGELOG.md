@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **README trimmed and refreshed** — a concise rewrite (264 → 157 lines)
   reflecting the current five-tab app, with a regenerated hero GIF and
   screenshot.
+- **Simpler, more general column mapping.** The Words/IA word-box mapping is now
+  a single coordinate-format selector (edges ↔ origin+size) plus four fields
+  instead of eight, and column auto-detection matches names case- and
+  separator-insensitively (`IA_LEFT`, `ia_left` and `Participant ID` all
+  resolve). Required-field markers now match what the loader actually needs.
 
 ### Fixed
 - The tutorial's Skip/Done buttons now close the dialog instantly instead of
