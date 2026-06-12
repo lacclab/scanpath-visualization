@@ -29,7 +29,7 @@ Usage:
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -427,22 +427,22 @@ def load_words_and_fixations(
     data_choice: str,
     participant: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load word and fixation data from user uploads or bundled demo files.
+    """Load raw word + fixation frames for the **non-upload** data sources.
+
+    The Upload source is handled separately by ``_load_and_map_uploads`` (which
+    groups each table's upload box with its mapping); this covers the bundled
+    demo, synthetic trial, public datasets, and the OneStop server bundle.
 
     Args:
-        data_choice: Either "Upload csv tables" / "Use bundled demo" / "OneStop server bundle"
+        data_choice: "Use bundled demo" / "Synthetic test trial" / "Public
+            datasets" / "OneStop server bundle".
         participant: Lowercased participant_id from the URL deep link. When set
             AND `data_choice == ONESTOP_CHOICE`, the OneStop loader fast-paths
             to just that pid's Parquet shard — sub-second instead of ~3 min.
             Ignored for the other data sources.
 
     Returns:
-        Tuple of (words_df, fixations_df) as raw DataFrames before normalization
-
-    UI Effects:
-        - Renders file uploaders in sidebar when data_choice is "Upload csv tables"
-        - Shows info message if uploads are incomplete
-        - Falls back to sample data if uploads missing
+        Tuple of (words_df, fixations_df) as raw DataFrames before normalization.
     """
     if data_choice == SYNTHETIC_CHOICE:
         from scanpath_studio.synthetic import load_synthetic_data
@@ -450,37 +450,8 @@ def load_words_and_fixations(
         return load_synthetic_data()
     if data_choice == PUBLIC_DATASETS_CHOICE:
         return _load_public_dataset()
-    if data_choice == UPLOAD_CHOICE:
-        upload_types = ["csv", "tsv", "parquet", "feather"]
-        uploaded_words = st.sidebar.file_uploader(
-            "Words/IA table(s)",
-            type=upload_types,
-            accept_multiple_files=True,
-            help="Multi-file datasets (e.g. one file per text) are concatenated; "
-            "each file's name is kept in a `source_file` column.",
-        )
-        uploaded_fixations = st.sidebar.file_uploader(
-            "Fixations table(s)",
-            type=upload_types,
-            accept_multiple_files=True,
-            help="Multi-file datasets (e.g. one file per participant) are "
-            "concatenated; each file's name is kept in a `source_file` column.",
-        )
-        if uploaded_words or uploaded_fixations:
-            # Either table may be absent — single-report datasets ship only an
-            # IA report or only a fixation report. An empty frame marks the
-            # missing side; prepare_data() swaps in a canonical empty frame.
-            words = read_tables(uploaded_words) if uploaded_words else pd.DataFrame()
-            fixations = (
-                read_tables(uploaded_fixations)
-                if uploaded_fixations
-                else pd.DataFrame()
-            )
-            return words, fixations
-        st.sidebar.info(
-            "Upload words and/or fixations tables — or switch to demo data."
-        )
-        return load_sample_data()
+    # The Upload source is handled separately by `_load_and_map_uploads`, which
+    # renders each table's upload box + mapping together; see main().
     if data_choice == ONESTOP_CHOICE:
         words, fixations = load_onestop_server_bundle(participant=participant)
         if words.empty or fixations.empty:
@@ -490,6 +461,38 @@ def load_words_and_fixations(
             return load_sample_data()
         return words, fixations
     return load_sample_data()
+
+
+def _normalize_pair(
+    words_df: pd.DataFrame,
+    word_schema: Optional[Dict],
+    fixations_df: pd.DataFrame,
+    fix_schema: Optional[Dict],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Normalize a *validated* (words, fixations) pair to canonical columns and
+    run the cross-frame fixups (``harmonize_frames``).
+
+    A ``None`` schema means that table is absent (single-report dataset) → a
+    canonical empty frame. Records the composite-trial component columns (when
+    the trial id is built from several columns) so the trial picker can offer one
+    cascading selector per component. Shared by the upload and non-upload paths.
+    """
+    trial_mapping = (word_schema or fix_schema)["trial"]
+    trial_cols = trial_mapping_columns(trial_mapping)
+    st.session_state["_composite_trial_columns"] = (
+        trial_cols if len(trial_cols) > 1 else None
+    )
+    words_norm = (
+        normalize_words(words_df, word_schema)
+        if word_schema is not None
+        else empty_words_frame()
+    )
+    fixations_norm = (
+        normalize_fixations(fixations_df, fix_schema)
+        if fix_schema is not None
+        else empty_fixations_frame()
+    )
+    return harmonize_frames(words_norm, fixations_norm)
 
 
 def prepare_data(
@@ -563,27 +566,9 @@ def prepare_data(
         st.session_state["_composite_trial_columns"] = None
         return empty_words_frame(), empty_fixations_frame(), problems
 
-    # Remember whether the trial id was composed from several columns, so the
-    # trial picker can offer one cascading selector per component (see
-    # utils._select_trial_composite_mode). Recomputed every run so it clears
-    # when switching to a single-column / non-upload data source. (Both tables
-    # are told to use the same trial mapping; fall back to the fixations'
-    # mapping for fixations-only datasets.)
-    trial_mapping = (word_schema or fix_schema)["trial"]
-    trial_cols = trial_mapping_columns(trial_mapping)
-    st.session_state["_composite_trial_columns"] = (
-        trial_cols if len(trial_cols) > 1 else None
+    words_norm, fixations_norm = _normalize_pair(
+        words_df, word_schema, fixations_df, fix_schema
     )
-
-    words_norm = (
-        normalize_words(words_df, word_schema) if has_words else empty_words_frame()
-    )
-    fixations_norm = (
-        normalize_fixations(fixations_df, fix_schema)
-        if has_fixations
-        else empty_fixations_frame()
-    )
-    words_norm, fixations_norm = harmonize_frames(words_norm, fixations_norm)
     return words_norm, fixations_norm, problems
 
 
@@ -610,9 +595,10 @@ def _render_unmapped_view(
     """
     st.warning(
         "**Finish the column mapping to draw scanpaths.** Map the missing "
-        "field(s) in the **Column mapping** panels in the sidebar — the raw "
-        "uploaded data is shown in the **Raw Data** tab below to help you "
-        "choose. Still needed:\n\n" + "\n".join(f"- {p}" for p in problems)
+        "field(s) in the **Column mapping** panel below each upload box in the "
+        "sidebar — the raw uploaded data is shown in the **Raw Data** tab below "
+        "to help you choose. Still needed:\n\n"
+        + "\n".join(f"- {p}" for p in problems)
     )
     tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
         [
@@ -632,6 +618,159 @@ def _render_unmapped_view(
                 st.info("No data loaded yet.")
         _render_raw_preview("Words / IA", raw_words_df)
         _render_raw_preview("Fixations", raw_fixations_df)
+
+
+# File types accepted by every upload box.
+_UPLOAD_TYPES = ["csv", "tsv", "parquet", "feather"]
+
+
+def _read_uploaded_frame(
+    *, uploader_label: str, upload_help: str, state_prefix: str, multi: bool
+) -> pd.DataFrame:
+    """Render one sidebar upload box and return its (concatenated) frame.
+
+    Empty frame when nothing is uploaded. Isolated from the mapping render so
+    tests can inject frames without a real upload (AppTest can't drive
+    ``st.file_uploader``)."""
+    uploaded = st.sidebar.file_uploader(
+        uploader_label,
+        type=_UPLOAD_TYPES,
+        accept_multiple_files=multi,
+        key=f"{state_prefix}_upload",
+        help=upload_help,
+    )
+    if not uploaded:
+        return pd.DataFrame()
+    return read_tables(uploaded) if multi else read_table(uploaded)
+
+
+def _upload_table_group(
+    *,
+    uploader_label: str,
+    upload_help: str,
+    table_label: str,
+    state_prefix: str,
+    field_specs,
+    propose_fn,
+    validate_fn,
+    multi: bool,
+) -> Tuple[pd.DataFrame, Optional[Dict], list]:
+    """Render a table's [upload box → column-mapping expander] group in the
+    sidebar. Consecutive ``st.sidebar`` calls keep the box and its mapping
+    visually together. Returns ``(raw_df, schema, problems)`` — empty frame +
+    ``None`` schema + ``[]`` when nothing is uploaded."""
+    raw = _read_uploaded_frame(
+        uploader_label=uploader_label,
+        upload_help=upload_help,
+        state_prefix=state_prefix,
+        multi=multi,
+    )
+    if raw.empty:
+        return raw, None, []
+    proposed = propose_fn(raw)
+    schema = column_mapping_ui(
+        raw,
+        table_label=table_label,
+        state_key_prefix=state_prefix,
+        field_specs=field_specs,
+        proposed=proposed,
+        problems=validate_fn(proposed),
+    )
+    return raw, schema, validate_fn(schema)
+
+
+def _load_and_map_uploads() -> Tuple[
+    pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list
+]:
+    """Upload data source: render Words/IA, Fixations and Raw gaze as
+    [upload box → mapping] groups in the sidebar, then normalize.
+
+    Returns ``(words_norm, fixations_norm, raw_gaze_norm, raw_words,
+    raw_fixations, problems)``. When a words/fixations mapping is incomplete the
+    normalized frames come back empty and ``problems`` is non-empty (the caller
+    shows the raw tables). The raw-gaze group is always rendered — so its mapping
+    is reachable even before words/fixations validate — but only normalized once
+    they do."""
+    raw_words, words_schema, words_problems = _upload_table_group(
+        uploader_label="Words/IA table(s)",
+        upload_help="Multi-file datasets (e.g. one file per text) are concatenated; "
+        "each file's name is kept in a `source_file` column.",
+        table_label="Words/IA",
+        state_prefix="col_map_words",
+        field_specs=WORD_FIELD_SPECS,
+        propose_fn=propose_word_schema,
+        validate_fn=validate_word_schema,
+        multi=True,
+    )
+    raw_fixations, fix_schema, fix_problems = _upload_table_group(
+        uploader_label="Fixations table(s)",
+        upload_help="Multi-file datasets (e.g. one file per participant) are "
+        "concatenated; each file's name is kept in a `source_file` column.",
+        table_label="Fixations",
+        state_prefix="col_map_fix",
+        field_specs=FIX_FIELD_SPECS,
+        propose_fn=propose_fix_schema,
+        validate_fn=validate_fix_schema,
+        multi=True,
+    )
+    raw_gaze, raw_gaze_schema, raw_gaze_problems = _upload_table_group(
+        uploader_label="Raw gaze table (optional)",
+        upload_help="Optional millisecond-level gaze overlay "
+        "(participant, trial, x, y).",
+        table_label="Raw gaze",
+        state_prefix="col_map_raw_gaze",
+        field_specs=RAW_GAZE_FIELD_SPECS,
+        propose_fn=propose_raw_gaze_schema,
+        validate_fn=validate_raw_gaze_schema,
+        multi=False,
+    )
+
+    # Nothing uploaded yet → preview the bundled demo (unchanged behavior).
+    if raw_words.empty and raw_fixations.empty:
+        st.sidebar.info(
+            "Upload words and/or fixations tables — or switch to demo data."
+        )
+        sample_words, sample_fixations = load_sample_data()
+        words_norm, fixations_norm, problems = prepare_data(
+            sample_words, sample_fixations, allow_override=False
+        )
+        return (
+            words_norm,
+            fixations_norm,
+            pd.DataFrame(),
+            sample_words,
+            sample_fixations,
+            problems,
+        )
+
+    problems: list = []
+    if words_problems:
+        problems.append("Words/IA: " + "; ".join(words_problems))
+    if fix_problems:
+        problems.append("Fixations: " + "; ".join(fix_problems))
+    if problems:
+        st.session_state["_composite_trial_columns"] = None
+        return (
+            empty_words_frame(),
+            empty_fixations_frame(),
+            pd.DataFrame(),
+            raw_words,
+            raw_fixations,
+            problems,
+        )
+
+    words_norm, fixations_norm = _normalize_pair(
+        raw_words, words_schema, raw_fixations, fix_schema
+    )
+
+    raw_gaze_norm = pd.DataFrame()
+    if not raw_gaze.empty:
+        if raw_gaze_problems:
+            st.sidebar.warning("Raw gaze ignored — " + "; ".join(raw_gaze_problems))
+        else:
+            raw_gaze_norm = normalize_raw_gaze(raw_gaze, raw_gaze_schema)
+
+    return words_norm, fixations_norm, raw_gaze_norm, raw_words, raw_fixations, problems
 
 
 def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
@@ -901,18 +1040,31 @@ def main() -> None:
     _sidebar_group("📂 Data")
     data_choice = render_sidebar_data_source()
 
-    # Load and prepare core data (words + fixations). Pass the deep-link
-    # participant so the OneStop loader can fast-path to a per-pid shard. Keep
-    # the raw frames around so we can show them if the mapping isn't ready.
+    # Load + map core data. The **Upload** source renders each table as an
+    # [upload box → mapping] group in the sidebar (words, fixations, raw gaze) and
+    # normalizes inline; every other source auto-detects (or, for public datasets,
+    # renders standalone mapping panels) via prepare_data. Keep the raw frames
+    # around so we can show them if the mapping isn't ready.
     deep_link_pid = st.session_state.get("single_participant")
-    raw_words_df, raw_fixations_df = load_words_and_fixations(
-        data_choice, participant=deep_link_pid
-    )
-    words_df, fixations_df, mapping_problems = prepare_data(
-        raw_words_df,
-        raw_fixations_df,
-        allow_override=(data_choice in (UPLOAD_CHOICE, PUBLIC_DATASETS_CHOICE)),
-    )
+    raw_gaze_df: Optional[pd.DataFrame] = None
+    if data_choice == UPLOAD_CHOICE:
+        (
+            words_df,
+            fixations_df,
+            raw_gaze_df,
+            raw_words_df,
+            raw_fixations_df,
+            mapping_problems,
+        ) = _load_and_map_uploads()
+    else:
+        raw_words_df, raw_fixations_df = load_words_and_fixations(
+            data_choice, participant=deep_link_pid
+        )
+        words_df, fixations_df, mapping_problems = prepare_data(
+            raw_words_df,
+            raw_fixations_df,
+            allow_override=(data_choice == PUBLIC_DATASETS_CHOICE),
+        )
     if mapping_problems:
         # A required column is still unmapped. Rather than halt the whole app
         # (which hid the data the user needs to choose the mapping), show the
@@ -920,8 +1072,10 @@ def main() -> None:
         _render_unmapped_view(raw_words_df, raw_fixations_df, mapping_problems)
         return
 
-    # Load optional raw gaze data
-    raw_gaze_df = load_raw_gaze_data(data_choice)
+    # Optional raw gaze: the Upload source already mapped + normalized it above;
+    # every other source loads it here (bundled demo sample, OneStop uploader).
+    if raw_gaze_df is None:
+        raw_gaze_df = load_raw_gaze_data(data_choice)
 
     # Trial-level filtering / grouping (sidebar): narrow by participant, by
     # condition (Hunting/Gathering, difficulty, first/repeated reading,

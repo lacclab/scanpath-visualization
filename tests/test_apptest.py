@@ -188,14 +188,18 @@ class TestUnmappedRawDataView:
         from scanpath_studio import app
 
         # A words table whose columns match neither a word/IA id nor box
-        # coordinates — exactly the screenshot's failure.
+        # coordinates — exactly the screenshot's failure. Injected through the
+        # per-table upload seam (AppTest can't drive st.file_uploader); the
+        # Words/IA group gets it, the others stay empty.
         raw_words = pd.DataFrame(
             {"reader": ["r0", "r0"], "stim": ["b0", "b0"], "token": ["Um", "das"]}
         )
         monkeypatch.setattr(
             app,
-            "load_words_and_fixations",
-            lambda *a, **k: (raw_words, pd.DataFrame()),
+            "_read_uploaded_frame",
+            lambda **kw: (
+                raw_words if kw["state_prefix"] == "col_map_words" else pd.DataFrame()
+            ),
         )
 
         at = _make_apptest()
@@ -271,6 +275,43 @@ class TestUnmappedRawDataView:
         pickers = [s for s in at.selectbox if s.label == "Dataset"]
         assert pickers, "expected a Dataset selectbox under Public datasets"
         assert pickers[0].options == list(app.PUBLIC_DATASET_REGISTRY)
+
+
+class TestGroupedUploadMapping:
+    """Upload source: each table's mapping renders under its own upload box, and
+    raw gaze is a first-class peer (its mapping panel is always available)."""
+
+    def test_upload_renders_all_three_mapping_panels(self, monkeypatch):
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        # Inject the bundled raw frames through the per-table upload seam.
+        sample_words, sample_fix = app.load_sample_data()
+        sample_rg = app.load_sample_raw_gaze()
+        frames = {
+            "col_map_words": sample_words,
+            "col_map_fix": sample_fix,
+            "col_map_raw_gaze": sample_rg,
+        }
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: frames.get(kw["state_prefix"], pd.DataFrame()),
+        )
+
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error: {[e.value for e in at.error]}"
+        # All three tables rendered their own mapping panel (a Participant field
+        # each) — words, fixations, and raw gaze as peers.
+        keys = {s.key for s in at.selectbox}
+        assert "col_map_words_participant" in keys
+        assert "col_map_fix_participant" in keys
+        assert "col_map_raw_gaze_participant" in keys
 
 
 def _box_mapping_script():
