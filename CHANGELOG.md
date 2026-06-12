@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Upload a plot config to restore it.** The sidebar *Plot configuration* panel
+  (now grouped under 🎨 Visualization) gains a JSON uploader that re-applies a
+  previously downloaded config — layers, coloring, sizing, canvas, axes, and the
+  trial selection — silently skipping anything that doesn't fit the loaded data.
 - **PoTeC loader.** `sps.load_potec(root, download=True)` /
   `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
   — its filename-encoded ids and separate character-AoI coordinates can't go

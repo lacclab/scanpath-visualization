@@ -6,9 +6,38 @@ import pandas as pd
 import streamlit as st
 
 from .annotations import known_tags
-from .constants import BACKGROUND_PRESETS, DEFAULT_BACKGROUND_COLOR
+from .constants import (
+    BACKGROUND_PRESETS,
+    COLORSCALES,
+    DEFAULT_BACKGROUND_COLOR,
+    DEFAULT_FIXATION_COLORSCALE,
+    DEFAULT_HEATMAP_COLORSCALE,
+)
 
 NONE_OPTION = "(none)"
+
+# Static defaults for the keyed visualization widgets that the plot-config
+# restore (app._restore_plot_config) can set. Seeded into session_state so those
+# widgets render WITHOUT a `value=`/`index=` argument — that keeps their key
+# programmatically settable without Streamlit's "default value but also set via
+# Session State API" warning. Data-dependent defaults (color-by / axis fields /
+# sizing / canvas) are seeded locally where they're computed.
+_VIZ_WIDGET_DEFAULTS = {
+    "global_show_words": True,
+    "global_show_labels": True,
+    "global_show_fix": True,
+    "global_show_order": True,
+    "global_show_saccades": True,
+    "global_show_saccade_arrows": False,
+    "global_show_heatmap": True,
+    "global_show_raw_gaze": False,
+    "global_heatmap_style": "Word boxes",
+    "global_heatmap_metric": "duration_ms",
+    "global_show_colorbars": False,
+    "global_order_font_color": "#111111",
+    "global_fixation_colorscale": DEFAULT_FIXATION_COLORSCALE,
+    "global_heatmap_colorscale": DEFAULT_HEATMAP_COLORSCALE,
+}
 
 
 # Help text for the (multi-capable) Trial ID mapping, shared by all tables.
@@ -281,29 +310,98 @@ def data_dictionary_help_text() -> str:
     )
 
 
+# Field-option helpers — shared by the sidebar selectors and the plot-config
+# restore path (`app._restore_plot_config`) so both agree on what's valid for
+# the current data.
+def color_field_options(trial_fixations: pd.DataFrame) -> List[str]:
+    """Columns offered in the 'Color fixations by' selector — a preferred order
+    intersected with what's present, falling back to ``['duration_ms']``."""
+    preferred_color_fields = [
+        "duration_ms",
+        "pass_index",
+        "eye",
+        "saccade_type",
+        "saccade_amplitude",
+        "word_id",
+        "timestamp_ms",
+        "is_regression",
+        "progression",
+        "gpt2_surprisal",
+        "wordfreq_frequency",
+        "subtlex_frequency",
+        "universal_pos",
+        "ptb_pos",
+    ]
+    fields = [f for f in preferred_color_fields if f in trial_fixations.columns]
+    return fields or ["duration_ms"]
+
+
+def numeric_field_options(trial_fixations: pd.DataFrame) -> List[str]:
+    """Numeric columns offered as X/Y axis fields."""
+    return [
+        col
+        for col in trial_fixations.columns
+        if pd.api.types.is_numeric_dtype(trial_fixations[col])
+    ]
+
+
+def _drop_stale(state_key: str, options: list) -> None:
+    """Clear a persisted selectbox value that isn't valid for the current
+    ``options`` (e.g. after switching datasets, or restoring a config built on
+    different data) so ``st.selectbox`` falls back to its ``index=`` default
+    instead of raising. Mirrors the guard in ``utils._select_trial_composite_mode``."""
+    if state_key in st.session_state and st.session_state[state_key] not in options:
+        del st.session_state[state_key]
+
+
+def _clamp_range(state_key: str, lo: float, hi: float) -> None:
+    """Clamp a persisted ``(min, max)`` range-slider value into ``[lo, hi]`` so a
+    restored value built on different data can't fall outside the slider bounds
+    and raise. Drops anything that isn't a 2-tuple."""
+    val = st.session_state.get(state_key)
+    if not (isinstance(val, (list, tuple)) and len(val) == 2):
+        st.session_state.pop(state_key, None)
+        return
+    try:
+        a, b = float(val[0]), float(val[1])
+    except (TypeError, ValueError):
+        del st.session_state[state_key]
+        return
+    a, b = max(lo, min(a, hi)), max(lo, min(b, hi))
+    st.session_state[state_key] = (min(a, b), max(a, b))
+
+
 def sidebar_controls(
     trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False
 ) -> Dict:
+    # Seed defaults for the widgets that the plot-config restore can set
+    # (app._restore_plot_config). These render WITHOUT a `value=`/`index=`
+    # argument so their key can be assigned programmatically without tripping
+    # Streamlit's "default value but also set via Session State API" warning;
+    # the default lives here instead. Widgets the restore never touches keep
+    # their inline `value=`. `setdefault` leaves any URL-preset / restored value
+    # in place.
+    for _key, _default in _VIZ_WIDGET_DEFAULTS.items():
+        st.session_state.setdefault(_key, _default)
+
     # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
     viz = st.sidebar.container(key="tour_grp_viz_controls").expander(
         "Visualization controls", expanded=True
     )
-    show_words = viz.checkbox("Bounding boxes", value=True, key="global_show_words")
-    show_labels = viz.checkbox("Text", value=True, key="global_show_labels")
-    show_fix = viz.checkbox("Fixations", value=True, key="global_show_fix")
-    show_order = viz.checkbox("Fixation index", value=True, key="global_show_order")
-    show_saccades = viz.checkbox("Saccades", value=True, key="global_show_saccades")
+    show_words = viz.checkbox("Bounding boxes", key="global_show_words")
+    show_labels = viz.checkbox("Text", key="global_show_labels")
+    show_fix = viz.checkbox("Fixations", key="global_show_fix")
+    show_order = viz.checkbox("Fixation index", key="global_show_order")
+    show_saccades = viz.checkbox("Saccades", key="global_show_saccades")
     show_saccade_arrows = viz.checkbox(
         "Saccade direction arrows",
-        value=False,
         key="global_show_saccade_arrows",
         help="Draw an arrowhead on each saccade pointing in the gaze direction.",
     )
-    show_heatmap = viz.checkbox("Heatmap", value=True, key="global_show_heatmap")
+    show_heatmap = viz.checkbox("Heatmap", key="global_show_heatmap")
     heatmap_style = viz.radio(
         "Heatmap style",
         options=["Word boxes", "Interpolated"],
-        index=0,
         horizontal=True,
         key="global_heatmap_style",
         help=(
@@ -315,7 +413,6 @@ def sidebar_controls(
     )
     show_raw_gaze = viz.checkbox(
         "Raw gaze data",
-        value=False,
         help="Display millisecond-level gaze positions as small dots. "
         + ("" if has_raw_gaze else "(No raw gaze data loaded)"),
         disabled=not has_raw_gaze,
@@ -367,42 +464,25 @@ def sidebar_controls(
     else:
         background_color = BACKGROUND_PRESETS[bg_choice]
 
-    preferred_color_fields = [
-        "duration_ms",
-        "pass_index",
-        "eye",
-        "saccade_type",
-        "saccade_amplitude",
-        "word_id",
-        "timestamp_ms",
-        "is_regression",
-        "progression",
-        "gpt2_surprisal",
-        "wordfreq_frequency",
-        "subtlex_frequency",
-        "universal_pos",
-        "ptb_pos",
-    ]
-    color_fields = [f for f in preferred_color_fields if f in trial_fixations.columns]
-    if not color_fields:
-        color_fields = ["duration_ms"]
+    color_fields = color_field_options(trial_fixations)
+    _drop_stale("global_color_by", color_fields)
+    st.session_state.setdefault(
+        "global_color_by",
+        "duration_ms" if "duration_ms" in color_fields else color_fields[0],
+    )
     color_by = viz.selectbox(
         "Color fixations by",
         options=color_fields,
-        index=color_fields.index("duration_ms") if "duration_ms" in color_fields else 0,
+        key="global_color_by",
     )
     heatmap_metric = viz.selectbox(
         "Heatmap metric",
         options=["duration_ms", "counts"],
         help="Heatmap can be raw counts or weighted by fixation duration.",
-        index=0,
+        key="global_heatmap_metric",
     )
 
-    numeric_fields = [
-        col
-        for col in trial_fixations.columns
-        if pd.api.types.is_numeric_dtype(trial_fixations[col])
-    ]
+    numeric_fields = numeric_field_options(trial_fixations)
     if not numeric_fields:
         st.error("No numeric fields found in fixations to map axes.")
         st.stop()
@@ -412,11 +492,19 @@ def sidebar_controls(
         if "y" in numeric_fields
         else numeric_fields[min(1, len(numeric_fields) - 1)]
     )
+    _drop_stale("global_x_field", numeric_fields)
+    st.session_state.setdefault("global_x_field", x_default)
     x_field = viz.selectbox(
-        "X axis field", options=numeric_fields, index=numeric_fields.index(x_default)
+        "X axis field",
+        options=numeric_fields,
+        key="global_x_field",
     )
+    _drop_stale("global_y_field", numeric_fields)
+    st.session_state.setdefault("global_y_field", y_default)
     y_field = viz.selectbox(
-        "Y axis field", options=numeric_fields, index=numeric_fields.index(y_default)
+        "Y axis field",
+        options=numeric_fields,
+        key="global_y_field",
     )
 
     order_font_color = "#111111"
@@ -431,40 +519,43 @@ def sidebar_controls(
     # deep-linked colorscale presets apply even while collapsed; the URL handler
     # sets `global_advanced` to auto-open it (see app._apply_url_preset).
     advanced_open = bool(st.session_state.get("global_advanced", False))
+    st.session_state.setdefault("global_order_font_size", int(base_font_size))
+    st.session_state.setdefault("global_marker_size_range", (8, 24))
     with st.sidebar.expander("Advanced styling", expanded=advanced_open):
-        from .constants import (
-            COLORSCALES,
-            DEFAULT_FIXATION_COLORSCALE,
-            DEFAULT_HEATMAP_COLORSCALE,
+        order_font_color = st.color_picker(
+            "Order label color", key="global_order_font_color"
         )
-
-        order_font_color = st.color_picker("Order label color", value="#111111")
-        order_font_size = st.slider("Order label size", 6, 72, int(base_font_size))
-        size_min, size_max = st.slider("Fixation marker size (px)", 4, 40, (8, 24))
+        order_font_size = st.slider(
+            "Order label size", 6, 72, key="global_order_font_size"
+        )
+        size_min, size_max = st.slider(
+            "Fixation marker size (px)", 4, 40, key="global_marker_size_range"
+        )
         fixation_colorscale = st.selectbox(
             "Fixation colorscale",
             options=COLORSCALES,
-            index=COLORSCALES.index(DEFAULT_FIXATION_COLORSCALE),
             help="Color palette for fixation markers when coloring by numeric values.",
             key="global_fixation_colorscale",
         )
         heatmap_colorscale = st.selectbox(
             "Heatmap colorscale",
             options=COLORSCALES,
-            index=COLORSCALES.index(DEFAULT_HEATMAP_COLORSCALE),
             help="Color palette for the density heatmap overlay.",
             key="global_heatmap_colorscale",
         )
-        show_colorbars = st.checkbox("Color bars", value=False)
+        show_colorbars = st.checkbox("Color bars", key="global_show_colorbars")
         if show_colorbars and pd.api.types.is_numeric_dtype(trial_fixations[color_by]):
             cmin = float(trial_fixations[color_by].min())
             cmax = float(trial_fixations[color_by].max())
+            cmax_eff = cmax if cmax > cmin else cmin + 1.0
+            _clamp_range("global_fixation_color_range", cmin, cmax_eff)
+            st.session_state.setdefault("global_fixation_color_range", (cmin, cmax_eff))
             fixation_color_range = st.slider(
                 "Fixation color range",
                 min_value=cmin,
-                max_value=cmax if cmax > cmin else cmin + 1.0,
-                value=(cmin, cmax if cmax > cmin else cmin + 1.0),
+                max_value=cmax_eff,
                 step=(cmax - cmin) / 100 if cmax > cmin else 1.0,
+                key="global_fixation_color_range",
             )
         if show_colorbars and show_heatmap:
             heat_data = (
@@ -475,12 +566,17 @@ def sidebar_controls(
             if heat_data is not None and len(heat_data) > 0:
                 hmin = float(heat_data.min())
                 hmax = float(heat_data.max())
+                hmax_eff = hmax if hmax > hmin else hmin + 1.0
+                _clamp_range("global_heatmap_color_range", hmin, hmax_eff)
+                st.session_state.setdefault(
+                    "global_heatmap_color_range", (hmin, hmax_eff)
+                )
                 heatmap_range = st.slider(
                     "Heatmap color range",
                     min_value=hmin,
-                    max_value=hmax if hmax > hmin else hmin + 1.0,
-                    value=(hmin, hmax if hmax > hmin else hmin + 1.0),
+                    max_value=hmax_eff,
                     step=(hmax - hmin) / 100 if hmax > hmin else 1.0,
+                    key="global_heatmap_color_range",
                 )
 
     return dict(

@@ -972,13 +972,20 @@ def _render_plot_config_expander(
     viz_settings: dict,
     base_font_size: int,
     trial_raw_gaze: pd.DataFrame,
+    slot=None,
 ):
-    """Render the plot configuration expander in the sidebar.
+    """Render the plot configuration panel under the 🎨 Visualization sidebar group.
 
-    Offers the active plot settings as a downloadable JSON sidecar so a reviewer
-    can save/share the exact configuration that produced the current figure.
+    Offers the active plot settings as a downloadable JSON sidecar — plus a
+    matching uploader to restore them — so a reviewer can save, share, and
+    reload the exact configuration behind the current figure. ``slot`` is a
+    sidebar container reserved by ``app.main`` under the Visualization group; we
+    render into it so the panel sits there instead of after the tab content
+    (where a plain ``st.sidebar`` call would land). The upload is *applied* in
+    ``app._apply_uploaded_plot_config`` (it must run before the widgets render).
     """
-    with st.sidebar.expander("Plot configuration"):
+    container = slot if slot is not None else st.sidebar
+    with container.expander("Plot configuration"):
         plot_config = {
             "selection": {
                 "participant_id": selected_participant,
@@ -1041,6 +1048,26 @@ def _render_plot_config_expander(
             key="plot_config_download",
             use_container_width=True,
         )
+        st.divider()
+        st.caption(
+            "Restore a previously downloaded config. Layers, coloring, sizing, "
+            "canvas, axes, and the trial selection are re-applied wherever they "
+            "fit the currently loaded data."
+        )
+        st.file_uploader(
+            "Upload plot config (JSON)",
+            type=["json"],
+            key="plot_config_upload",
+            help="Re-apply the settings from a plot config saved here earlier. "
+            "Anything that doesn't fit the loaded data is skipped.",
+        )
+        skipped = st.session_state.get("_plot_config_skipped")
+        if skipped:
+            st.caption(
+                "⚠️ Not applied (no match in the current data): "
+                + ", ".join(skipped)
+                + "."
+            )
 
 
 def _ordered_trial_ids(combos: pd.DataFrame) -> list[str]:
@@ -1103,6 +1130,7 @@ def render_single_trial_tab(
     raw_gaze: Optional[pd.DataFrame] = None,
     line_spacing: float = DEFAULT_LINE_SPACING,
     scale_text_to_boxes: bool = True,
+    plot_config_slot=None,
 ) -> None:
     """Render the single trial visualization tab.
 
@@ -1246,7 +1274,8 @@ def render_single_trial_tab(
     with col_side:
         render_trial_annotations(selected_participant, selected_trial)
 
-    # Plot configuration renders into the sidebar (see _render_plot_config_expander).
+    # Plot configuration renders into the reserved sidebar slot under the
+    # 🎨 Visualization group (see _render_plot_config_expander / app.main).
     _render_plot_config_expander(
         selected_participant,
         selected_trial,
@@ -1258,6 +1287,7 @@ def render_single_trial_tab(
         viz_settings,
         base_font_size,
         trial_raw_gaze,
+        slot=plot_config_slot,
     )
 
     _render_bulk_export(
