@@ -94,7 +94,12 @@ from scanpath_studio.tabs import (
     render_raw_data_tab,
     render_single_trial_tab,
 )
-from scanpath_studio.tour import maybe_show_welcome_tour, render_tour_replay_button
+from scanpath_studio.tour import (
+    maybe_show_welcome_tour,
+    render_spotlight_tour,
+    render_tour_replay_button,
+    spotlight_tour_pending,
+)
 from scanpath_studio.utils import (  # noqa: F401
     build_combo_options,
     build_comparison_options as _build_comparison_options,
@@ -230,14 +235,18 @@ def configure_page() -> None:
 
     When loaded from an iframe with `?embed=true`, Streamlit's built-in embed
     mode already hides the header/menu — we additionally collapse the sidebar
-    so the iframe is mostly the plot.
+    so the iframe is mostly the plot. Welcome-tour sessions also start with
+    the sidebar closed: the centered welcome renders over a quiet page, and
+    the tour's first sidebar step opens it (see tour.spotlight_tour_pending).
     """
     is_embed = (st.query_params.get("embed") or "").lower() in {"true", "1"}
     st.set_page_config(
         page_title="Scanpath Studio",
         page_icon="👀",
         layout="wide",
-        initial_sidebar_state="collapsed" if is_embed else "auto",
+        initial_sidebar_state=(
+            "collapsed" if (is_embed or spotlight_tour_pending()) else "auto"
+        ),
     )
     st.markdown(get_app_css(), unsafe_allow_html=True)
 
@@ -725,7 +734,10 @@ def render_sidebar_data_source() -> str:
     default = st.session_state.get("data_source_choice", options[0])
     if default not in options:
         default = options[0]
-    source = st.sidebar.expander("Data source", expanded=True)
+    # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
+    source = st.sidebar.container(key="tour_grp_data_source").expander(
+        "Data source", expanded=True
+    )
     return source.radio(
         "Data source",
         options,
@@ -1078,9 +1090,11 @@ def main() -> None:
             font_family=font_family,
         )
 
-    # Sidebar Help group (bottom): replay the welcome tour.
+    # Sidebar Help group (bottom): replay the welcome tour. The spotlight
+    # tour renders last so a replay click activates it within the same run.
     _sidebar_group("❓ Help")
     render_tour_replay_button()
+    render_spotlight_tour()
 
 
 if __name__ == "__main__":

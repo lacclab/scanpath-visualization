@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
   release.
 
+### Changed
+- **The tutorial is now a guided spotlight tour.** The welcome opens centered
+  like a modal over a closed sidebar; the following steps open the sidebar and
+  drop to a corner card that scrolls the relevant panel into view and pulses
+  an outline around it. The previous all-dialog style remains one constant
+  away (`tour.TOUR_STYLE = "dialog"`).
+
+### Fixed
+- The tutorial's Skip/Done buttons now close the dialog instantly instead of
+  leaving it on screen for the ~10 s full-app rerun.
+
 ## [0.18.0] - 2026-06-11
 
 ### Added

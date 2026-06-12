@@ -229,7 +229,10 @@ def render_trial_annotations(participant_id: str, trial_id: str) -> None:
 
 def render_annotations_sidebar() -> None:
     """Render the sidebar Annotations panel: count + JSON download/restore."""
-    panel = st.sidebar.expander("Save & restore (JSON)", expanded=False)
+    # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
+    panel = st.sidebar.container(key="tour_grp_annotations").expander(
+        "Save & restore (JSON)", expanded=False
+    )
     count = annotated_count()
     panel.caption(
         f"{count} trial(s) annotated this session."

@@ -262,7 +262,10 @@ def data_dictionary_help_text() -> str:
 def sidebar_controls(
     trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False
 ) -> Dict:
-    viz = st.sidebar.expander("Visualization controls", expanded=True)
+    # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
+    viz = st.sidebar.container(key="tour_grp_viz_controls").expander(
+        "Visualization controls", expanded=True
+    )
     show_words = viz.checkbox("Bounding boxes", value=True, key="global_show_words")
     show_labels = viz.checkbox("Text", value=True, key="global_show_labels")
     show_fix = viz.checkbox("Fixations", value=True, key="global_show_fix")
@@ -529,7 +532,10 @@ def sidebar_trial_filters(words: pd.DataFrame, fixations: pd.DataFrame) -> Dict:
         "required_tags": [],
         "excluded_tags": [],
     }
-    with st.sidebar.expander("Filter trials", expanded=False):
+    # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
+    with st.sidebar.container(key="tour_grp_filter_trials").expander(
+        "Filter trials", expanded=False
+    ):
         st.caption("Narrow the trial pool shown in every tab.")
 
         # Union across both frames — single-report datasets have participants
