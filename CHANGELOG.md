@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of eight, and column auto-detection matches names case- and
   separator-insensitively (`IA_LEFT`, `ia_left` and `Participant ID` all
   resolve). Required-field markers now match what the loader actually needs.
+- **Mapping panels grouped under each upload box.** On the Upload source each
+  table's column-mapping panel now sits directly beneath its own upload box
+  (Words/IA, Fixations, Raw gaze), raw-gaze mapping is a first-class peer, and
+  every field has a `?` tooltip describing what it is and how it's used.
 
 ### Fixed
 - The tutorial's Skip/Done buttons now close the dialog instantly instead of
