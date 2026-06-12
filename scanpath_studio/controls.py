@@ -88,7 +88,8 @@ WORD_FIELD_SPECS: List[Dict] = [
         "key": "participant",
         "label": "Participant ID",
         "required": False,
-        "help": "Optional — omit for stimulus-level word boxes shared across all readers.",
+        "help": "Which reader produced this row. Splits scanpaths per "
+        "participant; omit for stimulus-level word boxes shared across all readers.",
     },
     {
         "key": "trial",
@@ -97,10 +98,33 @@ WORD_FIELD_SPECS: List[Dict] = [
         "multi": True,
         "help": _TRIAL_MAPPING_HELP,
     },
-    {"key": "word_id", "label": "Word/IA ID", "required": True},
-    {"key": "text", "label": "Word text/label", "required": False},
-    {"key": "paragraph", "label": "Paragraph ID", "required": False},
-    {"key": "line", "label": "Line index", "required": False},
+    {
+        "key": "word_id",
+        "label": "Word/IA ID",
+        "required": True,
+        "help": "Identifier of each word / interest-area — the key fixations "
+        "attach to, and the order of words within a trial.",
+    },
+    {
+        "key": "text",
+        "label": "Word text/label",
+        "required": False,
+        "help": "The word's text; drawn on the stimulus and shown in tooltips.",
+    },
+    {
+        "key": "paragraph",
+        "label": "Paragraph ID",
+        "required": False,
+        "help": "Groups words into paragraphs for filtering and selection; "
+        "falls back to the trial id.",
+    },
+    {
+        "key": "line",
+        "label": "Line index",
+        "required": False,
+        "help": "Line number of the word on screen; used for color-by-line "
+        "(otherwise inferred from box Y).",
+    },
     {
         "key": "box",
         "kind": "box",
@@ -111,7 +135,12 @@ WORD_FIELD_SPECS: List[Dict] = [
 ]
 
 FIX_FIELD_SPECS: List[Dict] = [
-    {"key": "participant", "label": "Participant ID", "required": True},
+    {
+        "key": "participant",
+        "label": "Participant ID",
+        "required": True,
+        "help": "Which reader produced this fixation. Splits scanpaths per participant.",
+    },
     {
         "key": "trial",
         "label": "Trial ID",
@@ -126,11 +155,38 @@ FIX_FIELD_SPECS: List[Dict] = [
         "help": "Fixation pixel X. Leave empty for AOI-only data and map "
         "Word/IA ID instead — those fixations are placed at word-box centers.",
     },
-    {"key": "y", "label": "Y coordinate", "required": False},
-    {"key": "duration", "label": "Duration (ms)", "required": True},
-    {"key": "timestamp", "label": "Timestamp (ms)", "required": False},
-    {"key": "fixation_id", "label": "Fixation ID", "required": False},
-    {"key": "paragraph", "label": "Paragraph ID", "required": False},
+    {
+        "key": "y",
+        "label": "Y coordinate",
+        "required": False,
+        "help": "Fixation pixel Y. Leave empty for AOI-only data (map Word/IA ID instead).",
+    },
+    {
+        "key": "duration",
+        "label": "Duration (ms)",
+        "required": True,
+        "help": "Fixation length in milliseconds; drives marker size and "
+        "dwell-time / reading measures.",
+    },
+    {
+        "key": "timestamp",
+        "label": "Timestamp (ms)",
+        "required": False,
+        "help": "Fixation onset time (ms); orders fixations and drives the "
+        "animation clock. Defaults to row order.",
+    },
+    {
+        "key": "fixation_id",
+        "label": "Fixation ID",
+        "required": False,
+        "help": "Sequential fixation number within a trial. Defaults to row order.",
+    },
+    {
+        "key": "paragraph",
+        "label": "Paragraph ID",
+        "required": False,
+        "help": "Groups fixations by paragraph for filtering and selection.",
+    },
     {
         "key": "word_id",
         "label": "Word/IA ID",
@@ -139,8 +195,20 @@ FIX_FIELD_SPECS: List[Dict] = [
         "present (overrides geometric assignment), and supplies the location "
         "when X/Y are absent.",
     },
-    {"key": "pass_index", "label": "Pass index", "required": False},
-    {"key": "saccade_type", "label": "Saccade type", "required": False},
+    {
+        "key": "pass_index",
+        "label": "Pass index",
+        "required": False,
+        "help": "Reading pass per fixation (1 = first pass, higher = re-reading); "
+        "separates first-pass from later measures.",
+    },
+    {
+        "key": "saccade_type",
+        "label": "Saccade type",
+        "required": False,
+        "help": "Label for the saccade into/out of this fixation "
+        "(e.g. progression / regression).",
+    },
     {
         "key": "saccade_amplitude",
         "label": "Saccade amplitude",
@@ -148,12 +216,27 @@ FIX_FIELD_SPECS: List[Dict] = [
         "help": "Pixel distance from the previous fixation; computed from X/Y "
         "when not provided.",
     },
-    {"key": "eye", "label": "Eye", "required": False},
-    {"key": "noise_flag", "label": "Noise flag", "required": False},
+    {
+        "key": "eye",
+        "label": "Eye",
+        "required": False,
+        "help": "Which eye was tracked (L / R / Both).",
+    },
+    {
+        "key": "noise_flag",
+        "label": "Noise flag",
+        "required": False,
+        "help": "Marks low-quality or invalid fixations so they can be filtered out.",
+    },
 ]
 
 RAW_GAZE_FIELD_SPECS: List[Dict] = [
-    {"key": "participant", "label": "Participant ID", "required": True},
+    {
+        "key": "participant",
+        "label": "Participant ID",
+        "required": True,
+        "help": "Which reader produced this gaze sample.",
+    },
     {
         "key": "trial",
         "label": "Trial ID",
@@ -161,10 +244,31 @@ RAW_GAZE_FIELD_SPECS: List[Dict] = [
         "multi": True,
         "help": _TRIAL_MAPPING_HELP,
     },
-    {"key": "x", "label": "X coordinate", "required": True},
-    {"key": "y", "label": "Y coordinate", "required": True},
-    {"key": "timestamp", "label": "Timestamp (ms)", "required": False},
-    {"key": "text", "label": "Word text/label", "required": False},
+    {
+        "key": "x",
+        "label": "X coordinate",
+        "required": True,
+        "help": "Gaze pixel X at this timepoint.",
+    },
+    {
+        "key": "y",
+        "label": "Y coordinate",
+        "required": True,
+        "help": "Gaze pixel Y at this timepoint.",
+    },
+    {
+        "key": "timestamp",
+        "label": "Timestamp (ms)",
+        "required": False,
+        "help": "Sample time (ms); orders the continuous gaze path. "
+        "Defaults to row order.",
+    },
+    {
+        "key": "text",
+        "label": "Word text/label",
+        "required": False,
+        "help": "Optional word/label associated with the sample.",
+    },
 ]
 
 

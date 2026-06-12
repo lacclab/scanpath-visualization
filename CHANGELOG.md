@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Search-engine discoverability.** Keyword-rich page title and tagline, so the
   `<title>` and the social/search description Streamlit Cloud serves to crawlers
   are no longer brand-only.
+- **Mapping panels grouped under each upload box.** On the Upload source each
+  table's column-mapping panel now sits directly beneath its own upload box
+  (Words/IA, Fixations, Raw gaze), raw-gaze mapping is a first-class peer, and
+  every field has a `?` tooltip describing what it is and how it's used.
 
 ### Fixed
 - Animated scanpath order numbers no longer glide in from the top-left corner —
