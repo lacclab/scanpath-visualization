@@ -21,6 +21,11 @@ from scanpath_studio.data import (
     trial_id_series,
     trial_mapping_columns,
 )
+from scanpath_studio.controls import (
+    BOX_FORMAT_EDGES,
+    BOX_FORMAT_ORIGIN,
+    _default_box_format,
+)
 
 
 class TestPickColumn:
@@ -38,6 +43,85 @@ class TestPickColumn:
     def test_pick_column_empty_candidates(self):
         df = pd.DataFrame({"col1": [1, 2]})
         assert pick_column(df, []) is None
+
+    def test_pick_column_case_insensitive(self):
+        df = pd.DataFrame({"Participant_ID": ["p1"], "IA_LEFT": [1]})
+        assert pick_column(df, ["participant_id"]) == "Participant_ID"
+        assert pick_column(df, ["ia_left"]) == "IA_LEFT"
+
+    def test_pick_column_separator_insensitive(self):
+        df = pd.DataFrame({"participant id": ["p1"], "Word-Id": [1]})
+        assert pick_column(df, ["participant_id"]) == "participant id"
+        assert pick_column(df, ["word_id"]) == "Word-Id"
+
+    def test_pick_column_priority_order_preserved(self):
+        # The first candidate that matches anything wins, even case-insensitively.
+        df = pd.DataFrame({"X": [1], "left": [2]})
+        assert pick_column(df, ["x", "left"]) == "X"
+        assert pick_column(df, ["left", "x"]) == "left"
+
+    def test_pick_column_leftmost_duplicate_wins(self):
+        # Two columns folding to the same key — the leftmost original wins.
+        df = pd.DataFrame({"IA_LEFT": [1], "ia_left": [2]})
+        assert pick_column(df, ["ia_left"]) == "IA_LEFT"
+
+
+class TestProposeWordSchemaMatching:
+    """propose_word_schema resolves real-world column-name variants."""
+
+    def test_mixed_case_and_separators(self):
+        df = pd.DataFrame(
+            {
+                "Participant ID": ["p1"],
+                "TRIAL-ID": ["t1"],
+                "Ia Id": [1],
+                "IA Left": [100],
+                "IA Right": [150],
+                "IA Top": [50],
+                "IA Bottom": [100],
+            }
+        )
+        schema = propose_word_schema(df)
+        assert schema["participant"] == "Participant ID"
+        assert schema["trial"] == "TRIAL-ID"
+        assert schema["word_id"] == "Ia Id"
+        assert schema["left"] == "IA Left"
+        assert schema["right"] == "IA Right"
+        assert schema["top"] == "IA Top"
+        assert schema["bottom"] == "IA Bottom"
+
+
+class TestDefaultBoxFormat:
+    """_default_box_format picks the encoding auto-detect actually found."""
+
+    def test_edges_when_edges_detected(self):
+        proposed = {
+            "left": "IA_LEFT",
+            "right": "IA_RIGHT",
+            "top": "IA_TOP",
+            "bottom": "IA_BOTTOM",
+            "x": None,
+            "y": None,
+            "width": None,
+            "height": None,
+        }
+        assert _default_box_format(proposed) == BOX_FORMAT_EDGES
+
+    def test_origin_when_origin_detected(self):
+        proposed = {
+            "left": None,
+            "right": None,
+            "top": None,
+            "bottom": None,
+            "x": "x",
+            "y": "y",
+            "width": "width",
+            "height": "height",
+        }
+        assert _default_box_format(proposed) == BOX_FORMAT_ORIGIN
+
+    def test_defaults_to_edges_when_nothing_detected(self):
+        assert _default_box_format({}) == BOX_FORMAT_EDGES
 
 
 class TestInferWordSchema:

@@ -273,6 +273,73 @@ class TestUnmappedRawDataView:
         assert pickers[0].options == list(app.PUBLIC_DATASET_REGISTRY)
 
 
+def _box_mapping_script():
+    """Render only the Words/IA column-mapping panel for an edges-format table,
+    stashing the resulting mapping in session_state for assertions."""
+    import pandas as pd
+    import streamlit as st
+
+    from scanpath_studio.controls import WORD_FIELD_SPECS, column_mapping_ui
+    from scanpath_studio.data import propose_word_schema
+
+    df = pd.DataFrame(
+        {
+            "participant_id": ["p1"],
+            "trial_id": ["t1"],
+            "IA_ID": [1],
+            "IA_LEFT": [100],
+            "IA_RIGHT": [150],
+            "IA_TOP": [50],
+            "IA_BOTTOM": [100],
+        }
+    )
+    st.session_state["_box_mapping"] = column_mapping_ui(
+        df,
+        table_label="Words/IA",
+        state_key_prefix="col_map_words",
+        field_specs=WORD_FIELD_SPECS,
+        proposed=propose_word_schema(df),
+    )
+
+
+class TestColumnMappingBoxWidget:
+    """The Words/IA box mapping shows one coordinate-format radio + 4 fields, yet
+    still returns all eight box keys (the inactive four set to None)."""
+
+    def test_edges_default_and_full_mapping(self):
+        from scanpath_studio.controls import BOX_FORMAT_EDGES
+
+        at = AppTest.from_function(_box_mapping_script).run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+
+        box_radios = [r for r in at.radio if r.key == "col_map_words_box_format"]
+        assert box_radios, "box-format radio not rendered"
+        assert box_radios[0].value == BOX_FORMAT_EDGES
+
+        mapping = at.session_state["_box_mapping"]
+        assert mapping["left"] == "IA_LEFT"
+        assert mapping["right"] == "IA_RIGHT"
+        assert mapping["top"] == "IA_TOP"
+        assert mapping["bottom"] == "IA_BOTTOM"
+        assert mapping["x"] is None and mapping["y"] is None
+        assert mapping["width"] is None and mapping["height"] is None
+
+    def test_switching_to_origin_drops_edge_columns(self):
+        from scanpath_studio.controls import BOX_FORMAT_ORIGIN
+
+        at = AppTest.from_function(_box_mapping_script).run(timeout=30)
+        box_radio = [r for r in at.radio if r.key == "col_map_words_box_format"][0]
+        box_radio.set_value(BOX_FORMAT_ORIGIN)
+        at.run(timeout=30)
+
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        mapping = at.session_state["_box_mapping"]
+        # Origin fields are now the active four (None here — this table has no
+        # x/y/w/h columns); the edge keys are no longer mapped.
+        assert mapping["left"] is None and mapping["right"] is None
+        assert mapping["top"] is None and mapping["bottom"] is None
+
+
 @pytest.mark.timeout(90)
 class TestWelcomeTour:
     """First-visit tour dialog: opens once per session, navigates, and stays

@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import importlib.resources as resources
 import os
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
@@ -160,11 +161,30 @@ def load_onestop_server_bundle(
     return words, fixations
 
 
+def _norm_col(name) -> str:
+    """Fold a column name to its case- and separator-insensitive key.
+
+    Lowercases and drops every non-alphanumeric char, so ``IA_LEFT``,
+    ``ia_left``, ``Ia-Left`` and ``ia left`` all collapse to ``ialeft`` —
+    letting auto-detection match real-world column names that differ only in
+    capitalization or word separators."""
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
 def pick_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
-    """Return the first matching column name from a candidate list."""
+    """Return the first matching column name from a candidate list.
+
+    Matching is case- and separator-insensitive (see ``_norm_col``). Candidate
+    order is still priority order — the first candidate with any match wins (so
+    EyeLink names keep beating Gazepoint), and among equally-normalized columns
+    the leftmost one wins."""
+    lookup: Dict[str, str] = {}
+    for col in df.columns:
+        lookup.setdefault(_norm_col(col), col)
     for name in candidates:
-        if name in df.columns:
-            return name
+        hit = lookup.get(_norm_col(name))
+        if hit is not None:
+            return hit
     return None
 
 
@@ -213,7 +233,9 @@ def _preserve_composite_columns(
 
 
 # Candidate column names checked during auto-inference. Centralised so the
-# proposal step and the override UI share the same defaults.
+# proposal step and the override UI share the same defaults. Matching is case-
+# and separator-insensitive (see ``pick_column``), so these list only *distinct*
+# conventions — no ALL_CAPS / snake_case twins of the same name needed.
 PARTICIPANT_CANDIDATES = [
     "participant_id",
     "subject_id",
@@ -229,35 +251,30 @@ TRIAL_CANDIDATES = [
     "text_id",
     "trial",
     "trial_index",
-    "TRIAL_INDEX",
 ]
-PARAGRAPH_CANDIDATES = ["unique_paragraph_id", "paragraph_id", "PARAGRAPH_ID"]
+PARAGRAPH_CANDIDATES = ["unique_paragraph_id", "paragraph_id"]
 TEXT_CANDIDATES = [
     "text",
     "IA_LABEL",
-    "ia_label",
     "label",
     "word",
-    "WORD",
     "content",
-    "CONTENT",
     "token",
-    "TOKEN",
 ]
-WORD_ID_CANDIDATES = ["word_id", "IA_ID", "ia_id", "ia_index", "word_index", "aoi"]
+WORD_ID_CANDIDATES = ["word_id", "IA_ID", "ia_index", "word_index", "aoi"]
 LINE_CANDIDATES = ["line_idx", "line", "line_index", "IA_LINE_ID"]
 
-WORD_X_CANDIDATES = ["x", "X", "left"]
-WORD_Y_CANDIDATES = ["y", "Y", "top"]
-WORD_WIDTH_CANDIDATES = ["width", "WIDTH"]
-WORD_HEIGHT_CANDIDATES = ["height", "HEIGHT"]
-WORD_LEFT_CANDIDATES = ["IA_LEFT", "ia_left", "left", "start_x"]
-WORD_RIGHT_CANDIDATES = ["IA_RIGHT", "ia_right", "right", "end_x"]
-WORD_TOP_CANDIDATES = ["IA_TOP", "ia_top", "top", "start_y"]
-WORD_BOTTOM_CANDIDATES = ["IA_BOTTOM", "ia_bottom", "bottom", "end_y"]
+WORD_X_CANDIDATES = ["x", "left"]
+WORD_Y_CANDIDATES = ["y", "top"]
+WORD_WIDTH_CANDIDATES = ["width"]
+WORD_HEIGHT_CANDIDATES = ["height"]
+WORD_LEFT_CANDIDATES = ["IA_LEFT", "left", "start_x"]
+WORD_RIGHT_CANDIDATES = ["IA_RIGHT", "right", "end_x"]
+WORD_TOP_CANDIDATES = ["IA_TOP", "top", "start_y"]
+WORD_BOTTOM_CANDIDATES = ["IA_BOTTOM", "bottom", "end_y"]
 
-FIX_X_CANDIDATES = ["x", "X", "CURRENT_FIX_X", "FPOGX"]
-FIX_Y_CANDIDATES = ["y", "Y", "CURRENT_FIX_Y", "FPOGY"]
+FIX_X_CANDIDATES = ["x", "CURRENT_FIX_X", "FPOGX"]
+FIX_Y_CANDIDATES = ["y", "CURRENT_FIX_Y", "FPOGY"]
 FIX_DURATION_CANDIDATES = [
     "duration_ms",
     "CURRENT_FIX_DURATION",
@@ -281,24 +298,23 @@ FIX_FIXATION_ID_CANDIDATES = [
 FIX_WORD_ID_CANDIDATES = [
     "word_id",
     "IA_ID",
-    "ia_id",
     "CURRENT_FIX_INTEREST_AREA_ID",
     "CURRENT_FIX_INTEREST_AREA_INDEX",
     "word_index_in_text",
     "word_index",
 ]
-FIX_PASS_INDEX_CANDIDATES = ["pass_index", "reread", "PASS_INDEX"]
-FIX_SACCADE_TYPE_CANDIDATES = ["saccade_type", "SACCADE_TYPE", "NEXT_SAC_DIRECTION"]
+FIX_PASS_INDEX_CANDIDATES = ["pass_index", "reread"]
+FIX_SACCADE_TYPE_CANDIDATES = ["saccade_type", "NEXT_SAC_DIRECTION"]
 FIX_SACCADE_AMPLITUDE_CANDIDATES = [
     "saccade_amplitude",
     "NEXT_SAC_AMPLITUDE",
     "PREVIOUS_SAC_AMPLITUDE",
 ]
-FIX_EYE_CANDIDATES = ["eye", "EYE_USED", "eye_used", "EYE_TRACKED"]
+FIX_EYE_CANDIDATES = ["eye", "EYE_USED", "EYE_TRACKED"]
 FIX_NOISE_CANDIDATES = ["noise_flag", "CURRENT_FIX_VALIDITY", "CURRENT_FIX_VALID"]
 
-RAW_GAZE_X_CANDIDATES = ["x", "X", "FPOGX", "gaze_x", "GAZE_X"]
-RAW_GAZE_Y_CANDIDATES = ["y", "Y", "FPOGY", "gaze_y", "GAZE_Y"]
+RAW_GAZE_X_CANDIDATES = ["x", "FPOGX", "gaze_x"]
+RAW_GAZE_Y_CANDIDATES = ["y", "FPOGY", "gaze_y"]
 RAW_GAZE_TIMESTAMP_CANDIDATES = [
     "timestamp",
     "time",

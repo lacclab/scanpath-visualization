@@ -19,8 +19,48 @@ _TRIAL_MAPPING_HELP = (
     "Use the same columns for every uploaded table so trials line up."
 )
 
+# Word-box geometry is one rectangle in two interchangeable encodings. The
+# mapping UI shows a format picker plus four fields instead of all eight at once;
+# both encodings normalize to canonical x/y/width/height in
+# ``data.normalize_words``, so the returned schema still carries all eight keys.
+BOX_FORMAT_EDGES = "Edges"
+BOX_FORMAT_ORIGIN = "Origin + size"
+_BOX_SUBFIELDS: Dict[str, List[tuple]] = {
+    BOX_FORMAT_EDGES: [
+        ("left", "Box left"),
+        ("right", "Box right"),
+        ("top", "Box top"),
+        ("bottom", "Box bottom"),
+    ],
+    BOX_FORMAT_ORIGIN: [
+        ("x", "Box x (top-left)"),
+        ("y", "Box y (top-left)"),
+        ("width", "Box width"),
+        ("height", "Box height"),
+    ],
+}
+_ALL_BOX_KEYS = [key for fields in _BOX_SUBFIELDS.values() for key, _ in fields]
+
+
+def _default_box_format(proposed: Dict[str, Optional[str]]) -> str:
+    """Which box encoding to show first, from what auto-detect found.
+
+    Edges if all four edge columns were detected, else origin+size if those four
+    were, else edges."""
+    if all(proposed.get(k) for k in ("left", "right", "top", "bottom")):
+        return BOX_FORMAT_EDGES
+    if all(proposed.get(k) for k in ("x", "y", "width", "height")):
+        return BOX_FORMAT_ORIGIN
+    return BOX_FORMAT_EDGES
+
+
 WORD_FIELD_SPECS: List[Dict] = [
-    {"key": "participant", "label": "Participant ID", "required": True},
+    {
+        "key": "participant",
+        "label": "Participant ID",
+        "required": False,
+        "help": "Optional — omit for stimulus-level word boxes shared across all readers.",
+    },
     {
         "key": "trial",
         "label": "Trial ID",
@@ -33,18 +73,12 @@ WORD_FIELD_SPECS: List[Dict] = [
     {"key": "paragraph", "label": "Paragraph ID", "required": False},
     {"key": "line", "label": "Line index", "required": False},
     {
-        "key": "x",
-        "label": "Box x (top-left)",
-        "required": False,
-        "help": "Provide x, y, width, height — or use the four IA_LEFT/RIGHT/TOP/BOTTOM fields below.",
+        "key": "box",
+        "kind": "box",
+        "label": "Word box",
+        "required": True,
+        "help": "Bounding box per word/AOI. Edges = left/right/top/bottom (EyeLink IA_*); origin+size = x/y/width/height.",
     },
-    {"key": "y", "label": "Box y (top-left)", "required": False},
-    {"key": "width", "label": "Box width", "required": False},
-    {"key": "height", "label": "Box height", "required": False},
-    {"key": "left", "label": "Box left (IA_LEFT)", "required": False},
-    {"key": "right", "label": "Box right (IA_RIGHT)", "required": False},
-    {"key": "top", "label": "Box top (IA_TOP)", "required": False},
-    {"key": "bottom", "label": "Box bottom (IA_BOTTOM)", "required": False},
 ]
 
 FIX_FIELD_SPECS: List[Dict] = [
@@ -100,9 +134,25 @@ def column_mapping_ui(
     ``multi: True`` (Trial ID) render as a multiselect: picking several columns
     yields a list, meaning "build this ID on the fly by joining the columns'
     values" (see ``data.trial_id_series``); a single pick stays a plain string.
+    A field marked ``kind: "box"`` (the word box) renders a coordinate-format
+    radio plus the four sub-fields for that format, and expands into all eight
+    box keys (the four inactive ones set to None) so the returned schema keeps
+    its fixed shape.
     """
     options = [NONE_OPTION] + list(df.columns)
     expanded = bool(expand_on_problem and problems)
+
+    def _selectbox(field_key: str, field_label: str, help_text=None) -> Optional[str]:
+        default = proposed.get(field_key)
+        index = options.index(default) if default in options else 0
+        chosen = st.selectbox(
+            field_label,
+            options=options,
+            index=index,
+            key=f"{state_key_prefix}_{field_key}",
+            help=help_text,
+        )
+        return None if chosen == NONE_OPTION else chosen
 
     with st.sidebar.expander(f"Column mapping — {table_label}", expanded=expanded):
         st.caption(
@@ -117,6 +167,30 @@ def column_mapping_ui(
             key = spec["key"]
             default = proposed.get(key)
             label = spec["label"] + (" *" if spec.get("required") else "")
+            if spec.get("kind") == "box":
+                fmt_key = f"{state_key_prefix}_box_format"
+                if fmt_key not in st.session_state:
+                    # Seed via session state (no `index=`) so it survives reruns
+                    # and never fights a default arg — same pattern as the
+                    # multiselect below.
+                    st.session_state[fmt_key] = _default_box_format(proposed)
+                star = " \\*" if spec.get("required") else ""
+                st.markdown(f"**{spec['label']}**{star}")
+                if spec.get("help"):
+                    st.caption(spec["help"])
+                fmt = st.radio(
+                    "Coordinate format",
+                    options=list(_BOX_SUBFIELDS),
+                    key=fmt_key,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                )
+                # Always emit all eight box keys; only the active format's four
+                # get a column, the rest stay None.
+                mapping.update({box_key: None for box_key in _ALL_BOX_KEYS})
+                for sub_key, sub_label in _BOX_SUBFIELDS[fmt]:
+                    mapping[sub_key] = _selectbox(sub_key, sub_label)
+                continue
             if spec.get("multi"):
                 state_key = f"{state_key_prefix}_{key}"
                 proposed_default = [default] if default in df.columns else []
@@ -147,15 +221,7 @@ def column_mapping_ui(
                 else:
                     mapping[key] = list(chosen_cols)
                 continue
-            index = options.index(default) if default in options else 0
-            chosen = st.selectbox(
-                label,
-                options=options,
-                index=index,
-                key=f"{state_key_prefix}_{key}",
-                help=spec.get("help"),
-            )
-            mapping[key] = None if chosen == NONE_OPTION else chosen
+            mapping[key] = _selectbox(key, label, spec.get("help"))
     return mapping
 
 
@@ -165,7 +231,8 @@ def data_dictionary_help_text() -> str:
         "The app auto-detects column names from csv tables using common conventions.\n"
         "- Words/IA: tries `participant_id`/`subject_id`, `unique_trial_id`/`trial_id`/`unique_paragraph_id`, "
         "`IA_ID`/`word_id`, optional `IA_LABEL`/`text`, paragraph ids, and bounding boxes via either "
-        "`(x, y, width, height)` or `(IA_LEFT, IA_RIGHT, IA_TOP, IA_BOTTOM)`.\n"
+        "edges `(IA_LEFT, IA_RIGHT, IA_TOP, IA_BOTTOM)` or origin+size `(x, y, width, height)` — "
+        "pick which in the *Word box* selector.\n"
         "- Fixations: tries `participant_id`/`subject_id`, `unique_trial_id`/`trial_id`/`unique_paragraph_id`, "
         "`CURRENT_FIX_DURATION`, `CURRENT_FIX_X`/`CURRENT_FIX_Y`, and optionally `CURRENT_FIX_START`, "
         "`IA_ID`, `pass_index`/`reread`, `saccade_type`, `eye`, `noise_flag`.\n"
