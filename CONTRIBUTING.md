@@ -14,7 +14,7 @@ pip install -e ".[test]"          # or: uv sync
 streamlit run streamlit_app.py    # run the app locally
 ```
 
-Tested on Python 3.11–3.13.
+Tested on Python 3.11–3.14.
 
 ## Before you open a PR
 
@@ -25,7 +25,7 @@ ruff format --exclude other_vis . # auto-format
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks on every push and PR
-across Python 3.11/3.12/3.13. See [AGENTS.md](AGENTS.md) and the package
+across Python 3.11/3.12/3.13/3.14. See [AGENTS.md](AGENTS.md) and the package
 [CLAUDE.md](scanpath_studio/CLAUDE.md) for an architectural overview.
 
 ## Versioning
