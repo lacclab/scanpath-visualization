@@ -351,6 +351,80 @@ class TestMakeScanpathAnimation:
         )
         assert isinstance(fig, go.Figure)
 
+    def test_animation_colors_by_numeric_metric(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # The replay must honour the sidebar's color-by metric + colorscale like
+        # the static figure does, with cmin/cmax pinned to the WHOLE trial so
+        # colours don't renormalise as the trail grows frame by frame.
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            color_by="duration_ms",
+            fixation_colorscale="Viridis",
+        )
+        trail = fig.data[1]  # 0 = word labels, 1 = trail, 2 = saccades, 3 = current
+        assert trail.marker.colorscale is not None
+        assert trail.marker.cmin == 180.0 and trail.marker.cmax == 250.0
+        assert list(trail.marker.color) == [200]  # first fixation only
+        last = fig.frames[-1].data[0]
+        assert list(last.marker.color) == [200, 250, 180]
+        assert last.marker.cmin == 180.0 and last.marker.cmax == 250.0
+        assert last.marker.colorscale is not None
+
+    def test_animation_explicit_color_range_pins_cmin_cmax(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            color_by="duration_ms",
+            fixation_color_range=(0.0, 500.0),
+        )
+        trail = fig.data[1]
+        assert trail.marker.cmin == 0.0 and trail.marker.cmax == 500.0
+
+    def test_animation_categorical_color_gets_legend(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            color_by="saccade_type",
+        )
+        trail = fig.data[1]
+        assert len(trail.marker.color) == 1  # per-fixation colours, sliced
+        assert len(fig.frames[-1].data[0].marker.color) == 3
+        legend_names = {t.name for t in fig.data if t.showlegend}
+        assert legend_names == {"saccade_type: RIGHT", "saccade_type: LEFT"}
+
+    def test_animation_default_keeps_flat_color(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        from scanpath_studio.constants import COMPARISON_PALETTE
+
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+        )
+        assert fig.data[1].marker.color == COMPARISON_PALETTE[0]
+
     def test_slider_declutters_long_reading_but_keeps_elapsed(
         self, normalized_words_df
     ):
@@ -429,6 +503,30 @@ class TestDualScanpathAnimation:
         # Both trails appear in the legend so the two readers are tellable apart.
         legend_names = [t.name for t in fig.data if t.showlegend]
         assert len(legend_names) == 2
+
+    def test_dual_animation_ignores_color_by(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        # In the overlay the flat A/B colours ARE the scanpath identity — a
+        # metric colorscale would make the two readings indistinguishable.
+        from scanpath_studio.constants import COMPARISON_PALETTE
+
+        fig = make_scanpath_animation(
+            normalized_words_df,
+            normalized_fixations_df,
+            canvas_width=800,
+            canvas_height=600,
+            base_font_size=12,
+            font_family="Arial",
+            color_by="duration_ms",
+            fixations_b=self._second_fixations(),
+        )
+        trail_colors = [
+            t.marker.color
+            for t in fig.data
+            if t.marker is not None and t.marker.color in COMPARISON_PALETTE
+        ]
+        assert set(trail_colors) >= set(COMPARISON_PALETTE)
 
     def test_dual_animation_uses_real_timestamps(self, normalized_words_df):
         # The shared clock must come from recorded timestamp_ms (rebased), NOT

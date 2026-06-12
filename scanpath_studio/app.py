@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Tuple
 
 import pandas as pd
@@ -60,13 +61,14 @@ from scanpath_studio.controls import (
 from scanpath_studio.data import (
     compute_canvas_size,
     default_filters,
+    empty_fixations_frame,
+    empty_words_frame,
     filter_data,
     filter_raw_gaze,
     filter_to_keys,
     filter_trials,
-    infer_fix_schema,
+    harmonize_frames,
     infer_raw_gaze_schema,
-    infer_word_schema,
     load_onestop_server_bundle,
     load_sample_data,
     load_sample_raw_gaze,
@@ -78,6 +80,7 @@ from scanpath_studio.data import (
     propose_raw_gaze_schema,
     propose_word_schema,
     read_table,
+    read_tables,
     trial_mapping_columns,
     validate_fix_schema,
     validate_raw_gaze_schema,
@@ -91,6 +94,7 @@ from scanpath_studio.tabs import (
     render_raw_data_tab,
     render_single_trial_tab,
 )
+from scanpath_studio.tour import maybe_show_welcome_tour, render_tour_replay_button
 from scanpath_studio.utils import (  # noqa: F401
     build_combo_options,
     build_comparison_options as _build_comparison_options,
@@ -105,6 +109,25 @@ DEMO_CHOICE = "Use bundled demo"
 # with known ground-truth reading measures — handy for sanity-checking the viz
 # against documented expected values.
 SYNTHETIC_CHOICE = "Synthetic test trial"
+# Known public corpora with ready-made loaders (scanpath_studio.datasets) —
+# datasets that can't be mapped through the generic Upload flow (e.g. PoTeC's
+# trial/word ids live in filenames and its fixation coordinates come from a
+# separate character-AoI file). Selecting this source reveals a dataset picker
+# backed by PUBLIC_DATASET_REGISTRY (defined below the loader functions);
+# adding a corpus = one registry entry + one loader.
+PUBLIC_DATASETS_CHOICE = "Public datasets"
+# Default PoTeC location + a small default subset so the first load is quick.
+POTEC_DEFAULT_DIR = "data/PoTeC"
+POTEC_TEXT_IDS = [f"{d}{i}" for d in ("b", "p") for i in range(6)]
+
+
+def public_datasets_enabled() -> bool:
+    """Feature flag for the "Public datasets" source — hidden until a future
+    release. Everything behind it (registry, loaders, tests) stays live; set
+    ``SCANPATH_PUBLIC_DATASETS=1`` to preview it, or change this function's
+    default to release it. Read at call time so tests can toggle the env var."""
+    raw = os.environ.get("SCANPATH_PUBLIC_DATASETS", "").strip().lower()
+    return raw not in ("", "0", "false", "no")
 # Server-side OneStop lacclab bundle. Only offered when $ONESTOP_DATA_DIR is
 # set; selected automatically when the page is opened with `?source=onestop`
 # in the URL. See data.load_onestop_server_bundle().
@@ -218,26 +241,174 @@ def configure_page() -> None:
 
 
 def _render_about_panel() -> None:
-    """Compact header with title + Lab/Code pill links."""
+    """Compact header with title + an About popover (credits, code, citation)."""
+    from scanpath_studio import __version__
     from scanpath_studio.constants import CITATION
 
-    title_col, links_col = st.columns([5, 2])
+    title_col, about_col = st.columns([5, 1], vertical_alignment="center")
     with title_col:
         st.title("Scanpath Studio")
         st.caption("Interactive exploration of eye movements in reading.")
-    with links_col:
-        st.markdown(
-            f"""<div class="header-link-row">
-              <a class="header-link lab" href="https://lacclab.github.io/" target="_blank" rel="noopener">🧪 LaCC Lab</a>
-              <a class="header-link code" href="{CITATION["url"]}" target="_blank" rel="noopener">💻 Code</a>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+    bibtex = (
+        "@software{Shubi_Scanpath_Studio_2026,\n"
+        "author = {Shubi, Omer and Gruteke Klein, Keren and Berzak, Yevgeni},\n"
+        "license = {MIT},\n"
+        "month = jun,\n"
+        "title = {{Scanpath Studio}},\n"
+        f"url = {{{CITATION['url']}}},\n"
+        f"version = {{{__version__}}},\n"
+        "year = {2026}\n"
+        "}"
+    )
+    with about_col:
+        with st.popover("About", icon="ℹ️", width="stretch"):
+            st.markdown(
+                f"""
+**Scanpath Studio** v{__version__} — interactive visualization of eye
+movements in reading.
+
+Developed by [Omer Shubi](https://omershubi.github.io/),
+[Keren Gruteke Klein](https://kerengruteke.github.io/),
+[Yevgeni Berzak](https://dds.technion.ac.il/people/academic-staff/yevgeni-berzak/),
+and TBD at the [LaCC Lab]({CITATION["lab_url"]}), Technion.
+
+💻 **Code** — [github.com/lacclab/scanpath-studio]({CITATION["url"]})
+(MIT). Issues and contributions are welcome.
+
+📖 **How to cite** — a paper is in preparation; until then:
+"""
+            )
+            st.code(bibtex, language="bibtex", wrap_lines=True)
+            st.markdown(
+                """
+If you use the bundled demo data, also cite
+[OneStop Eye Movements](https://doi.org/10.1038/s41597-025-06272-2)
+(Berzak et al., 2025, *Scientific Data*).
+
+🧪 **More Works from Our Labs** —
+[Language, Computation and Cognition (LaCC) Lab](https://lacclab.github.io/) ·
+[Digital Linguistics](https://www.cl.uzh.ch/en/research-groups/digital-linguistics.html) ·
+[ACL 2025 Tutorial: Eye Tracking and NLP](https://acl2025-eyetracking-and-nlp.github.io/)
+"""
+            )
 
 
 # -----------------------------------------------------------------------------
 # Data loading
 # -----------------------------------------------------------------------------
+
+
+@st.cache_data(show_spinner="Loading PoTeC…")
+def _cached_potec_raw_frames(
+    root: str, readers: Optional[Tuple[int, ...]], texts: Tuple[str, ...], download: bool
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Cached raw PoTeC frames (pre-normalization) for the GUI data source.
+
+    Returns the same shape as an upload: raw frames the normal
+    auto-detect → normalize → harmonize pipeline then handles. Cached on the
+    selection so re-runs (toggling viz controls) don't re-read the files."""
+    from scanpath_studio.datasets import potec_raw_frames
+
+    return potec_raw_frames(
+        root,
+        readers=list(readers) if readers else None,
+        texts=list(texts),
+        download=download,
+    )
+
+
+def _load_potec_source() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Sidebar controls + loader for the PoTeC corpus data source.
+
+    PoTeC can't be loaded through the generic Upload flow (trial/word ids live
+    in filenames, fixation coordinates come from a separate character-AoI
+    file), so this dedicated source wraps ``datasets.potec_raw_frames``. The
+    returned raw frames go through the same normalization as an upload, so the
+    sidebar Column-mapping panels still appear and stay overridable.
+    """
+    cfg = st.sidebar.expander("PoTeC options", expanded=True)
+    root = cfg.text_input(
+        "Data directory",
+        value=POTEC_DEFAULT_DIR,
+        help="Folder holding (or to download) the PoTeC files. A clone of "
+        "github.com/DiLi-Lab/PoTeC works, or any empty folder with Download on.",
+    )
+    download = cfg.checkbox(
+        "Download if missing (~45 MB)",
+        value=True,
+        help="Fetch the PoTeC eye-tracking + AoI files into the directory on "
+        "first use. Unticked, the files must already be present.",
+    )
+    texts = cfg.multiselect(
+        "Texts",
+        options=POTEC_TEXT_IDS,
+        default=["b0"],
+        help="Stimulus texts to load (b0–b5 biology, p0–p5 physics). Fewer "
+        "texts load faster; the full corpus is 12 texts × 75 readers.",
+    )
+    readers_raw = cfg.text_input(
+        "Readers (optional)",
+        value="",
+        help="Comma-separated reader ids to limit to (e.g. 0, 1, 2). Leave "
+        "blank for all readers of the chosen texts.",
+    )
+    if not texts:
+        st.sidebar.info("Pick at least one PoTeC text to load.")
+        return load_sample_data()
+    try:
+        readers = tuple(
+            int(part) for part in readers_raw.replace(",", " ").split()
+        )
+    except ValueError:
+        st.sidebar.error("Readers must be integers, e.g. `0, 1, 2`.")
+        return load_sample_data()
+    try:
+        return _cached_potec_raw_frames(root, readers or None, tuple(texts), download)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        st.sidebar.error(
+            f"Couldn't load PoTeC from `{root}`: {exc} "
+            "Tick **Download if missing**, or point at a PoTeC folder."
+        )
+        return pd.DataFrame(), pd.DataFrame()
+
+
+# Registry behind the "Public datasets" source: label → loader (renders its
+# own sidebar options and returns raw, pre-normalization frames) + the
+# corpus' presentation-monitor size (canvas default for true-to-scale
+# rendering; None to estimate from data extents). To add a corpus: write a
+# loader in datasets.py, wrap it in a `_load_*_source` sidebar function above,
+# and add one entry here.
+PUBLIC_DATASET_REGISTRY: dict = {
+    "PoTeC — Potsdam Textbook Corpus": dict(
+        loader=_load_potec_source,
+        monitor=(1680, 1050),  # DELL P2210
+    ),
+}
+
+
+def _load_public_dataset() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Dataset picker + dispatch for the "Public datasets" source."""
+    chosen = st.sidebar.selectbox(
+        "Dataset",
+        options=list(PUBLIC_DATASET_REGISTRY),
+        key="public_dataset_choice",
+        help="Public eye-tracking-while-reading corpora with ready-made "
+        "loaders (downloaded on demand). More datasets coming.",
+    )
+    return PUBLIC_DATASET_REGISTRY[chosen]["loader"]()
+
+
+def _public_dataset_monitor(data_choice: str) -> Optional[Tuple[int, int]]:
+    """The selected public corpus' real monitor size, or None.
+
+    None when another data source is active, or when the selected dataset
+    doesn't declare a monitor (canvas then defaults to data extents)."""
+    if data_choice != PUBLIC_DATASETS_CHOICE:
+        return None
+    spec = PUBLIC_DATASET_REGISTRY.get(
+        st.session_state.get("public_dataset_choice", "")
+    )
+    return spec.get("monitor") if spec else None
 
 
 def load_words_and_fixations(
@@ -265,16 +436,38 @@ def load_words_and_fixations(
         from scanpath_studio.synthetic import load_synthetic_data
 
         return load_synthetic_data()
+    if data_choice == PUBLIC_DATASETS_CHOICE:
+        return _load_public_dataset()
     if data_choice == UPLOAD_CHOICE:
+        upload_types = ["csv", "tsv", "parquet", "feather"]
         uploaded_words = st.sidebar.file_uploader(
-            "Words/IA table", type=["csv", "parquet", "feather"]
+            "Words/IA table(s)",
+            type=upload_types,
+            accept_multiple_files=True,
+            help="Multi-file datasets (e.g. one file per text) are concatenated; "
+            "each file's name is kept in a `source_file` column.",
         )
         uploaded_fixations = st.sidebar.file_uploader(
-            "Fixations table", type=["csv", "parquet", "feather"]
+            "Fixations table(s)",
+            type=upload_types,
+            accept_multiple_files=True,
+            help="Multi-file datasets (e.g. one file per participant) are "
+            "concatenated; each file's name is kept in a `source_file` column.",
         )
-        if uploaded_words and uploaded_fixations:
-            return read_table(uploaded_words), read_table(uploaded_fixations)
-        st.sidebar.info("Upload both files or switch to demo data.")
+        if uploaded_words or uploaded_fixations:
+            # Either table may be absent — single-report datasets ship only an
+            # IA report or only a fixation report. An empty frame marks the
+            # missing side; prepare_data() swaps in a canonical empty frame.
+            words = read_tables(uploaded_words) if uploaded_words else pd.DataFrame()
+            fixations = (
+                read_tables(uploaded_fixations)
+                if uploaded_fixations
+                else pd.DataFrame()
+            )
+            return words, fixations
+        st.sidebar.info(
+            "Upload words and/or fixations tables — or switch to demo data."
+        )
         return load_sample_data()
     if data_choice == ONESTOP_CHOICE:
         words, fixations = load_onestop_server_bundle(participant=participant)
@@ -291,61 +484,142 @@ def prepare_data(
     words_df: pd.DataFrame,
     fixations_df: pd.DataFrame,
     allow_override: bool,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, list]:
     """Infer schemas and normalize incoming dataframes to canonical column names.
 
     When ``allow_override`` is True, render sidebar expanders that let the user
     pick the exact column names for each field (pre-filled with auto-detection).
-    Otherwise fall back to the original infer-then-stop flow used for demo data.
+    Otherwise just auto-detect.
+
+    Returns ``(words_norm, fixations_norm, problems)``. ``problems`` is a list
+    of human-readable strings; when it's non-empty the column mapping isn't
+    usable yet (a required field is unmapped) — the normalized frames come back
+    empty and the caller shows the raw uploaded data so the user can pick the
+    right columns instead of the whole app halting (which used to hide the very
+    data needed to decide the mapping).
+
+    Either frame may arrive empty (single-report datasets: only an IA report,
+    or only a fixation report) — the missing side becomes a canonical empty
+    frame and its mapping UI is skipped. Cross-frame fixups (stimulus-level
+    words broadcast across participants, AOI-only fixations placed at word-box
+    centers) run at the end via ``harmonize_frames``.
     """
-    if allow_override:
+    has_words = not words_df.empty
+    has_fixations = not fixations_df.empty
+    word_schema = None
+    fix_schema = None
+    problems: list = []
+
+    if has_words:
         word_proposed = propose_word_schema(words_df)
-        word_problems = validate_word_schema(word_proposed)
-        word_schema = column_mapping_ui(
-            words_df,
-            table_label="Words/IA",
-            state_key_prefix="col_map_words",
-            field_specs=WORD_FIELD_SPECS,
-            proposed=word_proposed,
-            problems=word_problems,
-        )
+        if allow_override:
+            word_schema = column_mapping_ui(
+                words_df,
+                table_label="Words/IA",
+                state_key_prefix="col_map_words",
+                field_specs=WORD_FIELD_SPECS,
+                proposed=word_proposed,
+                problems=validate_word_schema(word_proposed),
+            )
+        else:
+            word_schema = word_proposed
         word_problems = validate_word_schema(word_schema)
         if word_problems:
-            st.sidebar.error("Words/IA: " + "; ".join(word_problems))
-            st.stop()
+            problems.append("Words/IA: " + "; ".join(word_problems))
 
+    if has_fixations:
         fix_proposed = propose_fix_schema(fixations_df)
-        fix_problems = validate_fix_schema(fix_proposed)
-        fix_schema = column_mapping_ui(
-            fixations_df,
-            table_label="Fixations",
-            state_key_prefix="col_map_fix",
-            field_specs=FIX_FIELD_SPECS,
-            proposed=fix_proposed,
-            problems=fix_problems,
-        )
+        if allow_override:
+            fix_schema = column_mapping_ui(
+                fixations_df,
+                table_label="Fixations",
+                state_key_prefix="col_map_fix",
+                field_specs=FIX_FIELD_SPECS,
+                proposed=fix_proposed,
+                problems=validate_fix_schema(fix_proposed),
+            )
+        else:
+            fix_schema = fix_proposed
         fix_problems = validate_fix_schema(fix_schema)
         if fix_problems:
-            st.sidebar.error("Fixations: " + "; ".join(fix_problems))
-            st.stop()
-    else:
-        word_schema = infer_word_schema(words_df)
-        fix_schema = infer_fix_schema(fixations_df)
-        if not word_schema or not fix_schema:
-            st.stop()
+            problems.append("Fixations: " + "; ".join(fix_problems))
+
+    if problems:
+        # Mapping not ready — let the caller surface the raw data instead of
+        # plotting. Clear any stale composite-trial state so the picker doesn't
+        # reference columns from a previous, valid dataset.
+        st.session_state["_composite_trial_columns"] = None
+        return empty_words_frame(), empty_fixations_frame(), problems
 
     # Remember whether the trial id was composed from several columns, so the
     # trial picker can offer one cascading selector per component (see
     # utils._select_trial_composite_mode). Recomputed every run so it clears
-    # when switching to a single-column / non-upload data source.
-    trial_cols = trial_mapping_columns(word_schema["trial"])
+    # when switching to a single-column / non-upload data source. (Both tables
+    # are told to use the same trial mapping; fall back to the fixations'
+    # mapping for fixations-only datasets.)
+    trial_mapping = (word_schema or fix_schema)["trial"]
+    trial_cols = trial_mapping_columns(trial_mapping)
     st.session_state["_composite_trial_columns"] = (
         trial_cols if len(trial_cols) > 1 else None
     )
 
-    return normalize_words(words_df, word_schema), normalize_fixations(
-        fixations_df, fix_schema
+    words_norm = (
+        normalize_words(words_df, word_schema) if has_words else empty_words_frame()
     )
+    fixations_norm = (
+        normalize_fixations(fixations_df, fix_schema)
+        if has_fixations
+        else empty_fixations_frame()
+    )
+    words_norm, fixations_norm = harmonize_frames(words_norm, fixations_norm)
+    return words_norm, fixations_norm, problems
+
+
+def _render_raw_preview(label: str, df: pd.DataFrame) -> None:
+    """Show one uploaded table's columns + a sample so the user can map it."""
+    if df is None or df.empty:
+        return
+    st.markdown(f"#### {label} — {len(df):,} rows × {df.shape[1]} columns")
+    st.caption("Columns: " + ", ".join(str(c) for c in df.columns))
+    st.dataframe(df.head(200), use_container_width=True, height=320)
+
+
+def _render_unmapped_view(
+    raw_words_df: pd.DataFrame,
+    raw_fixations_df: pd.DataFrame,
+    problems: list,
+) -> None:
+    """Show the raw uploaded data while the column mapping is incomplete.
+
+    Renders the usual tab strip so the layout is familiar, but only the **Raw
+    Data** tab has content (the uploaded tables, unmodified) — the plotting
+    tabs point back to the sidebar. Lets the user inspect column names and
+    values to fill in the *Column mapping* panels without the app halting.
+    """
+    st.warning(
+        "**Finish the column mapping to draw scanpaths.** Map the missing "
+        "field(s) in the **Column mapping** panels in the sidebar — the raw "
+        "uploaded data is shown in the **Raw Data** tab below to help you "
+        "choose. Still needed:\n\n" + "\n".join(f"- {p}" for p in problems)
+    )
+    tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
+        [
+            "Interactive Plot",
+            "Animated Scanpath",
+            "Multiple Comparison",
+            "Raw Data",
+            "Data Statistics",
+        ]
+    )
+    for tab in (tab_single, tab_animation, tab_multi, tab_stats):
+        with tab:
+            st.info("Complete the column mapping in the sidebar to see this view.")
+    with tab_raw:
+        if raw_words_df is None or raw_words_df.empty:
+            if raw_fixations_df is None or raw_fixations_df.empty:
+                st.info("No data loaded yet.")
+        _render_raw_preview("Words / IA", raw_words_df)
+        _render_raw_preview("Fixations", raw_fixations_df)
 
 
 def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
@@ -371,8 +645,9 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
     """
     raw_gaze_df = pd.DataFrame()
 
-    if data_choice == SYNTHETIC_CHOICE:
-        # The synthetic trial has no raw gaze; skip the uploader entirely.
+    if data_choice in (SYNTHETIC_CHOICE, PUBLIC_DATASETS_CHOICE):
+        # Neither the synthetic trial nor the public corpora ship raw gaze;
+        # skip the uploader entirely.
         return raw_gaze_df
 
     if data_choice == DEMO_CHOICE:
@@ -435,7 +710,11 @@ def render_sidebar_data_source() -> str:
     """
     # Only offer the OneStop bundle when $ONESTOP_DATA_DIR is set on the
     # server. Outside that context the choice would be a dead-end, so we hide it.
+    # The Public datasets source is feature-flagged off until a future release
+    # (see public_datasets_enabled).
     options = [DEMO_CHOICE, SYNTHETIC_CHOICE, UPLOAD_CHOICE]
+    if public_datasets_enabled():
+        options.insert(2, PUBLIC_DATASETS_CHOICE)
     if onestop_data_dir() is not None:
         options.insert(0, ONESTOP_CHOICE)
     # Default to OneStop when it's available AND a deep-link forced it via
@@ -482,6 +761,8 @@ def render_sidebar_canvas_controls(
     # fills part of the screen — so hard-default to the real monitor here.
     if data_choice in (ONESTOP_CHOICE, DEMO_CHOICE):
         default_canvas_w, default_canvas_h = 2560, 1440
+    elif (monitor := _public_dataset_monitor(data_choice)) is not None:
+        default_canvas_w, default_canvas_h = monitor
     else:
         default_canvas_w, default_canvas_h = compute_canvas_size(
             words_filtered, fixations_filtered
@@ -597,19 +878,32 @@ def main() -> None:
     elif url_source == "upload":
         st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
 
+    # First-visit welcome tour (modal). After the URL presets, so embeds and
+    # deep-linked sessions can suppress it; data keeps loading behind it.
+    maybe_show_welcome_tour()
+
     # Data source selection (sidebar)
     _sidebar_group("📂 Data")
     data_choice = render_sidebar_data_source()
 
     # Load and prepare core data (words + fixations). Pass the deep-link
-    # participant so the OneStop loader can fast-path to a per-pid shard.
+    # participant so the OneStop loader can fast-path to a per-pid shard. Keep
+    # the raw frames around so we can show them if the mapping isn't ready.
     deep_link_pid = st.session_state.get("single_participant")
-    words_df, fixations_df = load_words_and_fixations(
+    raw_words_df, raw_fixations_df = load_words_and_fixations(
         data_choice, participant=deep_link_pid
     )
-    words_df, fixations_df = prepare_data(
-        words_df, fixations_df, allow_override=(data_choice == UPLOAD_CHOICE)
+    words_df, fixations_df, mapping_problems = prepare_data(
+        raw_words_df,
+        raw_fixations_df,
+        allow_override=(data_choice in (UPLOAD_CHOICE, PUBLIC_DATASETS_CHOICE)),
     )
+    if mapping_problems:
+        # A required column is still unmapped. Rather than halt the whole app
+        # (which hid the data the user needs to choose the mapping), show the
+        # raw uploaded tables; the sidebar Column-mapping panels stay editable.
+        _render_unmapped_view(raw_words_df, raw_fixations_df, mapping_problems)
+        return
 
     # Load optional raw gaze data
     raw_gaze_df = load_raw_gaze_data(data_choice)
@@ -629,10 +923,13 @@ def main() -> None:
         trial_filters["favorites_only"]
         or trial_filters["required_tags"]
         or trial_filters["excluded_tags"]
-    ) and not fixations_df.empty:
+    ) and not (fixations_df.empty and words_df.empty):
+        # Trials live in fixations normally; for words-only datasets fall back
+        # to the words frame.
+        keys_frame = words_df if fixations_df.empty else fixations_df
         present_keys = {
             (str(p), str(t))
-            for p, t in zip(fixations_df["participant_id"], fixations_df["trial_id"])
+            for p, t in zip(keys_frame["participant_id"], keys_frame["trial_id"])
         }
         kept = set(
             filter_keys(
@@ -667,16 +964,21 @@ def main() -> None:
     else:
         raw_gaze_filtered = pd.DataFrame()
 
-    # Check for empty data after filtering
-    if words_filtered.empty or fixations_filtered.empty:
+    # Check for empty data after filtering. A single empty frame is fine
+    # (words-only / fixations-only datasets); both empty means the filters
+    # removed everything.
+    if words_filtered.empty and fixations_filtered.empty:
         st.warning(
             "No data after filtering. Loosen the **Filter trials** panel "
             "(participants, condition, or annotation filters) in the sidebar."
         )
         return
 
-    # Build trial combinations for selection UI
-    combos, _, _ = build_combo_options(fixations_filtered)
+    # Build trial combinations for selection UI — from fixations normally,
+    # from words for words-only datasets.
+    combos, _, _ = build_combo_options(
+        fixations_filtered if not fixations_filtered.empty else words_filtered
+    )
 
     # Canvas and visualization controls (sidebar)
     _sidebar_group("🎨 Visualization")
@@ -772,6 +1074,10 @@ def main() -> None:
             base_font_size=base_font_size,
             font_family=font_family,
         )
+
+    # Sidebar Help group (bottom): replay the welcome tour.
+    _sidebar_group("❓ Help")
+    render_tour_replay_button()
 
 
 if __name__ == "__main__":

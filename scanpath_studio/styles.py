@@ -43,30 +43,13 @@ def get_app_css() -> str:
     [data-stale="true"] {
         opacity: 1 !important;
     }
-    /* Pill buttons used in the header (Lab / Code links) */
-    .header-link-row { display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center; }
-    .header-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.35rem 0.8rem;
-        border-radius: 999px;
-        font-size: 0.85rem;
-        font-weight: 500;
-        text-decoration: none !important;
-        border: 1px solid rgba(120,120,120,0.35);
-        background: linear-gradient(180deg, #ffffff 0%, #f4f5f7 100%);
-        color: #1f2937 !important;
-        transition: transform 0.08s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+    /* "About" popover in the header: pill-shaped trigger + readable body width */
+    div[data-testid="stPopover"] button { border-radius: 999px; }
+    div[data-testid="stPopover"] button p { white-space: nowrap; }
+    div[data-testid="stPopoverBody"] {
+        min-width: min(28rem, 90vw);
+        max-width: min(32rem, 95vw);
     }
-    .header-link:hover {
-        border-color: #4c6ef5;
-        box-shadow: 0 1px 3px rgba(76, 110, 245, 0.18);
-        transform: translateY(-1px);
-    }
-    .header-link.lab { background: linear-gradient(180deg, #fef9c3 0%, #fde68a 100%); border-color: #f59e0b; }
-    .header-link.lab:hover { border-color: #d97706; }
-    .header-link.code { background: linear-gradient(180deg, #e0e7ff 0%, #c7d2fe 100%); border-color: #6366f1; }
-    .header-link.code:hover { border-color: #4338ca; }
+    div[data-testid="stPopoverBody"] p { line-height: 1.45; }
     </style>
     """

@@ -54,6 +54,7 @@ from .constants import (  # noqa: E402
 from .plots import make_scanpath_animation, make_scanpath_figure  # noqa: E402
 
 TableLike = Union[pd.DataFrame, str, Path]
+TablesLike = Union[TableLike, "list[TableLike]"]
 
 # Mirrors the app's sidebar defaults (controls.sidebar_controls) — the
 # "canonical" scanpath rendering. `heatmap_metric="counts"` is translated to
@@ -86,50 +87,68 @@ CANONICAL_FIGURE_DEFAULTS: dict = dict(
 )
 
 
-def _as_dataframe(table: TableLike, label: str) -> pd.DataFrame:
+def _as_dataframe(table: TablesLike, label: str) -> pd.DataFrame:
     if isinstance(table, pd.DataFrame):
         return table
-    path = Path(table)
-    if not path.is_file():
-        raise FileNotFoundError(f"{label} table not found: {path}")
-    return _data.read_table(path)
+    items = _data.expand_table_inputs(table)
+    for item in items:
+        if not isinstance(item, pd.DataFrame) and not Path(item).is_file():
+            raise FileNotFoundError(f"{label} table not found: {item}")
+    return _data.read_tables(items)
 
 
 def load_scanpath_data(
-    words: TableLike,
-    fixations: TableLike,
+    words: Optional[TablesLike] = None,
+    fixations: Optional[TablesLike] = None,
     *,
     word_schema: Optional[dict] = None,
     fix_schema: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load and normalize a words/IA table and a fixations table.
+    """Load and normalize a words/IA table and/or a fixations table.
 
-    ``words`` / ``fixations`` may be DataFrames or paths to ``.csv`` /
-    ``.parquet`` / ``.feather`` files. Column schemas are auto-detected
-    (EyeLink, Gazepoint, and snake_case names); pass ``word_schema`` /
-    ``fix_schema`` mappings (field → column name, see
-    ``controls.WORD_FIELD_SPECS``) to override detection. For per-word
-    reading measures, pass the result to :func:`compute_word_metrics`.
+    ``words`` / ``fixations`` may be DataFrames, paths to ``.csv`` / ``.tsv``
+    / ``.parquet`` / ``.feather`` files, glob patterns, or lists of paths —
+    multi-file datasets (one file per participant and/or text) are
+    concatenated, with each file's stem kept in a ``source_file`` column.
+    Column schemas are auto-detected (EyeLink, Gazepoint, and snake_case
+    names); pass ``word_schema`` / ``fix_schema`` mappings (field → column
+    name, see ``controls.WORD_FIELD_SPECS``) to override detection. For
+    per-word reading measures, pass the result to :func:`compute_word_metrics`.
+
+    Either table may be omitted for datasets that ship only one report: the
+    missing side comes back as an empty canonical frame and the plots simply
+    skip that layer. Words without a participant column (stimulus-level AoIs)
+    are broadcast across the participants found in the fixations, and
+    fixations without x/y but with a word/AoI ID are placed at word-box
+    centers.
 
     Returns the normalized ``(words, fixations)`` frames the plotting
     functions expect. Raises ``ValueError`` if required fields can't be found.
     """
-    words_df = _as_dataframe(words, "words/IA")
-    fixations_df = _as_dataframe(fixations, "fixations")
+    if words is None and fixations is None:
+        raise ValueError("Provide at least one of words= or fixations=.")
 
-    word_schema = word_schema or _data.propose_word_schema(words_df)
-    problems = _data.validate_word_schema(word_schema)
-    if problems:
-        raise ValueError(f"Words/IA schema problems: {'; '.join(problems)}")
+    if words is not None:
+        words_df = _as_dataframe(words, "words/IA")
+        word_schema = word_schema or _data.propose_word_schema(words_df)
+        problems = _data.validate_word_schema(word_schema)
+        if problems:
+            raise ValueError(f"Words/IA schema problems: {'; '.join(problems)}")
+        words_norm = _data.normalize_words(words_df, word_schema)
+    else:
+        words_norm = _data.empty_words_frame()
 
-    fix_schema = fix_schema or _data.propose_fix_schema(fixations_df)
-    problems = _data.validate_fix_schema(fix_schema)
-    if problems:
-        raise ValueError(f"Fixations schema problems: {'; '.join(problems)}")
+    if fixations is not None:
+        fixations_df = _as_dataframe(fixations, "fixations")
+        fix_schema = fix_schema or _data.propose_fix_schema(fixations_df)
+        problems = _data.validate_fix_schema(fix_schema)
+        if problems:
+            raise ValueError(f"Fixations schema problems: {'; '.join(problems)}")
+        fixations_norm = _data.normalize_fixations(fixations_df, fix_schema)
+    else:
+        fixations_norm = _data.empty_fixations_frame()
 
-    words_norm = _data.normalize_words(words_df, word_schema)
-    fixations_norm = _data.normalize_fixations(fixations_df, fix_schema)
-    return words_norm, fixations_norm
+    return _data.harmonize_frames(words_norm, fixations_norm)
 
 
 def load_sample_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -147,9 +166,17 @@ def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.Dat
 
 
 def list_trials(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.DataFrame:
-    """Plottable ``(participant_id, trial_id)`` combos — present in both frames."""
+    """Plottable ``(participant_id, trial_id)`` combos.
+
+    Combos present in both frames when both are loaded; for single-report
+    datasets (words-only or fixations-only), combos from whichever frame has
+    data."""
     cols = ["participant_id", "trial_id"]
-    combos = words[cols].drop_duplicates().merge(fixations[cols].drop_duplicates())
+    if words.empty or fixations.empty:
+        present = fixations if words.empty else words
+        combos = present[cols].drop_duplicates()
+    else:
+        combos = words[cols].drop_duplicates().merge(fixations[cols].drop_duplicates())
     return combos.sort_values(cols).reset_index(drop=True)
 
 
@@ -169,7 +196,7 @@ def _resolve_trial(
     """
     combos = list_trials(words, fixations)
     if combos.empty:
-        raise ValueError("No (participant, trial) combo exists in both frames.")
+        raise ValueError("No (participant, trial) combo exists in the data.")
     if participant is not None:
         combos = combos[combos["participant_id"] == str(participant)]
     if trial is not None:
@@ -199,6 +226,15 @@ def _select_trial(
     trial_words, trial_fixations = _data.filter_data(
         words, fixations, {"participants": [pid], "trials": [tid]}
     )
+    if not trial_fixations.empty and trial_fixations["x"].isna().all():
+        # AOI-sequence fixations whose coordinates couldn't be reconstructed:
+        # either no words table was given, or the word/AoI ids matched no box.
+        raise ValueError(
+            f"Fixations for participant={pid!r}, trial={tid!r} have no usable "
+            "coordinates. AOI-sequence datasets (no x/y) need a words table "
+            "whose word/AoI ids match the fixations' so fixations can be "
+            "placed at word-box centers."
+        )
     return trial_words, trial_fixations, pid, tid
 
 

@@ -103,7 +103,7 @@ sidecar and restore it in a later session.
 
 ## Your data
 
-Upload **CSV, Parquet, or Feather** tables for words/AoIs, fixations, and
+Upload **CSV, TSV, Parquet, or Feather** tables for words/AoIs, fixations, and
 (optionally) raw gaze. Columns are auto-detected from common EyeLink,
 Gazepoint, and snake-case conventions; a sidebar **Column mapping** panel lets
 you override any guess. No single column uniquely identifies a trial? Map
@@ -115,6 +115,43 @@ reading) and a combined unique trial ID is built on the fly.
 invents them. Fixations are tied to words by bounding-box containment (with a
 small nearest-word fallback); fixations that miss every box are flagged
 *out-of-text*.
+
+Real corpora come in many shapes, so the loader bends to fit:
+
+- **One file per participant or text.** Drop in several files at once (or pass a
+  glob / list of paths to the API and CLI) and they're concatenated, with each
+  row tagged by its `source_file` so filename-encoded metadata isn't lost.
+- **Only one report.** Have just an interest-area report, or just fixations?
+  Load either one alone — the missing layer is simply skipped, and a words-only
+  table still draws a heatmap from its own pre-aggregated reading measures.
+- **Stimulus-level AoIs.** Word boxes given once per *text* (no participant
+  column) are broadcast across every reader of that text.
+- **Fixations as word/AoI sequences.** No pixel coordinates, only "which word"?
+  Fixations are placed at the matching word-box centers (or, for character-level
+  AoIs like PoTeC's, at the fixated character's box).
+
+[**PoTeC**](https://github.com/DiLi-Lab/PoTeC) (Potsdam Textbook Corpus — 75
+readers × 12 German textbook texts, one fixation file per reading and
+stimulus-level AoIs) loads as a worked example of all four:
+
+```python
+import scanpath_studio as sps
+
+words, fixations = sps.load_potec("data/PoTeC", download=True)   # ~45 MB on first call
+fig = sps.plot_scanpath(words, fixations, "0", "b0", canvas_size=(1680, 1050))
+```
+
+or `scanpath-studio render --potec data/PoTeC -p 0 -t b0 -o potec.png`.
+
+> Heads-up: PoTeC's raw files **can't** be loaded through the generic upload
+> flow — its trial/word ids live in filenames and fixation coordinates come from
+> a separate character-AoI file. The dedicated loader handles that join. An
+> in-app **Public datasets** source built on the same loaders is feature-flagged
+> off for now and will appear in a future release.
+
+When you upload your own tables and a required column can't be auto-detected,
+the app no longer stops — it shows your raw tables in the **Raw Data** tab so you
+can see the column names and finish the **Column mapping** in the sidebar.
 
 ## Bulk export
 
@@ -137,6 +174,8 @@ scanpath-studio render --sample --list-trials         # what's available
 scanpath-studio render --sample -o scanpath.html      # interactive HTML
 scanpath-studio render --words ia.csv --fixations fixations.csv \
     -p participant_1 -t trial_3 --no-heatmap -o figure.png
+scanpath-studio render --fixations 'fixations/*.tsv' -o scanpath.png   # multi-file, fixations-only
+scanpath-studio render --potec data/PoTeC -p 0 -t b0 -o potec.png      # PoTeC corpus
 scanpath-studio render --sample --animate -o replay.html
 ```
 
@@ -161,6 +200,16 @@ measures = sps.compute_word_metrics(words, fixations)  # FFD/FPRT/RPD/TFD…
 `sps.load_sample_data()` returns the bundled demo, and `plot_scanpath` /
 `animate_scanpath` accept every layer toggle and style option the app exposes
 (`show_heatmap=False`, `color_by="pass_index"`, …).
+
+`load_scanpath_data` also takes glob patterns or lists of paths, and either
+table may be omitted for single-report datasets:
+
+```python
+# one fixation file per participant, no separate IA report
+words, fixations = sps.load_scanpath_data(fixations="fixations/*.tsv")
+# or a ready-made loader for PoTeC's multi-file, stimulus-AoI layout
+words, fixations = sps.load_potec("data/PoTeC", readers=[0, 1], texts=["b0"])
+```
 
 ---
 

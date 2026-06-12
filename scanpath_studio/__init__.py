@@ -12,12 +12,15 @@ __all__ = [
     "plot_scanpath",
     "animate_scanpath",
     "save_figure",
+    "load_potec",
 ]
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
-# Public headless API (see api.py). Resolved lazily so `import scanpath_studio`
-# stays cheap and doesn't pull in pandas/plotly/streamlit until first use.
-_API_EXPORTS = frozenset(__all__) - {"__version__", "main"}
+# Public headless API (see api.py / datasets.py). Resolved lazily so
+# `import scanpath_studio` stays cheap and doesn't pull in pandas/plotly/
+# streamlit until first use.
+_DATASET_EXPORTS = frozenset({"load_potec"})
+_API_EXPORTS = frozenset(__all__) - {"__version__", "main"} - _DATASET_EXPORTS
 
 
 def __getattr__(name: str):
@@ -25,6 +28,10 @@ def __getattr__(name: str):
         from . import api
 
         return getattr(api, name)
+    if name in _DATASET_EXPORTS:
+        from . import datasets
+
+        return getattr(datasets, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

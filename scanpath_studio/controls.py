@@ -176,6 +176,15 @@ def data_dictionary_help_text() -> str:
         "No single column uniquely identifies a trial? Map *Trial ID* to several "
         "columns (e.g. participant + paragraph + repeated reading) and the app "
         "builds a combined unique trial ID on the fly.\n"
+        "Multi-file datasets: upload several files at once (e.g. one per "
+        "participant or text) and they're concatenated, each row tagged by its "
+        "`source_file`.\n"
+        "Single-report datasets: upload only a words/IA table OR only a "
+        "fixations table — the missing layer is skipped. A words-only table "
+        "still draws a heatmap from its pre-aggregated reading measures.\n"
+        "Stimulus-level word boxes (no participant column) are shared across "
+        "every participant who read that trial; fixations with a word/AoI id "
+        "but no x/y are placed at the matching word-box centers.\n"
         "Only fields present in your data are used for filters, coloring, and tooltips.\n"
         "Areas of interest (word boxes) are taken from your data, not computed; "
         "fixations are tied to words by bounding-box containment with a small "
@@ -456,7 +465,12 @@ def sidebar_trial_filters(words: pd.DataFrame, fixations: pd.DataFrame) -> Dict:
     with st.sidebar.expander("Filter trials", expanded=False):
         st.caption("Narrow the trial pool shown in every tab.")
 
-        parts = sorted(words["participant_id"].dropna().astype(str).unique())
+        # Union across both frames — single-report datasets have participants
+        # in only one of them.
+        parts = sorted(
+            set(words["participant_id"].dropna().astype(str))
+            | set(fixations["participant_id"].dropna().astype(str))
+        )
         if len(parts) > 1:
             chosen = st.multiselect(
                 "Participants", options=parts, default=parts, key="filter_participants"

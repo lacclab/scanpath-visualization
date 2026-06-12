@@ -129,10 +129,12 @@ def test_plot_scanpath_filters_raw_gaze(sample):
 
 def test_animate_scanpath_rejects_static_only_options(sample):
     # Regression: static-only keys used to surface as an opaque TypeError.
+    # (color_by no longer qualifies — the replay honours it like the static
+    # figure; the heatmap overlay is still static-only.)
     words, fixations = sample
     pid, tid = sps.list_trials(words, fixations).iloc[0]
     with pytest.raises(ValueError, match="not supported by the animation"):
-        sps.animate_scanpath(words, fixations, pid, tid, color_by="pass_index")
+        sps.animate_scanpath(words, fixations, pid, tid, show_heatmap=True)
 
 
 def test_resolve_trial_default_first(sample):

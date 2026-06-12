@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import glob
 import importlib.resources as resources
 import os
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -218,12 +219,14 @@ PARTICIPANT_CANDIDATES = [
     "subject_id",
     "participant",
     "recording_session_label",
+    "reader_id",
 ]
 TRIAL_CANDIDATES = [
     "unique_trial_id",
     "trial_id",
     "unique_paragraph_id",
     "paragraph_id",
+    "text_id",
     "trial",
     "trial_index",
     "TRIAL_INDEX",
@@ -241,21 +244,27 @@ TEXT_CANDIDATES = [
     "token",
     "TOKEN",
 ]
-WORD_ID_CANDIDATES = ["word_id", "IA_ID", "ia_id", "ia_index"]
+WORD_ID_CANDIDATES = ["word_id", "IA_ID", "ia_id", "ia_index", "word_index", "aoi"]
 LINE_CANDIDATES = ["line_idx", "line", "line_index", "IA_LINE_ID"]
 
 WORD_X_CANDIDATES = ["x", "X", "left"]
 WORD_Y_CANDIDATES = ["y", "Y", "top"]
 WORD_WIDTH_CANDIDATES = ["width", "WIDTH"]
 WORD_HEIGHT_CANDIDATES = ["height", "HEIGHT"]
-WORD_LEFT_CANDIDATES = ["IA_LEFT", "ia_left", "left"]
-WORD_RIGHT_CANDIDATES = ["IA_RIGHT", "ia_right", "right"]
-WORD_TOP_CANDIDATES = ["IA_TOP", "ia_top", "top"]
-WORD_BOTTOM_CANDIDATES = ["IA_BOTTOM", "ia_bottom", "bottom"]
+WORD_LEFT_CANDIDATES = ["IA_LEFT", "ia_left", "left", "start_x"]
+WORD_RIGHT_CANDIDATES = ["IA_RIGHT", "ia_right", "right", "end_x"]
+WORD_TOP_CANDIDATES = ["IA_TOP", "ia_top", "top", "start_y"]
+WORD_BOTTOM_CANDIDATES = ["IA_BOTTOM", "ia_bottom", "bottom", "end_y"]
 
 FIX_X_CANDIDATES = ["x", "X", "CURRENT_FIX_X", "FPOGX"]
 FIX_Y_CANDIDATES = ["y", "Y", "CURRENT_FIX_Y", "FPOGY"]
-FIX_DURATION_CANDIDATES = ["duration_ms", "CURRENT_FIX_DURATION", "CURRENT_FIX_LEN"]
+FIX_DURATION_CANDIDATES = [
+    "duration_ms",
+    "CURRENT_FIX_DURATION",
+    "CURRENT_FIX_LEN",
+    "duration",
+    "fixation_duration",
+]
 FIX_TIMESTAMP_CANDIDATES = [
     "timestamp_ms",
     "CURRENT_FIX_START",
@@ -263,13 +272,20 @@ FIX_TIMESTAMP_CANDIDATES = [
     "CURRENT_FIX_TIME",
     "CURRENT_FIX_ONSET",
 ]
-FIX_FIXATION_ID_CANDIDATES = ["fixation_id", "CURRENT_FIX_INDEX", "CURRENT_FIX_NUM"]
+FIX_FIXATION_ID_CANDIDATES = [
+    "fixation_id",
+    "CURRENT_FIX_INDEX",
+    "CURRENT_FIX_NUM",
+    "fixation_index",
+]
 FIX_WORD_ID_CANDIDATES = [
     "word_id",
     "IA_ID",
     "ia_id",
     "CURRENT_FIX_INTEREST_AREA_ID",
     "CURRENT_FIX_INTEREST_AREA_INDEX",
+    "word_index_in_text",
+    "word_index",
 ]
 FIX_PASS_INDEX_CANDIDATES = ["pass_index", "reread", "PASS_INDEX"]
 FIX_SACCADE_TYPE_CANDIDATES = ["saccade_type", "SACCADE_TYPE", "NEXT_SAC_DIRECTION"]
@@ -345,10 +361,14 @@ def propose_raw_gaze_schema(raw_gaze: pd.DataFrame) -> Dict[str, Optional[str]]:
 
 
 def validate_word_schema(schema: Dict[str, Optional[str]]) -> list:
-    """Return a list of human-readable problems with a words/IA schema."""
+    """Return a list of human-readable problems with a words/IA schema.
+
+    Participant ID is optional: word/AoI tables without one are treated as
+    stimulus-level (one row per word per *text*, not per reading) and are
+    broadcast across the participants found in the fixations — see
+    ``broadcast_stimulus_words``."""
     problems = []
     for key, label in [
-        ("participant", "Participant ID"),
         ("trial", "Trial ID"),
         ("word_id", "Word/IA ID"),
     ]:
@@ -364,17 +384,26 @@ def validate_word_schema(schema: Dict[str, Optional[str]]) -> list:
 
 
 def validate_fix_schema(schema: Dict[str, Optional[str]]) -> list:
-    """Return a list of human-readable problems with a fixations schema."""
+    """Return a list of human-readable problems with a fixations schema.
+
+    X/Y coordinates are optional when a Word/IA ID is mapped: AOI-sequence
+    datasets (fixations recorded as "which word", not "which pixel") get
+    coordinates from the matching word-box centers — see
+    ``fill_fixation_xy_from_words``."""
     problems = []
     for key, label in [
         ("participant", "Participant ID"),
         ("trial", "Trial ID"),
         ("duration", "Duration"),
-        ("x", "X"),
-        ("y", "Y"),
     ]:
         if not schema.get(key):
             problems.append(f"missing {label}")
+    has_xy = schema.get("x") and schema.get("y")
+    if not has_xy and not schema.get("word_id"):
+        problems.append(
+            "need either (X, Y) coordinates or a Word/IA ID "
+            "(AOI-only fixations are placed at word-box centers)"
+        )
     return problems
 
 
@@ -393,13 +422,69 @@ def validate_raw_gaze_schema(schema: Dict[str, Optional[str]]) -> list:
 
 
 def read_table(file_like_or_path) -> pd.DataFrame:
-    """Read a tabular file by extension: csv, parquet, or feather."""
+    """Read a tabular file by extension: csv, tsv, parquet, or feather."""
     name = getattr(file_like_or_path, "name", str(file_like_or_path)).lower()
     if name.endswith(".parquet"):
         return pd.read_parquet(file_like_or_path)
     if name.endswith(".feather"):
         return pd.read_feather(file_like_or_path)
+    if name.endswith((".tsv", ".tab")):
+        return pd.read_csv(file_like_or_path, sep="\t")
     return pd.read_csv(file_like_or_path)
+
+
+# Column added by `read_tables` when concatenating several files: the source
+# file's stem. Lets datasets that key metadata in the *filename* (one file per
+# participant and/or per text, e.g. PoTeC's `reader0_b0_scanpath.tsv`) recover
+# it after concatenation — map it as (part of) the Trial/Participant ID.
+SOURCE_FILE_COLUMN = "source_file"
+
+TablesInput = Union[str, os.PathLike, object, List]
+
+
+def expand_table_inputs(inputs: TablesInput) -> list:
+    """Flatten a path / glob pattern / file-like / list-of-those into a list.
+
+    Glob patterns are expanded in sorted order so multi-file datasets (one
+    file per participant or per stimulus) can be referenced with a single
+    pattern like ``scanpaths/*.tsv``. Raises ``FileNotFoundError`` for a
+    pattern that matches nothing — silently loading zero files would read as
+    success."""
+    if not isinstance(inputs, (list, tuple)):
+        inputs = [inputs]
+    expanded: list = []
+    for item in inputs:
+        if isinstance(item, (str, os.PathLike)) and glob.has_magic(str(item)):
+            matches = sorted(glob.glob(str(item), recursive=True))
+            if not matches:
+                raise FileNotFoundError(f"No files match pattern: {item}")
+            expanded.extend(matches)
+        else:
+            expanded.append(item)
+    return expanded
+
+
+def read_tables(
+    inputs: TablesInput, source_column: Optional[str] = SOURCE_FILE_COLUMN
+) -> pd.DataFrame:
+    """Read one or many tabular files and concatenate them into one frame.
+
+    ``inputs`` may be a single path or file-like object, a glob pattern, or a
+    list mixing those. When more than one file is read, each part gets a
+    ``source_file`` column holding the file's stem (unless the data already
+    has that column, or ``source_column=None``) so rows stay traceable to
+    their origin file. Columns are aligned by name across files; fields absent
+    from a file become NaN for its rows."""
+    items = expand_table_inputs(inputs)
+    frames = []
+    for item in items:
+        df = read_table(item)
+        if len(items) > 1 and source_column and source_column not in df.columns:
+            df[source_column] = Path(getattr(item, "name", str(item))).stem
+        frames.append(df)
+    if len(frames) == 1:
+        return frames[0]
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def _load_bundled(name: str) -> pd.DataFrame:
@@ -501,6 +586,82 @@ def infer_fix_schema(fixations: pd.DataFrame) -> Optional[Dict[str, str]]:
     return schema
 
 
+# Placeholder participant id for stimulus-level word/AoI tables (no participant
+# column — one row per word per text, shared by every reading). The marker
+# column flags the frame so broadcast_stimulus_words() knows to expand it.
+STIMULUS_PARTICIPANT = ""
+STIMULUS_WORDS_FLAG = "_stimulus_words"
+
+
+def broadcast_stimulus_words(
+    words: pd.DataFrame, fixations: pd.DataFrame
+) -> pd.DataFrame:
+    """Expand stimulus-level words across the participants who read each trial.
+
+    Datasets like PoTeC ship word/AoI tables per *text* (no participant
+    column) while fixations are per participant × text. After normalization,
+    such words carry the ``_stimulus_words`` flag; this replicates each
+    trial's word rows once per participant that has fixations for that
+    ``trial_id``, so downstream (participant, trial) filtering works
+    unchanged. Words for trials nobody read are dropped. No-op for ordinary
+    per-participant word tables, or when there are no fixations to broadcast
+    against (the stimulus rows then keep their placeholder participant)."""
+    if STIMULUS_WORDS_FLAG not in words.columns:
+        return words
+    words = words.drop(columns=[STIMULUS_WORDS_FLAG])
+    if words.empty or fixations.empty:
+        return words
+    pairs = fixations[["participant_id", "trial_id"]].drop_duplicates()
+    pairs["participant_id"] = pairs["participant_id"].astype(str)
+    pairs["trial_id"] = pairs["trial_id"].astype(str)
+    return words.drop(columns=["participant_id"]).merge(
+        pairs, on="trial_id", how="inner"
+    )
+
+
+def fill_fixation_xy_from_words(
+    fixations: pd.DataFrame, words: pd.DataFrame
+) -> pd.DataFrame:
+    """Fill missing fixation coordinates from the fixated word's box center.
+
+    AOI-sequence datasets record *which* word/character each fixation landed
+    on but not the pixel position. When normalized fixations have NaN x/y and
+    a ``word_id``, place them at the center of the matching word box (keyed by
+    participant_id + trial_id + word_id). Fixations whose word_id matches no
+    box keep NaN coordinates. Rows that already have coordinates are left
+    untouched."""
+    if fixations.empty or words.empty:
+        return fixations
+    missing = fixations["x"].isna() | fixations["y"].isna()
+    if not missing.any() or "word_id" not in fixations.columns:
+        return fixations
+    centers = words[["participant_id", "trial_id", "word_id"]].copy()
+    centers["_word_cx"] = words["x"] + words["width"] / 2.0
+    centers["_word_cy"] = words["y"] + words["height"] / 2.0
+    centers = centers.drop_duplicates(["participant_id", "trial_id", "word_id"])
+    merged = fixations[["participant_id", "trial_id", "word_id"]].merge(
+        centers, on=["participant_id", "trial_id", "word_id"], how="left"
+    )
+    fixations = fixations.copy()
+    fill = missing.to_numpy()
+    fixations.loc[fill, "x"] = merged["_word_cx"].to_numpy()[fill]
+    fixations.loc[fill, "y"] = merged["_word_cy"].to_numpy()[fill]
+    return fixations
+
+
+def harmonize_frames(
+    words: pd.DataFrame, fixations: pd.DataFrame
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Cross-frame fixups applied right after normalization.
+
+    Broadcast stimulus-level words across participants, then fill missing
+    fixation coordinates from word-box centers. Call whenever both frames are
+    available (the API and the app both route through this)."""
+    words = broadcast_stimulus_words(words, fixations)
+    fixations = fill_fixation_xy_from_words(fixations, words)
+    return words, fixations
+
+
 def _disambiguate_repeated_readings(
     df: pd.DataFrame,
     source: pd.DataFrame,
@@ -540,8 +701,17 @@ def _disambiguate_repeated_readings(
 
 
 def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
-    df = pd.DataFrame()
-    df["participant_id"] = words[schema["participant"]].astype(str)
+    # The explicit index makes scalar assignments (e.g. the stimulus-level
+    # participant placeholder) fill every row even when assigned first.
+    df = pd.DataFrame(index=words.index)
+    if schema.get("participant"):
+        df["participant_id"] = words[schema["participant"]].astype(str)
+    else:
+        # Stimulus-level word/AoI table (one row per word per text, shared by
+        # all participants) — broadcast_stimulus_words() expands it across the
+        # participants found in the fixations.
+        df["participant_id"] = STIMULUS_PARTICIPANT
+        df[STIMULUS_WORDS_FLAG] = True
     trial_cols = trial_mapping_columns(schema["trial"])
     if len(trial_cols) > 1:
         # User-composed unique trial ID: authoritative, so it wins over a raw
@@ -553,9 +723,10 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
             "unique_trial_id" if "unique_trial_id" in words.columns else trial_cols[0]
         )
         df["trial_id"] = words[trial_col].astype(str)
-        df = _disambiguate_repeated_readings(
-            df, words, schema["participant"], trial_col
-        )
+        if schema.get("participant"):
+            df = _disambiguate_repeated_readings(
+                df, words, schema["participant"], trial_col
+            )
         if "unique_trial_id" in words.columns:
             df["unique_trial_id"] = words["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in words.columns:
@@ -592,6 +763,7 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         df["height"] = bottom - top
 
     extra_meta = [
+        SOURCE_FILE_COLUMN,
         "TRIAL_INDEX",
         "trial_index",
         "article_batch",
@@ -704,8 +876,13 @@ def normalize_fixations(
         df["paragraph_id"] = df["trial_id"]
     if "unique_paragraph_id" in fixations.columns:
         df["unique_paragraph_id"] = fixations["unique_paragraph_id"].astype(str)
-    df["x"] = pd.to_numeric(fixations[schema["x"]], errors="coerce")
-    df["y"] = pd.to_numeric(fixations[schema["y"]], errors="coerce")
+    # X/Y may be unmapped for AOI-sequence datasets (no pixel coordinates) —
+    # left NaN here and filled from word-box centers by harmonize_frames().
+    for coord in ("x", "y"):
+        if schema.get(coord):
+            df[coord] = pd.to_numeric(fixations[schema[coord]], errors="coerce")
+        else:
+            df[coord] = np.nan
     df["duration_ms"] = pd.to_numeric(
         fixations[schema["duration"]], errors="coerce"
     ).fillna(0)
@@ -759,6 +936,7 @@ def normalize_fixations(
         df["noise_flag"] = False
 
     meta_cols = [
+        SOURCE_FILE_COLUMN,
         "TRIAL_INDEX",
         "trial_index",
         "article_batch",
@@ -787,13 +965,76 @@ def normalize_fixations(
     return df
 
 
+# Canonical columns produced by normalize_words / normalize_fixations. Used to
+# build typed empty frames when a dataset ships only one of the two reports,
+# so every downstream consumer can keep selecting columns unconditionally.
+WORDS_CANONICAL_COLUMNS: Dict[str, str] = {
+    "participant_id": "object",
+    "trial_id": "object",
+    "paragraph_id": "object",
+    "word_id": "float64",
+    "text": "object",
+    "line_idx": "float64",
+    "x": "float64",
+    "y": "float64",
+    "width": "float64",
+    "height": "float64",
+}
+FIX_CANONICAL_COLUMNS: Dict[str, str] = {
+    "participant_id": "object",
+    "trial_id": "object",
+    "paragraph_id": "object",
+    "x": "float64",
+    "y": "float64",
+    "duration_ms": "float64",
+    "timestamp_ms": "float64",
+    "fixation_id": "float64",
+    "word_id": "float64",
+    "pass_index": "float64",
+    "saccade_type": "object",
+    "eye": "object",
+    "noise_flag": "bool",
+    "order_in_trial": "int64",
+}
+
+
+def empty_words_frame() -> pd.DataFrame:
+    """An empty words frame with the canonical post-normalization columns."""
+    return pd.DataFrame(
+        {col: pd.Series(dtype=dt) for col, dt in WORDS_CANONICAL_COLUMNS.items()}
+    )
+
+
+def empty_fixations_frame() -> pd.DataFrame:
+    """An empty fixations frame with the canonical post-normalization columns."""
+    return pd.DataFrame(
+        {col: pd.Series(dtype=dt) for col, dt in FIX_CANONICAL_COLUMNS.items()}
+    )
+
+
+def _union_column_values(
+    words: pd.DataFrame, fixations: pd.DataFrame, column: str
+) -> list:
+    """Sorted union of a column's values across both frames (either may be
+    empty — single-report datasets have words or fixations, not both)."""
+    values: set = set()
+    for df in (words, fixations):
+        if df is not None and not df.empty and column in df.columns:
+            values.update(df[column].unique())
+    return sorted(values)
+
+
 def filter_data(
     words: pd.DataFrame,
     fixations: pd.DataFrame,
     filters: Dict,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    participants = filters.get("participants") or list(words["participant_id"].unique())
-    trials = filters.get("trials") or list(words["trial_id"].unique())
+    participants = filters.get("participants") or _union_column_values(
+        words, fixations, "participant_id"
+    )
+    trials = filters.get("trials") or _union_column_values(
+        words, fixations, "trial_id"
+    )
     word_mask = words["participant_id"].isin(participants) & words["trial_id"].isin(
         trials
     )
@@ -904,6 +1145,10 @@ def compute_canvas_size(
     if fixations is not None and not fixations.empty and "x" in fixations.columns:
         x_candidates.append(float(fixations["x"].max()))
         y_candidates.append(float(fixations["y"].max()))
+    # NaN maxima happen when fixations ship without coordinates (AOI-sequence
+    # data) and no word boxes were available to fill them in.
+    x_candidates = [v for v in x_candidates if np.isfinite(v)]
+    y_candidates = [v for v in y_candidates if np.isfinite(v)]
     if not x_candidates or not y_candidates:
         return max(int(default_w), 100), max(int(default_h), 100)
     width = int(np.ceil(max(x_candidates) / 100.0) * 100)
@@ -1019,8 +1264,8 @@ def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.Dat
 
 def default_filters(words: pd.DataFrame, fixations: pd.DataFrame) -> Dict:
     filters = dict(
-        participants=sorted(words["participant_id"].unique()),
-        trials=sorted(words["trial_id"].unique()),
+        participants=_union_column_values(words, fixations, "participant_id"),
+        trials=_union_column_values(words, fixations, "trial_id"),
     )
     if "pass_index" in fixations.columns:
         filters["pass_indices"] = sorted(fixations["pass_index"].dropna().unique())

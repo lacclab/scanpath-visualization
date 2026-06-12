@@ -14,12 +14,15 @@ authors:
   - given-names: Keren
     family-names: "Gruteke Klein"
     affiliation: "LACC Lab, Technion – Israel Institute of Technology"
-# NOTE: author list is provisional (a system-demo paper is in preparation).
+  - given-names: Yevgeni
+    family-names: Berzak
+    affiliation: "LACC Lab, Technion – Israel Institute of Technology"
+# NOTE: author list is provisional (a paper is in preparation).
 repository-code: "https://github.com/lacclab/scanpath-studio"
 url: "https://scanpath-studio.streamlit.app"
 license: MIT
-version: 0.14.0
-date-released: "2026-06-06"
+version: 0.18.0
+date-released: "2026-06-11"
 keywords:
   - eye-tracking
   - scanpath

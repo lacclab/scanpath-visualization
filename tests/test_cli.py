@@ -166,3 +166,23 @@ def test_render_from_files(tmp_path):
         ]
     )
     assert out_file.is_file()
+
+
+def test_render_fixations_only_multifile(tmp_path):
+    """Fixations-only, multi-file glob input renders without a words table."""
+    from scanpath_studio import data as data_module
+
+    _, fix_raw = data_module.load_sample_data()
+    for pid, group in fix_raw.groupby("participant_id"):
+        group.to_csv(tmp_path / f"{pid}.csv", index=False)
+
+    out_file = tmp_path / "out.html"
+    cli.main(
+        ["render", "--fixations", str(tmp_path / "*.csv"), "-o", str(out_file)]
+    )
+    assert out_file.is_file()
+
+
+def test_render_potec_conflicts_with_other_inputs():
+    with pytest.raises(SystemExit, match="exactly one input"):
+        cli.main(["render", "--potec", "d", "--sample", "-o", "out.html"])

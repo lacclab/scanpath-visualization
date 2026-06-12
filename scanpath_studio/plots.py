@@ -631,6 +631,23 @@ def make_scanpath_figure(
                 heatmap_range=heatmap_range,
                 show_colorbars=show_colorbars,
             )
+    elif spatial_axes and show_heatmap and not words.empty:
+        # Words-only dataset (no fixation report): fall back to the words
+        # frame's own pre-aggregated reading measures for the box heatmap.
+        measure = (
+            "total_fixation_duration_ms"
+            if heatmap_metric == "duration_ms"
+            else "n_fixations"
+        )
+        if measure in words.columns:
+            _add_word_measure_heatmap(
+                fig,
+                words,
+                measure,
+                heatmap_colorscale=heatmap_colorscale,
+                heatmap_range=heatmap_range,
+                show_colorbars=show_colorbars,
+            )
 
     if spatial_axes and show_saccades and len(fixations) > 1:
         sx, sy = _saccade_segments(fixations, x_field, y_field)
@@ -867,8 +884,6 @@ def _add_word_level_heatmap(
     heatmap_range: Optional[Tuple[float, float]],
     show_colorbars: bool,
 ) -> None:
-    from plotly.colors import sample_colorscale
-
     word_values = []
     for word_row in words.itertuples():
         wx0, wy0 = word_row.x, word_row.y
@@ -885,6 +900,58 @@ def _add_word_level_heatmap(
             else float(in_word.sum())
         )
         word_values.append(val)
+
+    _draw_word_value_heatmap(
+        fig,
+        words,
+        word_values,
+        heatmap_colorscale=heatmap_colorscale,
+        heatmap_range=heatmap_range,
+        show_colorbars=show_colorbars,
+        colorbar_title="Fixation count" if weights is None else "Duration (ms)",
+    )
+
+
+def _add_word_measure_heatmap(
+    fig: go.Figure,
+    words: pd.DataFrame,
+    measure: str,
+    *,
+    heatmap_colorscale: str,
+    heatmap_range: Optional[Tuple[float, float]],
+    show_colorbars: bool,
+) -> None:
+    """Word-box heatmap from a pre-aggregated per-word measure column.
+
+    Used for words-only datasets (IA report without a fixation report): the
+    usual heatmap aggregates fixation durations/counts into the boxes, but
+    with no fixations the dataset's own reading measures (e.g. total fixation
+    duration) carry the same information."""
+    values = pd.to_numeric(words[measure], errors="coerce").fillna(0.0)
+    _draw_word_value_heatmap(
+        fig,
+        words,
+        [float(v) for v in values],
+        heatmap_colorscale=heatmap_colorscale,
+        heatmap_range=heatmap_range,
+        show_colorbars=show_colorbars,
+        colorbar_title="Fixation count"
+        if measure == "n_fixations"
+        else "Duration (ms)",
+    )
+
+
+def _draw_word_value_heatmap(
+    fig: go.Figure,
+    words: pd.DataFrame,
+    word_values: list,
+    *,
+    heatmap_colorscale: str,
+    heatmap_range: Optional[Tuple[float, float]],
+    show_colorbars: bool,
+    colorbar_title: str,
+) -> None:
+    from plotly.colors import sample_colorscale
 
     nonzero_rows = [(wr, v) for wr, v in zip(words.itertuples(), word_values) if v > 0]
     if not nonzero_rows:
@@ -925,7 +992,7 @@ def _add_word_level_heatmap(
                     cmin=z_min,
                     cmax=z_max,
                     colorbar=dict(
-                        title="Fixation count" if weights is None else "Duration (ms)",
+                        title=colorbar_title,
                         x=1.02,
                         lenmode="fraction",
                         len=COLORBAR_LEN_FRACTION,
@@ -1332,6 +1399,11 @@ def make_scanpath_animation(
     marker_size_range: Tuple[int, int] = DEFAULT_MARKER_SIZE_RANGE,
     order_font_size: int = 10,
     order_font_color: str = "#000000",
+    color_by: Optional[str] = None,
+    color_by_line: bool = False,
+    fixation_colorscale: str = DEFAULT_FIXATION_COLORSCALE,
+    fixation_color_range: Optional[Tuple[float, float]] = None,
+    show_colorbars: bool = False,
     background_color: Optional[str] = None,
     fixations_b: Optional[pd.DataFrame] = None,
     words_b: Optional[pd.DataFrame] = None,
@@ -1357,6 +1429,13 @@ def make_scanpath_animation(
     ``words`` (scanpath A), so the overlay is meaningful for two readings of the
     same text. With one scanpath the behaviour matches the classic single replay
     (order numbers honour ``order_font_color``, no legend).
+
+    The single replay honours the same fixation-colouring options as
+    :func:`make_scanpath_figure`: ``color_by`` (numeric → ``fixation_colorscale``
+    pinned to the whole trial's range so colours stay stable as the trail grows,
+    categorical → discrete palette + legend), ``color_by_line``, and an optional
+    colorbar. The dual overlay ignores them — there the flat A/B colours are
+    what tells the two readings apart.
     """
     fig = go.Figure()
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
@@ -1404,6 +1483,73 @@ def make_scanpath_animation(
         # `fixations_b`, so the trail never silently renders in the B colour.
         specs[0]["color"] = COMPARISON_PALETTE[0]
 
+    # Metric colouring, mirroring the static figure's fixation trace. Single
+    # replay only: the dual overlay keeps its flat A/B colours (they're what
+    # tells the readings apart). Numeric metrics map through
+    # `fixation_colorscale` with cmin/cmax pinned to the WHOLE trial (or the
+    # caller's range) up front — otherwise the scale would renormalise to the
+    # partial trail on every frame and colours would drift during playback.
+    for s in specs:
+        s["marker_colors"] = None
+        s["marker_extra"] = {}
+    category_legend: list = []
+    color_label = color_by or ""
+    if not dual and specs and (color_by or color_by_line):
+        ordered0 = specs[0]["ordered"]
+        if color_by_line and not words.empty:
+            from .measures import assign_fixation_lines
+
+            line_ids = assign_fixation_lines(ordered0, words)
+            color_data = line_ids.map(
+                lambda v: f"Line {int(v) + 1}" if pd.notna(v) else "(off-text)"
+            )
+            color_label = "line"
+            is_numeric_color = False
+        else:
+            color_data = ordered0[color_by] if color_by in ordered0.columns else None
+            is_numeric_color = color_data is not None and pd.api.types.is_numeric_dtype(
+                color_data
+            )
+        if color_data is not None:
+            marker_color, category_legend = _resolve_marker_colors(
+                color_data, is_numeric_color
+            )
+            specs[0]["marker_colors"] = list(marker_color)
+            if is_numeric_color:
+                rng = fixation_color_range or (
+                    float(color_data.min()),
+                    float(color_data.max()),
+                )
+                specs[0]["marker_extra"] = dict(
+                    colorscale=fixation_colorscale,
+                    cmin=rng[0],
+                    cmax=rng[1],
+                    showscale=show_colorbars,
+                    colorbar=dict(
+                        title=color_label.replace("_", " ").title(),
+                        x=1.12,
+                        lenmode="fraction",
+                        len=COLORBAR_LEN_FRACTION,
+                        y=0.5,
+                        yanchor="middle",
+                    )
+                    if show_colorbars
+                    else None,
+                )
+
+    def _trail_marker(s, sizes, kk):
+        """Marker dict for the first ``kk`` fixations of a trail (base + frames).
+
+        Frames replace the whole marker object, so every frame restates the
+        colorscale/cmin/cmax/colorbar — not just the sliced colour values."""
+        colors = s["marker_colors"]
+        return dict(
+            size=sizes,
+            color=colors[:kk] if colors is not None else s["color"],
+            line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
+            **s["marker_extra"],
+        )
+
     # Base traces, with stable indices the frames update by position.
     for s in specs:
         ordered = s["ordered"]
@@ -1419,11 +1565,7 @@ def make_scanpath_animation(
                 x=[ordered["x"].iloc[0]],
                 y=[ordered["y"].iloc[0]],
                 mode=marker_mode,
-                marker=dict(
-                    size=[first_size],
-                    color=s["color"],
-                    line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
-                ),
+                marker=_trail_marker(s, [first_size], 1),
                 text=["1"] if show_order else None,
                 textfont=dict(
                     color=s["text_color"],
@@ -1473,6 +1615,39 @@ def make_scanpath_animation(
             )
         )
 
+    # Categorical colour legend (single replay), as in the static figure. These
+    # dummy traces sit AFTER the per-scanpath traces so the frame indices
+    # recorded above stay valid; frames never touch them.
+    legend_limit = len(_QUALITATIVE_PALETTE)
+    for category, color in category_legend[:legend_limit]:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(
+                    size=10,
+                    color=color,
+                    line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
+                ),
+                name=f"{color_label}: {category}",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+    if len(category_legend) > legend_limit:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(size=10, color="#cccccc"),
+                name=f"… +{len(category_legend) - legend_limit} more",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
     onset_times, _frame_durations, avg_frame_duration, _span = _anim_timeline(
         specs, playback_speed
     )
@@ -1497,11 +1672,7 @@ def make_scanpath_animation(
                     x=xs,
                     y=ys,
                     mode=marker_mode,
-                    marker=dict(
-                        size=szs,
-                        color=s["color"],
-                        line=dict(color=FIX_MARKER_OUTLINE, width=0.5),
-                    ),
+                    marker=_trail_marker(s, szs, kk),
                     text=[str(j + 1) for j in range(kk)] if show_order else None,
                     textfont=dict(
                         color=s["text_color"],
@@ -1599,7 +1770,7 @@ def make_scanpath_animation(
         sliders=sliders,
         updatemenus=updatemenus,
     )
-    if dual:
+    if dual or category_legend:
         layout["legend"] = dict(
             orientation="h",
             yanchor="top",

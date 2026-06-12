@@ -41,17 +41,35 @@ def _render_parser() -> argparse.ArgumentParser:
             "(`plotly_get_chrome -y`)."
         ),
     )
-    src = parser.add_argument_group("input (bundled sample, or words + fixations)")
+    src = parser.add_argument_group(
+        "input (bundled sample, or words and/or fixations)"
+    )
     src.add_argument(
         "--sample",
         action="store_true",
         help="Use the bundled 3-participant OneStop demo data.",
     )
     src.add_argument(
-        "--words", metavar="PATH", help="Words/IA table (csv/parquet/feather)."
+        "--words",
+        metavar="PATH",
+        nargs="+",
+        help="Words/IA table(s) (csv/tsv/parquet/feather). Multiple paths or a "
+        "quoted glob pattern concatenate multi-file datasets.",
     )
     src.add_argument(
-        "--fixations", metavar="PATH", help="Fixations table (csv/parquet/feather)."
+        "--fixations",
+        metavar="PATH",
+        nargs="+",
+        help="Fixations table(s) (csv/tsv/parquet/feather). Multiple paths or "
+        "a quoted glob pattern concatenate multi-file datasets (e.g. one file "
+        "per participant).",
+    )
+    src.add_argument(
+        "--potec",
+        metavar="DIR",
+        help="Load the PoTeC corpus (DiLi-Lab/PoTeC) from DIR, downloading "
+        "the needed files (~45 MB) on first use. Participants are reader ids "
+        "(0–105), trials are text ids (b0–b5, p0–p5).",
     )
 
     parser.add_argument(
@@ -175,10 +193,12 @@ def render(argv: List[str]) -> None:
     args = _render_parser().parse_args(argv)
     # Validate everything derivable from argv before the (possibly minutes-long
     # on full corpora) data load.
-    if args.sample == bool(args.words or args.fixations):
-        raise SystemExit("Provide either --sample or both --words and --fixations.")
-    if not args.sample and not (args.words and args.fixations):
-        raise SystemExit("Both --words and --fixations are required.")
+    if sum([args.sample, bool(args.words or args.fixations), bool(args.potec)]) != 1:
+        raise SystemExit(
+            "Provide exactly one input: --sample, --potec DIR, or your own "
+            "tables (--words and/or --fixations; one of them is enough for "
+            "single-report datasets)."
+        )
     if not args.list_trials and not args.output:
         raise SystemExit("Missing -o/--output (or use --list-trials).")
     canvas = _parse_canvas(args.canvas)
@@ -194,6 +214,22 @@ def render(argv: List[str]) -> None:
     if args.sample:
         words, fixations = api.load_sample_data()
         canvas = canvas or (2560, 1440)  # OneStop monitor
+    elif args.potec:
+        from .datasets import load_potec
+
+        try:
+            words, fixations = load_potec(
+                args.potec,
+                # Narrow the 900-file load when the trial (= text id) is
+                # known; reader ids always need the full reader list for
+                # --list-trials so only narrow with an explicit -p.
+                readers=[args.participant] if args.participant else None,
+                texts=[args.trial] if args.trial else None,
+                download=True,
+            )
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            raise SystemExit(str(exc))
+        canvas = canvas or (1680, 1050)  # PoTeC monitor (DELL P2210)
     else:
         words, fixations = api.load_scanpath_data(args.words, args.fixations)
 

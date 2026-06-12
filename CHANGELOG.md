@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **PoTeC loader.** `sps.load_potec(root, download=True)` /
+  `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
+  — its filename-encoded ids and separate character-AoI coordinates can't go
+  through the generic upload flow. An in-app **Public datasets** source (with
+  a dataset registry built for more corpora) ships feature-flagged off
+  (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
+  release.
+
+## [0.18.0] - 2026-06-11
+
+### Added
+- **Flexible dataset support.** Load multi-file datasets (several files, a list,
+  or a glob — concatenated with a `source_file` tag), single-report datasets
+  (words-only or fixations-only), stimulus-level word boxes (broadcast across
+  participants), and AOI-sequence fixations (placed at word/character-box
+  centers). TSV inputs are now read directly. The upload panel takes several
+  files per table, and either table alone.
+- **First-visit tutorial.** A welcome dialog walks through the app's main
+  surfaces on first entry (suppressed for embeds and deep links); replay it
+  anytime via **🎓 Show tutorial** at the bottom of the sidebar.
+
+### Changed
+- **Raw data is shown while the column mapping is incomplete.** A missing
+  required column no longer halts the whole app — the uploaded tables render in
+  the Raw Data tab so you can see the columns and finish the mapping.
+- **About popover in the header.** The LaCC Lab / Code pill links are replaced
+  by a single ℹ️ About toggle with credits, the code link, citation guidance,
+  and more from the lab.
+
+### Fixed
+- The animated scanpath now honours the fixation colour options (Color
+  fixations by / by line, colorscale, colour range, colour bar) like the static
+  plot; previously they only affected the image. Colours are pinned to the full
+  trial's range so they stay stable during playback. Dual-overlay replays keep
+  the flat A/B colours.
+
 ## [0.17.0] - 2026-06-11
 
 ### Added
