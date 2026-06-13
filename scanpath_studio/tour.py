@@ -295,11 +295,14 @@ def _exit_spotlight() -> None:
 def render_spotlight_tour() -> None:
     """Floating tour card + pulsing highlight for the current spotlight step.
 
-    Call at the very end of ``main()`` (after the replay button, so a replay
-    click activates the tour within the same run). Runs as a fragment:
-    Back/Next/Exit rerun only this function, so the highlight moves instantly
-    and Exit makes the card + CSS vanish without a full-app rerun (the
-    fragment then renders nothing, which clears its previous elements).
+    Call early in ``main()``, right after ``maybe_show_welcome_tour()``, so
+    the card streams to the browser before the heavy data/plot work instead
+    of seconds after the page opens. Replay clicks still activate it within
+    the same run because the button arms the tour in its ``on_click``
+    callback (``_arm_tour``), which runs before the rerun starts. Runs as a
+    fragment: Back/Next/Exit rerun only this function, so the highlight moves
+    instantly and Exit makes the card + CSS vanish without a full-app rerun
+    (the fragment then renders nothing, which clears its previous elements).
     """
     if st.session_state.get("tour_mode") != "spotlight":
         return
@@ -517,14 +520,36 @@ def _start_tour() -> None:
         _tour_dialog()
 
 
+def _arm_tour() -> None:
+    """``on_click`` callback for the replay button: arm the tour from step 0.
+
+    Callbacks run *before* the rerun, so the tour's render call early in
+    ``main()`` — which executes long before the sidebar button — picks the
+    request up within the same run. Dialogs can't be opened from callbacks,
+    so the dialog style sets a request flag that ``maybe_show_welcome_tour``
+    (the early call site) serves.
+    """
+    st.session_state["tour_step"] = 0
+    if TOUR_STYLE == "spotlight":
+        st.session_state["tour_mode"] = "spotlight"
+    else:
+        st.session_state["_tour_dialog_requested"] = True
+
+
 def maybe_show_welcome_tour() -> None:
     """Start the welcome tour once per session, unless this is an embed/deep link.
 
     Call from ``main()`` after the URL presets are read (the suppression
-    checks look at ``st.query_params``). The dialog style opens immediately
-    and overlays whatever renders after it; the spotlight style just arms
-    ``tour_mode`` for ``render_spotlight_tour()`` at the end of ``main()``.
+    checks look at ``st.query_params``) but BEFORE the heavy data/plot work,
+    immediately followed by ``render_spotlight_tour()`` — Streamlit streams
+    elements in run order, so anything rendered after the data load appears
+    seconds late. The dialog style opens here and overlays whatever renders
+    after it; the spotlight style just arms ``tour_mode``.
     """
+    if st.session_state.pop("_tour_dialog_requested", False):
+        # Replay request from the sidebar button's on_click callback.
+        _tour_dialog()
+        return
     if st.session_state.get("tour_seen"):
         return
     if tour_suppressed(st.query_params):
@@ -535,10 +560,10 @@ def maybe_show_welcome_tour() -> None:
 
 def render_tour_replay_button() -> None:
     """Sidebar button that replays the tour from the first step."""
-    if st.sidebar.button(
+    st.sidebar.button(
         "🎓 Show tutorial",
         key="tour_replay",
         width="stretch",
         help="Replay the quick intro tour.",
-    ):
-        _start_tour()
+        on_click=_arm_tour,
+    )

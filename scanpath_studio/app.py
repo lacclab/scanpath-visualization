@@ -1321,9 +1321,13 @@ def main() -> None:
     elif url_source == "upload":
         st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
 
-    # First-visit welcome tour (modal). After the URL presets, so embeds and
-    # deep-linked sessions can suppress it; data keeps loading behind it.
+    # First-visit welcome tour. After the URL presets, so embeds and
+    # deep-linked sessions can suppress it — but BEFORE the heavy data/plot
+    # work, so the welcome streams to the browser immediately instead of
+    # after the full first render. Replay clicks arm the tour in the button's
+    # on_click callback, which runs before this point in the rerun.
     maybe_show_welcome_tour()
+    render_spotlight_tour()
 
     # Data source selection (sidebar)
     _sidebar_group("📂 Data")
@@ -1560,11 +1564,10 @@ def main() -> None:
             font_family=font_family,
         )
 
-    # Sidebar Help group (bottom): replay the welcome tour. The spotlight
-    # tour renders last so a replay click activates it within the same run.
+    # Sidebar Help group (bottom): replay the welcome tour (the tour itself
+    # renders early in this function — see the maybe_show_welcome_tour call).
     _sidebar_group("❓ Help")
     render_tour_replay_button()
-    render_spotlight_tour()
 
 
 if __name__ == "__main__":
