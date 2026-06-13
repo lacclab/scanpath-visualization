@@ -42,6 +42,11 @@ dependencies = [
 test = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+    # Parallelize the AppTest-heavy suite (`pytest -n auto`).
+    "pytest-xdist>=3.0.0",
+    # Registers the `@pytest.mark.timeout` marker the AppTest tests rely on;
+    # required for collection under `--strict-markers`.
+    "pytest-timeout>=2.1.0",
 ]
 
 [project.urls]

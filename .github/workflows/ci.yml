@@ -32,7 +32,10 @@ jobs:
           pip install -e ".[test]"
 
       - name: Run pytest
-        run: pytest -q
+        # -n auto fans the suite across the runner's cores; the Streamlit
+        # AppTest integration tests are CPU-bound app boots and dominate the
+        # runtime, so this is a ~3x wall-clock win.
+        run: pytest -q -n auto
 
   lint:
     name: Lint
