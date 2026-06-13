@@ -8,34 +8,45 @@ streamlit_testing = pytest.importorskip("streamlit.testing.v1")
 AppTest = streamlit_testing.AppTest
 
 
-def _make_apptest() -> "AppTest":
-    return AppTest.from_file("streamlit_app.py")
+SYNTHETIC_SOURCE = "Synthetic test trial"
+
+
+def _make_apptest(*, synthetic: bool = False) -> "AppTest":
+    """Build an AppTest for the app.
+
+    Booting the bundled demo renders every tab over a large dataset (~5s).
+    ``synthetic=True`` pre-seeds the "Synthetic test trial" source *before* the
+    first ``run()``, so the app boots straight into the tiny synthetic trial
+    (6 words / 9 fixations) — the same surfaces render ~10x faster and there's
+    no throwaway demo render. Use it for tests that don't assert on the demo's
+    specific richness; a few launch/multi-trial tests stay on the demo as the
+    real-default-experience guardrails.
+    """
+    at = AppTest.from_file("streamlit_app.py")
+    if synthetic:
+        at.session_state["data_source_choice"] = SYNTHETIC_SOURCE
+    return at
 
 
 @pytest.mark.timeout(60)
 class TestAppLaunches:
     def test_app_launches_with_bundled_demo(self):
+        # The bundled demo must boot the full five-tab UI cleanly: no Python
+        # exceptions and no st.error surfaced on the default render.
         at = _make_apptest()
         at.run(timeout=30)
-        # The five-tab UI should render without exceptions
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
 
     def test_title_present(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         titles = [t.value for t in at.title]
         assert any("Scanpath Studio" in v for v in titles)
 
-    def test_no_streamlit_errors(self):
-        at = _make_apptest()
-        at.run(timeout=30)
-        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
-
     def test_synthetic_data_source_renders(self):
         # The "Synthetic test trial" source should load + render without error.
-        at = _make_apptest()
-        at.run(timeout=30)
-        at.session_state["data_source_choice"] = "Synthetic test trial"
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
@@ -43,8 +54,7 @@ class TestAppLaunches:
     def test_multiple_comparison_tab_renders(self):
         # Exercise the Multiple Comparison tab: change the grid columns and
         # bump the regenerate nonce, then confirm no exceptions / errors.
-        at = _make_apptest()
-        at.run(timeout=30)
+        at = _make_apptest(synthetic=True)
         at.session_state["multi_n_cols"] = 2
         at.session_state["multi_nonce"] = 1
         at.run(timeout=30)
@@ -54,8 +64,7 @@ class TestAppLaunches:
     def test_multiple_comparison_fixation_range(self):
         # Narrow the fixation-index window and confirm the slice path (figures +
         # snapshot table + convergence plots) rebuilds without exceptions.
-        at = _make_apptest()
-        at.run(timeout=30)
+        at = _make_apptest(synthetic=True)
         at.session_state["multi_fix_range"] = (3, 10)
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -64,9 +73,8 @@ class TestAppLaunches:
     def test_multiple_comparison_range_clamped_when_max_shrinks(self):
         # A persisted fixation window must not crash when max_fix shrinks (e.g.
         # a much shorter trial / fewer models): the stored value is clamped.
-        at = _make_apptest()
-        at.run(timeout=30)
-        # A deliberately huge window; clamp must pull it into range on rerun.
+        # A deliberately huge window; clamp must pull it into range on boot.
+        at = _make_apptest(synthetic=True)
         at.session_state["multi_fix_range"] = (900, 1000)
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -76,7 +84,7 @@ class TestAppLaunches:
         # The animated-scanpath export selector offers HTML/GIF/MP4; selecting a
         # rasterized format must render its options + Render button without
         # crashing (and without triggering the expensive Kaleido render).
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         fmt_radios = [r for r in at.radio if list(r.options) == ["HTML", "GIF", "MP4"]]
         assert fmt_radios, "animation export-format radio not found"
@@ -91,10 +99,7 @@ class TestAppLaunches:
         # accepts it, but the browser slider throws `RangeError: min (0) is
         # equal/bigger than max (0)` and the tab dies. The picker must render
         # the lone value as static text instead of a slider.
-        at = _make_apptest()
-        at.run(timeout=30)
-        at.session_state["data_source_choice"] = "Synthetic test trial"
-        at.run(timeout=30)
+        at = _make_apptest(synthetic=True)
         at.session_state["single_select_trial_mode"] = "Participant"
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -108,10 +113,7 @@ class TestAppLaunches:
     def test_single_trial_all_selection_modes(self):
         # Trial / Text / Participant must all resolve the lone synthetic trial.
         for mode in ["Trial", "Text", "Participant"]:
-            at = _make_apptest()
-            at.run(timeout=30)
-            at.session_state["data_source_choice"] = "Synthetic test trial"
-            at.run(timeout=30)
+            at = _make_apptest(synthetic=True)
             at.session_state["single_select_trial_mode"] = mode
             at.run(timeout=30)
             assert not at.exception, f"{mode}: {at.exception}"
@@ -134,9 +136,8 @@ class TestAppLaunches:
 
     def test_new_viz_toggles_build_without_error(self):
         # Flip the new plot options (color-by-line, out-of-text, gray
-        # background) and re-run the whole app to exercise those code paths.
-        at = _make_apptest()
-        at.run(timeout=30)
+        # background) and confirm those code paths build without error.
+        at = _make_apptest(synthetic=True)
         at.session_state["global_color_by_line"] = True
         at.session_state["global_highlight_out_of_text"] = True
         at.session_state["global_bg_choice"] = "Gray"
@@ -222,7 +223,7 @@ class TestUnmappedRawDataView:
         from scanpath_studio import app
 
         monkeypatch.delenv("SCANPATH_PUBLIC_DATASETS", raising=False)
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         source_radio = [r for r in at.radio if r.key == "data_source_choice"]
         assert source_radio, "data source radio not found"
@@ -463,7 +464,7 @@ class TestWelcomeTour:
         monkeypatch.setattr(tour, "TOUR_STYLE", "dialog")
 
     def test_tour_opens_on_first_run_only(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         assert at.session_state["tour_seen"] is True
         assert "tour_next" in self._tour_buttons(at)
@@ -473,7 +474,7 @@ class TestWelcomeTour:
         assert "tour_next" not in self._tour_buttons(at)
 
     def test_tour_next_advances_step(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         at.button(key="tour_next").click()
         at.run(timeout=30)
@@ -495,7 +496,7 @@ class TestWelcomeTour:
         assert not tour_suppressed({"embed": "false"})
 
     def test_tour_replay_button_reopens(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)  # first run: auto-open, marks tour_seen
         at.run(timeout=30)  # second run: dialog gone
         at.session_state["tour_step"] = 3
@@ -516,7 +517,7 @@ class TestSpotlightTour:
         return {b.key for b in at.button if b.key and b.key.startswith("tour_sp_")}
 
     def test_spotlight_arms_on_first_run(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         assert at.session_state["tour_seen"] is True
         assert at.session_state["tour_mode"] == "spotlight"
@@ -530,7 +531,7 @@ class TestSpotlightTour:
     def test_spotlight_navigates_and_exits(self):
         from scanpath_studio.tour import _SPOTLIGHT_STEPS
 
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         at.button(key="tour_sp_next").click()
         at.run(timeout=30)
@@ -554,7 +555,7 @@ class TestSpotlightTour:
     def test_spotlight_done_on_last_step(self):
         from scanpath_studio.tour import _SPOTLIGHT_STEPS
 
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         at.session_state["tour_step"] = len(_SPOTLIGHT_STEPS) - 1
         at.run(timeout=30)
@@ -565,7 +566,7 @@ class TestSpotlightTour:
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
 
     def test_spotlight_replay(self):
-        at = _make_apptest()
+        at = _make_apptest(synthetic=True)
         at.run(timeout=30)
         at.button(key="tour_sp_exit").click()
         at.run(timeout=30)

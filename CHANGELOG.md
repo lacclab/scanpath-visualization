@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaving it on screen for the ~10 s full-app rerun.
 
 ### CI
+- **Leaner AppTest suite.** Data-independent integration tests now boot the tiny
+  synthetic trial instead of the bundled demo (~10x cheaper per boot, in a
+  single run), cutting the AppTest file ~4x. The bundled-demo render still gets
+  guardrail coverage.
 - **Parallel test runs.** `pytest -n auto` (via `pytest-xdist`) fans the suite
   across the runner's cores, roughly cutting the AppTest-dominated wall-clock to
   a third.
