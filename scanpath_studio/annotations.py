@@ -22,10 +22,8 @@ ANNOTATIONS_STATE_KEY = "trial_annotations"
 SCHEMA_VERSION = 1
 
 # Per-trial annotation widgets use this prefix so they can be cleared on import
-# (forcing a re-seed from the freshly loaded store). Kept distinct from the
-# sidebar control keys ("anno_download" / "anno_upload").
+# (forcing a re-seed from the freshly loaded store), e.g. by `restore_records`.
 _WIDGET_PREFIX = "annotrial_"
-_LAST_IMPORT_KEY = "_anno_last_import"
 
 # Always-available tag suggestions (users can add their own on top).
 PRESET_TAGS = ["To exclude", "Review", "Good example", "Check alignment"]
@@ -155,6 +153,24 @@ def annotated_count() -> int:
     return len(_store())
 
 
+def current_records() -> List[dict]:
+    """All annotations as a flat record list — for embedding in a saved config."""
+    return store_to_records(_store())
+
+
+def restore_records(records: List[dict]) -> int:
+    """Replace the session annotation store from a record list (e.g. a restored
+    config) and clear the per-trial widget state so editors re-seed. Returns the
+    number of annotations loaded."""
+    store = records_to_store(records or [])
+    st.session_state[ANNOTATIONS_STATE_KEY] = store
+    for key in [
+        k for k in list(st.session_state.keys()) if k.startswith(_WIDGET_PREFIX)
+    ]:
+        del st.session_state[key]
+    return len(store)
+
+
 # ---------------------------------------------------------------------------
 # UI render helpers
 # ---------------------------------------------------------------------------
@@ -225,54 +241,6 @@ def render_trial_annotations(participant_id: str, trial_id: str) -> None:
             "Saved for this session. Use the sidebar **Annotations** panel to "
             "download a JSON copy or restore one."
         )
-
-
-def render_annotations_sidebar() -> None:
-    """Render the sidebar Annotations panel: count + JSON download/restore."""
-    # Keyed wrapper → stable `.st-key-…` selector for the spotlight tour.
-    panel = st.sidebar.container(key="tour_grp_annotations").expander(
-        "Save & restore (JSON)", expanded=False
-    )
-    count = annotated_count()
-    panel.caption(
-        f"{count} trial(s) annotated this session."
-        if count
-        else "No annotations yet — star, tag, or note trials in the Interactive Plot tab."
-    )
-    panel.download_button(
-        "⬇ Download annotations (JSON)",
-        data=serialize(_store()),
-        file_name="scanpath_annotations.json",
-        mime="application/json",
-        disabled=(count == 0),
-        key="anno_download",
-        help="A portable sidecar of all stars / tags / notes from this session.",
-    )
-    uploaded = panel.file_uploader(
-        "Restore annotations (JSON)",
-        type=["json"],
-        key="anno_upload",
-        help="Re-load a previously downloaded annotations file. Replaces the current set.",
-    )
-    if uploaded is not None:
-        signature = (uploaded.name, uploaded.size)
-        if st.session_state.get(_LAST_IMPORT_KEY) != signature:
-            try:
-                store = deserialize(uploaded.getvalue().decode("utf-8"))
-            except Exception as exc:  # malformed file
-                panel.error(f"Could not load annotations: {exc}")
-            else:
-                st.session_state[ANNOTATIONS_STATE_KEY] = store
-                st.session_state[_LAST_IMPORT_KEY] = signature
-                # Drop per-trial widget state so it re-seeds from the new store.
-                for key in [
-                    k
-                    for k in list(st.session_state.keys())
-                    if k.startswith(_WIDGET_PREFIX)
-                ]:
-                    del st.session_state[key]
-                panel.success(f"Loaded {len(store)} annotation(s).")
-                st.rerun()
 
 
 def select_keys(

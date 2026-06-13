@@ -12,14 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Settings → Appearance**, or follows your OS). The scanpath plot stays light
   in both themes, so it always reproduces the experiment's stimulus faithfully.
 - **Raw-gaze-only datasets.** Upload just a raw-gaze table (no words or
-  fixations) and visualize the gaze trace — the Interactive Plot draws the
-  time-coloured gaze scatter, the trial picker and Data Statistics work off the
-  raw gaze, and the fixation-centric tabs (Animation, Multiple Comparison) show a
+  fixations) and visualize the gaze trace — the Scanpath Visualization tab draws
+  the time-coloured gaze scatter, the trial picker and Data Statistics work off
+  the raw gaze, and the fixation-only views (animation, Generations) show a
   "needs a fixations table" note.
-- **Upload a plot config to restore it.** The sidebar *Plot configuration* panel
-  (now grouped under 🎨 Visualization) gains a JSON uploader that re-applies a
-  previously downloaded config — layers, coloring, sizing, canvas, axes, and the
-  trial selection — silently skipping anything that doesn't fit the loaded data.
+- **Upload a config to restore it.** The sidebar *💾 Save & restore* panel gains a
+  JSON uploader that re-applies a previously downloaded config — layers, coloring,
+  sizing, text/highlighting, canvas, axes, trial selection, and annotations —
+  silently skipping anything that doesn't fit the loaded data.
 - **PoTeC loader.** `sps.load_potec(root, download=True)` /
   `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
   — its filename-encoded ids and separate character-AoI coordinates can't go
@@ -29,6 +29,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release.
 
 ### Changed
+- **Reorganized layout & usability pass.** The **Animated Scanpath** tab folds
+  into the main tab (now **Scanpath Visualization**) as an **Animate** checkbox;
+  bulk export moves to its own **Bulk Export** tab (with an *export the whole
+  dataset* option); **Multiple Comparison** is renamed **Generations (WIP)**.
+  In the side panel: a **Trial Info** header (showing the compared trial's info
+  too), the trial selectors below it, annotations above a collapsible metadata
+  table, and an **Export** toggle. Participant-mode selection now offers trial
+  index / text / trial id. Defaults flip to **Fixation index off, saccade
+  arrows on**; "Color fixations by line" is now a `line` option in *Color
+  fixations by*; Text-highlighting and Heatmap-style options grey out when their
+  layer is off. The animation's playback speed, info box, and play / pause /
+  restart + scrub controls all move into one place (speed + info under the
+  Animate toggle, transport below the plot); default playback is now ×4. The
+  monitor/font controls (renamed **Experimental Setup**) move under 📂 Data.
+- **Plot configuration + Annotations merged into 💾 Save & restore.** One sidebar
+  panel saves the full figure configuration, all annotations, **and** the data
+  source + column mapping + app version to a single JSON file (and restores the
+  settings + annotations) — capturing more state than before (text sizing,
+  highlighting, background).
+
+### Fixed
+- **Animated scanpath text is now true-to-scale.** Its transport controls used
+  to shrink the equal-aspect plot, leaving the word labels oversized relative to
+  the boxes; the figure now reserves the control space without shrinking the
+  plot, so the animation matches the static view exactly.
 - **The tutorial is now a guided spotlight tour.** The welcome opens centered
   like a modal over a closed sidebar — appearing as soon as the page opens,
   not after the first full render; the following steps open the sidebar and

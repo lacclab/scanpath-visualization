@@ -55,11 +55,11 @@ The app is organized into five tabs:
 
 | Tab | What's there |
 |-----|--------------|
-| **Interactive Plot** | The layered scanpath, trial picker, metadata, and two-trial comparison. |
-| **Animated Scanpath** | Frame-by-frame replay in real reading time; export HTML / GIF / MP4. |
-| **Multiple Comparison** | A real scanpath vs. several model-generated ones over the same text, scored by similarity *(model outputs are reproducible placeholders for now)*. |
+| **Scanpath Visualization** | The layered scanpath with the trial picker, metadata, and two-trial comparison. Tick **Animate** to replay it frame by frame (export HTML / GIF / MP4). |
+| **Generations (WIP)** | A real scanpath vs. several model-generated ones over the same text, scored by similarity *(model outputs are reproducible placeholders for now)*. |
 | **Raw Data** | Paginated word / fixation / raw-gaze tables, each with CSV + Parquet download. |
 | **Data Statistics** | Summary stats (fixation duration, saccade amplitude, regression rate, …) and per-word / distribution plots. |
+| **Bulk Export** | One zip of per-trial figures, plot settings, and tabular data across the filtered trials — or the whole dataset. |
 
 ![The Scanpath Studio app](https://raw.githubusercontent.com/lacclab/scanpath-studio/main/assets/app_screenshot.png)
 

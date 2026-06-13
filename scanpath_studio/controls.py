@@ -26,9 +26,9 @@ _VIZ_WIDGET_DEFAULTS = {
     "global_show_words": True,
     "global_show_labels": True,
     "global_show_fix": True,
-    "global_show_order": True,
+    "global_show_order": False,
     "global_show_saccades": True,
-    "global_show_saccade_arrows": False,
+    "global_show_saccade_arrows": True,
     "global_show_heatmap": True,
     "global_show_raw_gaze": False,
     "global_heatmap_style": "Word boxes",
@@ -37,6 +37,11 @@ _VIZ_WIDGET_DEFAULTS = {
     "global_order_font_color": "#111111",
     "global_fixation_colorscale": DEFAULT_FIXATION_COLORSCALE,
     "global_heatmap_colorscale": DEFAULT_HEATMAP_COLORSCALE,
+    # Restorable by the Save & restore config too, so seed here (no inline
+    # value=/index=) to avoid Streamlit's "default value but also set via
+    # Session State API" warning when a restore pre-sets them.
+    "global_critical_span_style": "Mark text",
+    "global_highlight_out_of_text": False,
 }
 
 
@@ -437,7 +442,11 @@ def color_field_options(trial_fixations: pd.DataFrame) -> List[str]:
         "ptb_pos",
     ]
     fields = [f for f in preferred_color_fields if f in trial_fixations.columns]
-    return fields or ["duration_ms"]
+    fields = fields or ["duration_ms"]
+    # "line" is a synthetic option (not a real column): colour each fixation by
+    # the text line it lands on, lines inferred from word geometry. Folded in
+    # from the former standalone "Color fixations by line" checkbox.
+    return fields + ["line"]
 
 
 def numeric_field_options(trial_fixations: pd.DataFrame) -> List[str]:
@@ -492,29 +501,11 @@ def sidebar_controls(
     viz = st.sidebar.container(key="tour_grp_viz_controls").expander(
         "Visualization controls", expanded=True
     )
-    show_words = viz.checkbox("Bounding boxes", key="global_show_words")
-    show_labels = viz.checkbox("Text", key="global_show_labels")
-    show_fix = viz.checkbox("Fixations", key="global_show_fix")
-    show_order = viz.checkbox("Fixation index", key="global_show_order")
-    show_saccades = viz.checkbox("Saccades", key="global_show_saccades")
-    show_saccade_arrows = viz.checkbox(
-        "Saccade direction arrows",
-        key="global_show_saccade_arrows",
-        help="Draw an arrowhead on each saccade pointing in the gaze direction.",
-    )
-    show_heatmap = viz.checkbox("Heatmap", key="global_show_heatmap")
-    heatmap_style = viz.radio(
-        "Heatmap style",
-        options=["Word boxes", "Interpolated"],
-        horizontal=True,
-        key="global_heatmap_style",
-        help=(
-            "Word boxes: tint each word box by fixation count / duration. "
-            "Interpolated: a smooth Gaussian density over the fixations "
-            "themselves, independent of the word boxes (classic eye-movement "
-            "heatmap)."
-        ),
-    )
+    # Layer toggles, ordered raw-gaze → fixations → saccades → text → boxes →
+    # heatmap. Each dependent option (Text highlighting, Heatmap style) renders
+    # right after its parent toggle and greys out (`disabled=`) when the parent
+    # is off. "Color fixations by line" is now an option inside the "Color
+    # fixations by" selector below, not a separate checkbox.
     show_raw_gaze = viz.checkbox(
         "Raw gaze data",
         help="Display millisecond-level gaze positions as small dots. "
@@ -522,40 +513,57 @@ def sidebar_controls(
         disabled=not has_raw_gaze,
         key="global_show_raw_gaze",
     )
-    critical_span_style = viz.radio(
-        "Text Highlighting",
-        options=["Mark text", "Mark border", "None"],
-        index=0,
-        horizontal=True,
-        key="global_critical_span_style",
-        help=(
-            "Mark text: color the critical-span words in dark pink. "
-            "Mark border: draw a thin black outline around the span. "
-            "None: don't mark the critical span."
-        ),
-    )
-    color_by_line = viz.checkbox(
-        "Color fixations by line",
-        value=False,
-        key="global_color_by_line",
-        help=(
-            "Tint each fixation by the text line it lands on (lines inferred "
-            "from word positions). Overrides 'Color fixations by'."
-        ),
-    )
+    show_fix = viz.checkbox("Fixations", key="global_show_fix")
+    show_order = viz.checkbox("Fixation index", key="global_show_order")
     highlight_out_of_text = viz.checkbox(
         "Mark out-of-text fixations",
-        value=False,
         key="global_highlight_out_of_text",
         help="Draw a red ✕ on fixations that fall outside every word box.",
     )
+    show_saccades = viz.checkbox("Saccades", key="global_show_saccades")
+    show_saccade_arrows = viz.checkbox(
+        "Saccade direction arrows",
+        key="global_show_saccade_arrows",
+        help="Draw an arrowhead on each saccade pointing in the gaze direction.",
+    )
+    show_labels = viz.checkbox("Text", key="global_show_labels")
+    critical_span_style = viz.radio(
+        "Text highlighting",
+        options=["Mark text", "Mark border", "None"],
+        horizontal=True,
+        key="global_critical_span_style",
+        disabled=not show_labels,
+        help=(
+            "Mark text: color the critical-span words in dark pink. "
+            "Mark border: draw a thin black outline around the span. "
+            "None: don't mark the critical span. Needs Text to be on."
+        ),
+    )
+    show_words = viz.checkbox("Bounding boxes", key="global_show_words")
+    show_heatmap = viz.checkbox("Heatmap", key="global_show_heatmap")
+    heatmap_style = viz.radio(
+        "Heatmap style",
+        options=["Word boxes", "Interpolated"],
+        horizontal=True,
+        key="global_heatmap_style",
+        disabled=not show_heatmap,
+        help=(
+            "Word boxes: tint each word box by fixation count / duration. "
+            "Interpolated: a smooth Gaussian density over the fixations "
+            "themselves, independent of the word boxes (classic eye-movement "
+            "heatmap). Needs Heatmap to be on."
+        ),
+    )
 
     # Plot background. White by default; some analyses prefer a neutral gray.
+    # Seed via session_state (no inline index=) so a Save & restore config can
+    # pre-set it without the "default + session_state" warning.
     bg_options = list(BACKGROUND_PRESETS.keys()) + ["Custom…"]
+    _drop_stale("global_bg_choice", bg_options)
+    st.session_state.setdefault("global_bg_choice", bg_options[0])
     bg_choice = viz.selectbox(
         "Plot background",
         options=bg_options,
-        index=0,
         key="global_bg_choice",
         help="Background of the plotting area (and exported figures).",
     )
@@ -578,7 +586,12 @@ def sidebar_controls(
         "Color fixations by",
         options=color_fields,
         key="global_color_by",
+        help="Fixation marker colour. Pick a column, or 'line' to tint each "
+        "fixation by the text line it lands on.",
     )
+    # "line" routes through the dedicated by-line colouring in the plot builders
+    # (which guard against it being a missing column); see plots.make_*_figure.
+    color_by_line = color_by == "line"
     heatmap_metric = viz.selectbox(
         "Heatmap metric",
         options=["duration_ms", "counts"],
@@ -648,7 +661,11 @@ def sidebar_controls(
             key="global_heatmap_colorscale",
         )
         show_colorbars = st.checkbox("Color bars", key="global_show_colorbars")
-        if show_colorbars and pd.api.types.is_numeric_dtype(trial_fixations[color_by]):
+        if (
+            show_colorbars
+            and color_by in trial_fixations.columns
+            and pd.api.types.is_numeric_dtype(trial_fixations[color_by])
+        ):
             cmin = float(trial_fixations[color_by].min())
             cmax = float(trial_fixations[color_by].max())
             cmax_eff = cmax if cmax > cmin else cmin + 1.0

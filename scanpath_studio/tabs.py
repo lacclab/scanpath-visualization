@@ -153,80 +153,6 @@ def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def _default_second_trial(combos: pd.DataFrame, participant_a, trial_a):
-    """Pick a sensible default second scanpath: a DIFFERENT trial on the SAME
-    text as A, preferring A's own participant (a re-reading) and otherwise a
-    different participant. Returns (participant_b, trial_b, text_str, text_field)
-    or None when there's no same-text alternative.
-    """
-    para_field = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in combos.columns
-        else "paragraph_id"
-    )
-    if para_field not in combos.columns:
-        return None
-    a_rows = combos[
-        (combos["participant_id"] == participant_a)
-        & (combos["trial_id"].astype(str) == str(trial_a))
-    ]
-    if a_rows.empty or pd.isna(a_rows.iloc[0][para_field]):
-        return None
-    para = a_rows.iloc[0][para_field]
-    same_text = combos[combos[para_field] == para].drop_duplicates(
-        subset=["participant_id", "trial_id"]
-    )
-    # A different reading of the same text (exclude exactly A's trial).
-    cand = same_text[
-        ~(
-            (same_text["participant_id"] == participant_a)
-            & (same_text["trial_id"].astype(str) == str(trial_a))
-        )
-    ]
-    if cand.empty:
-        return None
-    same_pid = cand[cand["participant_id"] == participant_a].sort_values("trial_id")
-    pick = (
-        same_pid
-        if not same_pid.empty
-        else cand.sort_values(["participant_id", "trial_id"])
-    )
-    row = pick.iloc[0]
-    return row["participant_id"], row["trial_id"], str(para), para_field
-
-
-def _seed_anim_b_default(combos: pd.DataFrame, participant_a, trial_a) -> None:
-    """Seed the second-scanpath selector to `_default_second_trial` the first
-    time the overlay is shown for a given text. Re-seeds only when A's text
-    changes, so a manual second-scanpath choice isn't clobbered on every rerun.
-
-    Seeds via the selector's "Text" mode (text → participant → reading), which
-    is exactly the same-text-different-reader shape we want as the default.
-    """
-    default = _default_second_trial(combos, participant_a, trial_a)
-    seed_key = default[2] if default else f"__none__:{participant_a}:{trial_a}"
-    if st.session_state.get("_anim_b_seeded_text") == seed_key:
-        return
-    st.session_state["_anim_b_seeded_text"] = seed_key
-    if default is None:
-        return
-    pid_b, trial_b, para, para_field = default
-    st.session_state["anim_b_select_trial_mode"] = "Text"
-    st.session_state["anim_b_text_id"] = para
-    st.session_state["anim_b_participant_text"] = pid_b
-    readings = (
-        combos[
-            (combos[para_field].astype(str) == str(para))
-            & (combos["participant_id"] == pid_b)
-        ]
-        .drop_duplicates(subset=["trial_id"])
-        .sort_values("trial_id")["trial_id"]
-        .tolist()
-    )
-    if len(readings) > 1:
-        st.session_state["anim_b_reading_text"] = trial_b
-
-
 _MIME_FOR_FORMAT = {
     "PNG": "image/png",
     "SVG": "image/svg+xml",
@@ -254,43 +180,39 @@ def _render_save_plot_button(
     if fig is None:
         return
     file_stem = f"scanpath_{_safe_filename(slug)}"
-    cols = st.columns([1, 2])
-    with cols[0]:
-        fmt = st.radio(
-            "Download format",
-            # HTML is a browser-free fallback (no Kaleido/Chrome) — useful on
-            # Streamlit Cloud where static image export needs a Chromium binary.
-            options=["PNG", "SVG", "PDF", "HTML"],
-            index=0,
-            horizontal=True,
-            key=f"{key_prefix}_save_format",
-            help="PNG/SVG/PDF need a Chrome/Chromium browser (Kaleido). HTML "
-            "is interactive and needs no browser.",
-        )
+    # Stacked (not columned) so the controls fit the narrow side-panel "Export"
+    # toggle they now live in.
+    fmt = st.radio(
+        "Download format",
+        # HTML is a browser-free fallback (no Kaleido/Chrome) — useful on
+        # Streamlit Cloud where static image export needs a Chromium binary.
+        options=["PNG", "SVG", "PDF", "HTML"],
+        index=0,
+        horizontal=True,
+        key=f"{key_prefix}_save_format",
+        help="PNG/SVG/PDF need a Chrome/Chromium browser (Kaleido). HTML "
+        "is interactive and needs no browser.",
+    )
 
     # HTML: one-click download — no expensive render to defer.
     if fmt == "HTML":
-        with cols[1]:
-            html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode(
-                "utf-8"
-            )
-            st.download_button(
-                "⬇ Download HTML",
-                data=html_bytes,
-                file_name=f"{file_stem}.html",
-                mime=_MIME_FOR_FORMAT["HTML"],
-                key=f"{key_prefix}_save_button_html",
-            )
+        html_bytes = fig.to_html(include_plotlyjs="cdn", full_html=True).encode("utf-8")
+        st.download_button(
+            "⬇ Download HTML",
+            data=html_bytes,
+            file_name=f"{file_stem}.html",
+            mime=_MIME_FOR_FORMAT["HTML"],
+            key=f"{key_prefix}_save_button_html",
+        )
         return
 
     # PNG/SVG/PDF: render on click (Kaleido/Chrome), then reveal the download.
-    with cols[1]:
-        generate = st.button(
-            f"Render {fmt}",
-            key=f"{key_prefix}_save_generate",
-            help="Renders the image (needs Chrome/Kaleido); the download button "
-            "appears once it's ready.",
-        )
+    generate = st.button(
+        f"Render {fmt}",
+        key=f"{key_prefix}_save_generate",
+        help="Renders the image (needs Chrome/Kaleido); the download button "
+        "appears once it's ready.",
+    )
     if not generate:
         return
 
@@ -512,13 +434,23 @@ def _render_comparison_controls(
     selected_participant: str,
     selected_trial: str,
     selected_text: Optional[str],
+    animate: bool = False,
 ) -> tuple[Optional[str], Optional[str], str]:
-    """Render comparison toggle and trial selector, return (participant, trial, layout)."""
+    """Render comparison toggle and trial selector, return (participant, trial, layout).
+
+    When ``animate`` is on the layout is forced to "overlay" — an animated
+    comparison co-animates both scanpaths on one clock, so side-by-side /
+    stacked don't apply (TODO 1.17c) and the layout picker is hidden.
+    """
     compare_enabled = st.checkbox(
         "Compare with another trial",
         value=False,
         key="single_compare_toggle",
-        help="Overlay another trial's scanpath or view them side by side.",
+        help=(
+            "Co-animate a second reading on one clock."
+            if animate
+            else "Overlay another trial's scanpath or view them side by side."
+        ),
     )
 
     if not compare_enabled:
@@ -535,29 +467,39 @@ def _render_comparison_controls(
     option_labels = [opt[2] for opt in comparison_options]
     label_to_trial = {opt[2]: (opt[0], opt[1]) for opt in comparison_options}
 
-    col_trial, col_layout = st.columns([2, 1])
-    with col_trial:
+    if animate:
         selected_compare_label = st.selectbox(
             "Compare with trial",
             options=option_labels,
             key="single_compare_trial",
-            help="★ indicates same text as primary trial",
+            help="★ indicates same text as primary trial. Animated comparison "
+            "overlays both scanpaths on one shared clock.",
         )
-    with col_layout:
-        layout_label = st.radio(
-            "View",
-            options=["Overlay", "Side by side", "Stacked"],
-            index=0,
-            key="single_compare_layout",
-            horizontal=True,
-            help="Stacked = trials shown one above the other.",
-        )
-    layout_map = {
-        "Overlay": "overlay",
-        "Side by side": "side_by_side",
-        "Stacked": "stacked",
-    }
-    layout = layout_map.get(layout_label, "overlay")
+        layout = "overlay"
+    else:
+        col_trial, col_layout = st.columns([2, 1])
+        with col_trial:
+            selected_compare_label = st.selectbox(
+                "Compare with trial",
+                options=option_labels,
+                key="single_compare_trial",
+                help="★ indicates same text as primary trial",
+            )
+        with col_layout:
+            layout_label = st.radio(
+                "View",
+                options=["Overlay", "Side by side", "Stacked"],
+                index=0,
+                key="single_compare_layout",
+                horizontal=True,
+                help="Stacked = trials shown one above the other.",
+            )
+        layout_map = {
+            "Overlay": "overlay",
+            "Side by side": "side_by_side",
+            "Stacked": "stacked",
+        }
+        layout = layout_map.get(layout_label, "overlay")
 
     if selected_compare_label:
         participant, trial = label_to_trial[selected_compare_label]
@@ -892,76 +834,92 @@ def _render_metadata_selector(
         ]
         if field in metadata_candidates
     ]
-    # Field picker lives in the sidebar so the chips don't crowd the side panel;
-    # the table renders in the panel next to the plot.
-    with st.sidebar.expander("Trial metadata fields", expanded=False):
-        selected_metadata = st.multiselect(
-            "Fields to show",
-            options=metadata_candidates,
-            default=default_metadata or metadata_candidates,
-            key="trial_metadata_fields",
-        )
-
-    if compare is None:
-        summary = pd.DataFrame(_summary_rows(trial_words, trial_fixations))
-        metadata_df = (
-            _prefix_is_correct(
-                gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
-            )
-            if selected_metadata
-            else pd.DataFrame(columns=["Field", "Value"])
-        )
-        table = pd.concat([summary, metadata_df], ignore_index=True)
-        if not table.empty:
-            styled = table.style.apply(_style_metadata_row, axis=1)
-            st.dataframe(styled, hide_index=True, width="stretch")
-        return
-
-    # Comparison mode: one value column per trial, merged on Field.
-    label_a = compare["label_primary"]
-    label_b = compare["label_compare"]
-    # Summary rows share the same fields in the same order across both trials,
-    # so pair them up directly to keep the row order rather than outer-merging.
-    summary_b = {
-        r["Field"]: r["Value"]
-        for r in _summary_rows(compare["words"], compare["fixations"])
-    }
-    summary = pd.DataFrame(
-        [
-            {
-                "Field": r["Field"],
-                label_a: r["Value"],
-                label_b: summary_b.get(r["Field"], "—"),
-            }
-            for r in _summary_rows(trial_words, trial_fixations)
-        ]
+    # Field picker (key "trial_metadata_fields") is seeded once then read here,
+    # so the table can render above the picker that controls it (TODO 1.10).
+    # Prune stale selections (e.g. after a dataset switch) so the multiselect
+    # below never raises on an option it no longer offers.
+    st.session_state.setdefault(
+        "trial_metadata_fields", default_metadata or metadata_candidates
     )
-    if selected_metadata:
-        primary = _prefix_is_correct(
-            gather_trial_metadata(trial_words, trial_fixations, selected_metadata)
-        ).rename(columns={"Value": label_a})
-        other = _prefix_is_correct(
-            gather_trial_metadata(
-                compare["words"], compare["fixations"], selected_metadata
+    st.session_state["trial_metadata_fields"] = [
+        f for f in st.session_state["trial_metadata_fields"] if f in metadata_candidates
+    ]
+    selected_metadata = st.session_state["trial_metadata_fields"]
+
+    # Metadata table under a default-closed toggle (TODO 1.9), with the
+    # field picker directly below it (TODO 1.10).
+    with st.expander("Trial metadata", expanded=False):
+        if compare is None:
+            summary = pd.DataFrame(_summary_rows(trial_words, trial_fixations))
+            metadata_df = (
+                _prefix_is_correct(
+                    gather_trial_metadata(
+                        trial_words, trial_fixations, selected_metadata
+                    )
+                )
+                if selected_metadata
+                else pd.DataFrame(columns=["Field", "Value"])
             )
-        ).rename(columns={"Value": label_b})
-        # Outer merge in case the two trials' sources expose different columns;
-        # fill any resulting gap with the same "—" placeholder the summary uses.
-        merged = primary.merge(other, on="Field", how="outer").fillna("—")
-        order = {field: i for i, field in enumerate(selected_metadata)}
-        merged = (
-            merged.assign(_o=merged["Field"].map(order))
-            .sort_values("_o")
-            .drop(columns="_o")
+            table = pd.concat([summary, metadata_df], ignore_index=True)
+            if not table.empty:
+                styled = table.style.apply(_style_metadata_row, axis=1)
+                st.dataframe(styled, hide_index=True, width="stretch")
+        else:
+            # Comparison mode: one value column per trial, merged on Field.
+            label_a = compare["label_primary"]
+            label_b = compare["label_compare"]
+            # Summary rows share the same fields/order across both trials, so
+            # pair them directly to keep row order rather than outer-merging.
+            summary_b = {
+                r["Field"]: r["Value"]
+                for r in _summary_rows(compare["words"], compare["fixations"])
+            }
+            summary = pd.DataFrame(
+                [
+                    {
+                        "Field": r["Field"],
+                        label_a: r["Value"],
+                        label_b: summary_b.get(r["Field"], "—"),
+                    }
+                    for r in _summary_rows(trial_words, trial_fixations)
+                ]
+            )
+            if selected_metadata:
+                primary = _prefix_is_correct(
+                    gather_trial_metadata(
+                        trial_words, trial_fixations, selected_metadata
+                    )
+                ).rename(columns={"Value": label_a})
+                other = _prefix_is_correct(
+                    gather_trial_metadata(
+                        compare["words"], compare["fixations"], selected_metadata
+                    )
+                ).rename(columns={"Value": label_b})
+                # Outer merge in case the two trials' sources expose different
+                # columns; fill any gap with the same "—" the summary uses.
+                merged = primary.merge(other, on="Field", how="outer").fillna("—")
+                order = {field: i for i, field in enumerate(selected_metadata)}
+                merged = (
+                    merged.assign(_o=merged["Field"].map(order))
+                    .sort_values("_o")
+                    .drop(columns="_o")
+                )
+            else:
+                merged = pd.DataFrame(columns=["Field", label_a, label_b])
+            table = pd.concat([summary, merged], ignore_index=True)
+            if not table.empty:
+                st.dataframe(table, hide_index=True, width="stretch")
+
+        st.multiselect(
+            "Metadata fields to show",
+            options=metadata_candidates,
+            key="trial_metadata_fields",
+            help="Columns listed in the table above, beneath the trial totals.",
         )
-    else:
-        merged = pd.DataFrame(columns=["Field", label_a, label_b])
-    table = pd.concat([summary, merged], ignore_index=True)
-    if not table.empty:
-        st.dataframe(table, hide_index=True, width="stretch")
 
 
-def _render_plot_config_expander(
+def _build_studio_config(
+    *,
     selected_participant: str,
     selected_trial: str,
     canvas_width: int,
@@ -972,93 +930,168 @@ def _render_plot_config_expander(
     viz_settings: dict,
     base_font_size: int,
     trial_raw_gaze: pd.DataFrame,
+    font_family: str,
+    annotation_records: list,
+    column_mapping: dict,
+    data_source: Optional[str],
+    app_version: str,
+) -> dict:
+    """Build the "💾 Save & restore" JSON config dict (pure — no Streamlit).
+
+    Schema 2 captures the full figure configuration (layers, colouring, sizing,
+    text/highlighting, canvas, axes, trial selection), every per-trial
+    annotation, and provenance (app version, data source, column mapping)."""
+    return {
+        # schema 2 = config + annotations + text/highlighting + provenance;
+        # schema 1 (plot config only) still restores via the same reader.
+        "schema": 2,
+        "app": {"name": "Scanpath Studio", "version": app_version},
+        "data_source": data_source,
+        "column_mapping": column_mapping,
+        "selection": {
+            "participant_id": selected_participant,
+            "trial_id": selected_trial,
+        },
+        "canvas_px": {"width": int(canvas_width), "height": int(canvas_height)},
+        "axes": {"x_field": x_field, "y_field": y_field},
+        "layers": {
+            "words": figure_settings["show_words"],
+            "word_labels": figure_settings["show_word_labels"],
+            "fixations": figure_settings["show_fixations"],
+            "order_labels": figure_settings["show_order"],
+            "saccades": figure_settings["show_saccades"],
+            "saccade_arrows": figure_settings.get("show_saccade_arrows", False),
+            "heatmap": figure_settings["show_heatmap"],
+            "raw_gaze": figure_settings["show_raw_gaze"],
+        },
+        "coloring": {
+            "color_by": figure_settings["color_by"],
+            "heatmap_metric": viz_settings["heatmap_metric"],
+            "heatmap_style": figure_settings.get("heatmap_style", "Word boxes"),
+            "show_colorbars": figure_settings["show_colorbars"],
+            "fixation_range": (
+                list(figure_settings["fixation_color_range"])
+                if figure_settings["fixation_color_range"]
+                else None
+            ),
+            "heatmap_range": (
+                list(figure_settings["heatmap_range"])
+                if figure_settings["heatmap_range"]
+                else None
+            ),
+            "fixation_colorscale": figure_settings["fixation_colorscale"],
+            "heatmap_colorscale": figure_settings["heatmap_colorscale"],
+        },
+        "sizing": {
+            "marker_size_range": [int(s) for s in figure_settings["marker_size_range"]],
+            "order_font_size": int(figure_settings["order_font_size"]),
+            "order_font_color": figure_settings["order_font_color"],
+            "base_font_size": int(base_font_size),
+        },
+        "text": {
+            "scale_text_to_boxes": bool(
+                figure_settings.get("scale_text_to_boxes", True)
+            ),
+            "line_spacing": float(
+                figure_settings.get("line_spacing", DEFAULT_LINE_SPACING)
+            ),
+            "font_family": font_family,
+        },
+        "highlighting": {
+            "critical_span_style": figure_settings.get(
+                "critical_span_style", "Mark text"
+            ),
+            "highlight_out_of_text": bool(
+                figure_settings.get("highlight_out_of_text", False)
+            ),
+            "background_color": figure_settings.get("background_color"),
+        },
+        "raw_gaze": {
+            "available": not trial_raw_gaze.empty,
+            "points": len(trial_raw_gaze) if not trial_raw_gaze.empty else 0,
+        },
+        "annotations": annotation_records,
+    }
+
+
+def _render_save_restore_expander(
+    selected_participant: str,
+    selected_trial: str,
+    canvas_width: int,
+    canvas_height: int,
+    x_field: str,
+    y_field: str,
+    figure_settings: dict,
+    viz_settings: dict,
+    base_font_size: int,
+    trial_raw_gaze: pd.DataFrame,
+    *,
+    font_family: str,
     slot=None,
 ):
-    """Render the plot configuration panel under the 🎨 Visualization sidebar group.
+    """Render the "💾 Save & restore" sidebar panel (TODO 1.19).
 
-    Offers the active plot settings as a downloadable JSON sidecar — plus a
-    matching uploader to restore them — so a reviewer can save, share, and
-    reload the exact configuration behind the current figure. ``slot`` is a
-    sidebar container reserved by ``app.main`` under the Visualization group; we
-    render into it so the panel sits there instead of after the tab content
-    (where a plain ``st.sidebar`` call would land). The upload is *applied* in
-    ``app._apply_uploaded_plot_config`` (it must run before the widgets render).
+    Merges the former Plot-configuration and Annotations panels into one: a
+    single JSON sidecar that captures the full figure configuration (layers,
+    colouring, sizing, text/highlighting, canvas, axes, trial selection) PLUS
+    every per-trial annotation, with a matching uploader to restore it all. So a
+    reviewer can save, share, and reload the exact state behind a figure. The
+    upload is *applied* in ``app._apply_uploaded_plot_config`` (it runs before
+    the widgets render). ``slot`` is a keyed sidebar container reserved by
+    ``app.main`` so the panel sits under the controls rather than after the tab.
     """
+    from scanpath_studio import __version__, annotations
+
     container = slot if slot is not None else st.sidebar
-    with container.expander("Plot configuration"):
-        plot_config = {
-            "selection": {
-                "participant_id": selected_participant,
-                "trial_id": selected_trial,
-            },
-            "canvas_px": {"width": int(canvas_width), "height": int(canvas_height)},
-            "axes": {"x_field": x_field, "y_field": y_field},
-            "layers": {
-                "words": figure_settings["show_words"],
-                "word_labels": figure_settings["show_word_labels"],
-                "fixations": figure_settings["show_fixations"],
-                "order_labels": figure_settings["show_order"],
-                "saccades": figure_settings["show_saccades"],
-                "saccade_arrows": figure_settings.get("show_saccade_arrows", False),
-                "heatmap": figure_settings["show_heatmap"],
-                "raw_gaze": figure_settings["show_raw_gaze"],
-            },
-            "coloring": {
-                "color_by": figure_settings["color_by"],
-                "heatmap_metric": viz_settings["heatmap_metric"],
-                "heatmap_style": figure_settings.get("heatmap_style", "Word boxes"),
-                "show_colorbars": figure_settings["show_colorbars"],
-                "fixation_range": (
-                    list(figure_settings["fixation_color_range"])
-                    if figure_settings["fixation_color_range"]
-                    else None
-                ),
-                "heatmap_range": (
-                    list(figure_settings["heatmap_range"])
-                    if figure_settings["heatmap_range"]
-                    else None
-                ),
-                "fixation_colorscale": figure_settings["fixation_colorscale"],
-                "heatmap_colorscale": figure_settings["heatmap_colorscale"],
-            },
-            "sizing": {
-                "marker_size_range": [
-                    int(s) for s in figure_settings["marker_size_range"]
-                ],
-                "order_font_size": int(figure_settings["order_font_size"]),
-                "order_font_color": figure_settings["order_font_color"],
-                "base_font_size": int(base_font_size),
-            },
-            "raw_gaze": {
-                "available": not trial_raw_gaze.empty,
-                "points": len(trial_raw_gaze) if not trial_raw_gaze.empty else 0,
-            },
-        }
-        safe_pid = str(selected_participant).replace("/", "-")
-        safe_trial = str(selected_trial).replace("/", "-")
+    annotation_records = annotations.current_records()
+    # Provenance (TODO 4.1): which data source + how its columns were mapped +
+    # the app version, so a saved config records the full context behind the
+    # figure, not just the plot settings.
+    column_mapping = {
+        k: st.session_state[k]
+        for k in sorted(st.session_state.keys())
+        if isinstance(k, str) and k.startswith("col_map_")
+    }
+    plot_config = _build_studio_config(
+        selected_participant=selected_participant,
+        selected_trial=selected_trial,
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+        x_field=x_field,
+        y_field=y_field,
+        figure_settings=figure_settings,
+        viz_settings=viz_settings,
+        base_font_size=base_font_size,
+        trial_raw_gaze=trial_raw_gaze,
+        font_family=font_family,
+        annotation_records=annotation_records,
+        column_mapping=column_mapping,
+        data_source=st.session_state.get("data_source_choice"),
+        app_version=__version__,
+    )
+    with container.expander("💾 Save & restore", expanded=False):
+        n_anno = len(annotation_records)
         st.caption(
-            "The exact settings behind the current figure — download to save or "
-            "share a reproducible configuration."
+            "Save the full plot configuration **and** all annotations "
+            f"({n_anno} trial{'s' if n_anno != 1 else ''}) — plus the data "
+            "source and column mapping — to one JSON file, or restore them. "
+            "Everything that fits the loaded data is re-applied."
         )
         st.download_button(
-            "⬇ Download plot config (JSON)",
+            "⬇ Download (JSON)",
             data=json.dumps(plot_config, indent=2),
-            file_name=f"plot_config_{safe_pid}_{safe_trial}.json",
+            # General filename — the config spans the whole session, not one
+            # trial (TODO 4.2).
+            file_name="scanpath_studio_config.json",
             mime="application/json",
             key="plot_config_download",
             use_container_width=True,
         )
-        st.divider()
-        st.caption(
-            "Restore a previously downloaded config. Layers, coloring, sizing, "
-            "canvas, axes, and the trial selection are re-applied wherever they "
-            "fit the currently loaded data."
-        )
         st.file_uploader(
-            "Upload plot config (JSON)",
+            "Restore from JSON",
             type=["json"],
             key="plot_config_upload",
-            help="Re-apply the settings from a plot config saved here earlier. "
+            help="Re-apply settings + annotations from a file saved here earlier. "
             "Anything that doesn't fit the loaded data is skipped.",
         )
         skipped = st.session_state.get("_plot_config_skipped")
@@ -1117,6 +1150,214 @@ def _build_compare_meta(
     }
 
 
+def _render_trial_info(
+    selected_participant: str,
+    selected_trial: str,
+    trial_words: pd.DataFrame,
+    compare: Optional[dict] = None,
+) -> None:
+    """Render the "Trial Info" block: the primary trial's id/participant/text,
+    and — when comparing — the second trial's info next to it (TODO 1.14)."""
+    if compare is None:
+        _render_trial_header(
+            selected_participant, selected_trial, trial_words, prefix="Trial:"
+        )
+        return
+    col_a, col_b = st.columns(2)
+    with col_a:
+        _render_trial_header(
+            selected_participant, selected_trial, trial_words, prefix="Trial:"
+        )
+    with col_b:
+        _render_trial_header(
+            compare["participant"],
+            compare["trial"],
+            compare["words"],
+            prefix="Compare:",
+        )
+
+
+# Playback-speed options shared by the animation control.
+_ANIM_SPEED_OPTIONS = [0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0]
+_ANIM_SPEED_LABELS = [
+    "×0.25",
+    "×0.5",
+    "×1",
+    "×1.5",
+    "×2",
+    "×2.5",
+    "×3",
+    "×4",
+    "×6",
+    "×8",
+]
+# Default playback speed — brisk enough for quick review (real-time ÷ 4) but
+# still legible; users can slow it down for a close look (TODO 3.2).
+_ANIM_DEFAULT_SPEED = 4.0
+
+
+def _render_anim_info_box(
+    trial_words: pd.DataFrame,
+    trial_fixations: pd.DataFrame,
+    words_b: Optional[pd.DataFrame],
+    fixations_b: Optional[pd.DataFrame],
+    selected_participant: str,
+    selected_trial: str,
+    compare_participant: Optional[str],
+    compare_trial: Optional[str],
+    playback_speed: float,
+) -> float:
+    """Render the animation reading-time / playback info box (+ overlay caveats),
+    shown in the side panel under the Animate toggle (TODO 3.1). Returns the
+    playback duration in ms. No fixation count (TODO 1.17e)."""
+    dual = fixations_b is not None and not fixations_b.empty
+    reading_span_ms, playback_ms = animation_playback_ms(
+        [trial_fixations] + ([fixations_b] if dual else []), playback_speed
+    )
+    if dual:
+        span_a = animation_playback_ms([trial_fixations], 1.0)[0]
+        span_b = animation_playback_ms([fixations_b], 1.0)[0]
+        st.info(
+            f"**A** reading time {span_a / 1000:.1f}s · **B** {span_b / 1000:.1f}s "
+            f"· Playback ×{playback_speed:g}: {playback_ms / 1000:.1f}s"
+        )
+        if (compare_participant, compare_trial) == (
+            selected_participant,
+            selected_trial,
+        ):
+            st.caption("⚠️ The second scanpath is the same trial as the first.")
+        else:
+            text_a = _trial_text_id(trial_words)
+            text_b = _trial_text_id(words_b)
+            if text_a is not None and text_b is not None and text_a != text_b:
+                st.warning(
+                    "The two scanpaths are **different texts**, so the shared "
+                    "word boxes don't line up — the spatial overlay isn't "
+                    "meaningful. Best for two readings of the same paragraph."
+                )
+    else:
+        st.info(
+            f"Reading time: {reading_span_ms / 1000:.1f}s · "
+            f"Playback at ×{playback_speed:g}: {playback_ms / 1000:.1f}s"
+        )
+    return playback_ms
+
+
+def _build_and_render_animation(
+    trial_words: pd.DataFrame,
+    trial_fixations: pd.DataFrame,
+    words_b: Optional[pd.DataFrame],
+    fixations_b: Optional[pd.DataFrame],
+    selected_participant: str,
+    selected_trial: str,
+    compare_participant: Optional[str],
+    compare_trial: Optional[str],
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    base_font_size: int,
+    font_family: str,
+    viz_settings: dict,
+    playback_speed: float,
+    line_spacing: float,
+    scale_text_to_boxes: bool,
+):
+    """Build + render the animation figure (single or dual co-animation) in the
+    main column. Returns ``(fig, playback_ms, save_slug, file_stem)``."""
+    dual = fixations_b is not None and not fixations_b.empty
+    _reading_span_ms, playback_ms = animation_playback_ms(
+        [trial_fixations] + ([fixations_b] if dual else []), playback_speed
+    )
+    # The reading-time / playback info box renders in the side panel under the
+    # Animate toggle (see _render_anim_info_box / TODO 3.1), not here.
+    fig = make_scanpath_animation(
+        trial_words,
+        trial_fixations,
+        canvas_width=int(canvas_width),
+        canvas_height=int(canvas_height),
+        base_font_size=int(base_font_size),
+        font_family=font_family,
+        playback_speed=playback_speed,
+        show_words=viz_settings["show_words"],
+        show_word_labels=viz_settings["show_labels"],
+        show_saccades=viz_settings["show_saccades"],
+        show_order=viz_settings["show_order"],
+        marker_size_range=viz_settings["marker_size_range"],
+        order_font_size=viz_settings["order_font_size"],
+        order_font_color=viz_settings["order_font_color"],
+        color_by=viz_settings["color_by"],
+        color_by_line=viz_settings.get("color_by_line", False),
+        fixation_colorscale=viz_settings["fixation_colorscale"],
+        fixation_color_range=viz_settings["fixation_color_range"],
+        show_colorbars=viz_settings["show_colorbars"],
+        background_color=viz_settings.get("background_color"),
+        fixations_b=fixations_b if dual else None,
+        words_b=words_b if dual else None,
+        label_a=(
+            f"{selected_participant} · {selected_trial}" if dual else "Scanpath A"
+        ),
+        label_b=(f"{compare_participant} · {compare_trial}" if dual else "Scanpath B"),
+        line_spacing=line_spacing,
+        scale_text_to_boxes=scale_text_to_boxes,
+    )
+    _render_true_scale_chart(fig, key="single_anim")
+    if dual:
+        save_slug = (
+            f"{selected_participant}__{selected_trial}__vs__"
+            f"{compare_participant}__{compare_trial}"
+        )
+        file_stem = (
+            f"animation_{_safe_filename(selected_participant)}__"
+            f"{_safe_filename(selected_trial)}__vs__"
+            f"{_safe_filename(compare_participant)}__"
+            f"{_safe_filename(compare_trial)}"
+        )
+    else:
+        save_slug = f"{selected_participant}__{selected_trial}"
+        file_stem = (
+            f"animation_{_safe_filename(selected_participant)}__"
+            f"{_safe_filename(selected_trial)}"
+        )
+    return fig, playback_ms, save_slug, file_stem
+
+
+def _render_export_toggle(
+    displayed_fig,
+    *,
+    animate: bool,
+    canvas_width: int,
+    canvas_height: int,
+    save_slug: str,
+    playback_ms: Optional[float] = None,
+    file_stem: Optional[str] = None,
+) -> None:
+    """Single-trial export under a default-closed "Export" toggle (TODO 1.16).
+
+    Shows the animation export (HTML/GIF/MP4) when animating, else the static
+    image export (PNG/SVG/PDF/HTML). Bulk export lives in its own tab."""
+    if displayed_fig is None:
+        return
+    with st.expander("Export", expanded=False):
+        st.caption(
+            "Export this single trial. To export many trials at once, use the "
+            "**Bulk Export** tab."
+        )
+        if animate:
+            _render_animation_export(
+                displayed_fig,
+                file_stem=file_stem or "animation",
+                playback_ms=playback_ms or 0.0,
+            )
+        else:
+            _render_save_plot_button(
+                displayed_fig,
+                canvas_width=int(canvas_width),
+                canvas_height=int(canvas_height),
+                slug=save_slug,
+                key_prefix="single",
+            )
+
+
 def render_single_trial_tab(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
@@ -1132,17 +1373,23 @@ def render_single_trial_tab(
     scale_text_to_boxes: bool = True,
     plot_config_slot=None,
 ) -> None:
-    """Render the single trial visualization tab.
+    """Render the main Scanpath Visualization tab (static + animated).
 
-    Layout: 30 / 70 split — every per-trial control (selectors, paragraph
-    text, compare toggle, save button, stats, metadata, plot config) sits in
-    the left side panel, the plot dominates the right column. Bulk export
-    sits below full-width because its progress bar / artifact dropdowns need
-    the room.
+    Layout: 30 / 70 split. Left side panel, top to bottom: Trial Info, the
+    "Select trials by" controls, the Animate + Compare toggles, annotations,
+    the metadata table, and an Export toggle. The plot (static, animated, or a
+    two-trial comparison) plus the paragraph panel fill the right column. Bulk
+    export has its own tab; Save & restore lives in the sidebar.
     """
     col_side, col_main = st.columns([3, 7], gap="medium")
 
     with col_side:
+        # A slot for the Trial Info block (heading + info), filled once the
+        # selection (and any compare trial) is known — so the info sits ABOVE the
+        # trial selectors (TODO 1.11 / 1.12 / 1.14). The heading lives in the
+        # fill (below), not here, so it isn't left dangling above an empty space
+        # when select_trial `st.stop()`s or returns no trial.
+        trial_info_slot = st.container()
         selected_participant, selected_trial, selection_mode, selected_text = (
             select_trial(combos, key_prefix="single")
         )
@@ -1177,9 +1424,31 @@ def render_single_trial_tab(
     y_field = viz_settings["y_field"]
 
     with col_side:
-        _render_trial_header(selected_participant, selected_trial, trial_words)
-        if global_raw_toggle and not trial_has_raw_gaze:
-            st.warning("Raw gaze not available for this trial.", icon="⚠️")
+        # Animate toggle ABOVE the compare toggle (TODO 1.17b).
+        animate = st.checkbox(
+            "Animate scanpath",
+            value=False,
+            key="single_animate",
+            help="Replay the trial fixation by fixation; use the "
+            "play / pause / restart controls below the plot.",
+        )
+        # Reading-time / playback info box sits right under the Animate toggle
+        # (TODO 3.1); filled below once the playback speed + any compare trial
+        # are known.
+        anim_info_slot = st.container()
+        # Playback speed sits in the left panel (TODO 1.17d), shown only when
+        # animating a trial that actually has fixations. Default ×4 — a brisk
+        # review pace (real-time ÷ 4); drop it for a closer look (TODO 3.2).
+        playback_speed = _ANIM_DEFAULT_SPEED
+        if animate and not trial_fixations.empty:
+            st.session_state.setdefault("single_playback_speed", _ANIM_DEFAULT_SPEED)
+            playback_speed = st.select_slider(
+                "Playback speed",
+                options=_ANIM_SPEED_OPTIONS,
+                format_func=lambda x: _ANIM_SPEED_LABELS[_ANIM_SPEED_OPTIONS.index(x)],
+                help="Playback speed relative to the recorded fixation timings.",
+                key="single_playback_speed",
+            )
         compare_participant, compare_trial, compare_layout = (
             _render_comparison_controls(
                 combos,
@@ -1187,30 +1456,97 @@ def render_single_trial_tab(
                 selected_participant,
                 selected_trial,
                 selected_text,
+                animate=animate,
             )
         )
-        # Trial summary + metadata table (totals, in-text fixation count, then
-        # the sidebar-selected metadata fields). Sits high in the side panel,
-        # right under the selectors, so the trial's headline numbers are visible
-        # without scrolling.
-        compare_meta = _build_compare_meta(
-            words_filtered,
-            fixations_filtered,
+        if global_raw_toggle and not trial_has_raw_gaze:
+            st.warning("Raw gaze not available for this trial.", icon="⚠️")
+
+    # Second trial's words/fixations + labels for the comparison figure and the
+    # side-by-side Trial Info / metadata table.
+    compare_meta = _build_compare_meta(
+        words_filtered,
+        fixations_filtered,
+        selected_participant,
+        selected_trial,
+        compare_participant,
+        compare_trial,
+    )
+    comparing = compare_participant is not None and compare_trial is not None
+    compare_fix = compare_meta["fixations"] if compare_meta else pd.DataFrame()
+
+    # Fill the Trial Info slot now the selection (+ any compare trial) is known.
+    with trial_info_slot:
+        st.markdown("### Trial Info")
+        _render_trial_info(
             selected_participant,
             selected_trial,
-            compare_participant,
-            compare_trial,
-        )
-        _render_metadata_selector(
-            words_filtered,
-            fixations_filtered,
             trial_words,
-            trial_fixations,
-            compare=compare_meta,
+            compare=(
+                {
+                    "participant": compare_participant,
+                    "trial": compare_trial,
+                    "words": compare_meta["words"],
+                }
+                if comparing and compare_meta
+                else None
+            ),
         )
 
+    displayed_fig = None
+    save_slug = f"{selected_participant}__{selected_trial}"
+    anim_playback_ms = None
+    anim_file_stem = None
+    dual_anim = animate and comparing and not compare_fix.empty
+
+    # Animation info box, in the slot under the Animate toggle (TODO 3.1).
+    if animate and not trial_fixations.empty:
+        with anim_info_slot:
+            _render_anim_info_box(
+                trial_words,
+                trial_fixations,
+                compare_meta["words"] if dual_anim else None,
+                compare_fix if dual_anim else None,
+                selected_participant,
+                selected_trial,
+                compare_participant,
+                compare_trial,
+                playback_speed,
+            )
+
     with col_main:
-        if compare_participant is not None and compare_trial is not None:
+        if animate and trial_fixations.empty:
+            st.info(
+                "Animation needs a **fixations** table — there's nothing to "
+                "animate for this selection."
+            )
+        elif animate:
+            displayed_fig, anim_playback_ms, save_slug, anim_file_stem = (
+                _build_and_render_animation(
+                    trial_words,
+                    trial_fixations,
+                    compare_meta["words"] if dual_anim else None,
+                    compare_fix if dual_anim else None,
+                    selected_participant,
+                    selected_trial,
+                    compare_participant,
+                    compare_trial,
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                    base_font_size=base_font_size,
+                    font_family=font_family,
+                    viz_settings=viz_settings,
+                    playback_speed=playback_speed,
+                    line_spacing=line_spacing,
+                    scale_text_to_boxes=scale_text_to_boxes,
+                )
+            )
+            if comparing and compare_fix.empty:
+                st.warning(
+                    "The selected second scanpath has no fixations after "
+                    "filtering — showing only the first scanpath."
+                )
+        elif comparing:
             displayed_fig = _render_comparison_figure(
                 combos,
                 words_filtered,
@@ -1246,37 +1582,38 @@ def render_single_trial_tab(
                 **figure_settings,
             )
             _render_true_scale_chart(displayed_fig, key="single")
-            save_slug = f"{selected_participant}__{selected_trial}"
-
-        # Save format / Render-PNG button lives directly under the plot so
-        # the export action is right where the eye is when reviewers want it.
-        _render_save_plot_button(
-            displayed_fig,
-            canvas_width=int(canvas_width),
-            canvas_height=int(canvas_height),
-            slug=save_slug,
-            key_prefix="single",
-        )
 
         # Paragraph text (with question + critical/distractor span overlays)
-        # sits below the figure so reviewers can read the text while
-        # comparing it to the scanpath right above.
+        # sits below the figure so reviewers can read the text while comparing
+        # it to the scanpath right above.
         _render_paragraph_panel(
             trial_words, trial_fixations=trial_fixations, expanded=True
         )
 
-    # Publish the single-tab's selection so the Animation tab can mirror it.
-    # Read by `render_animation_tab` (one-way sync; anim can still be moved
-    # independently — see `_sync_anim_from_single`).
-    st.session_state["shared_selected_pid"] = selected_participant
-    st.session_state["shared_selected_trial_id"] = selected_trial
-
     with col_side:
+        # Annotations sit ABOVE the metadata table (TODO 1.8); the Export toggle
+        # sits below it (TODO 1.16).
         render_trial_annotations(selected_participant, selected_trial)
+        _render_metadata_selector(
+            words_filtered,
+            fixations_filtered,
+            trial_words,
+            trial_fixations,
+            compare=compare_meta,
+        )
+        _render_export_toggle(
+            displayed_fig,
+            animate=animate,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            save_slug=save_slug,
+            playback_ms=anim_playback_ms,
+            file_stem=anim_file_stem,
+        )
 
-    # Plot configuration renders into the reserved sidebar slot under the
-    # 🎨 Visualization group (see _render_plot_config_expander / app.main).
-    _render_plot_config_expander(
+    # Save & restore (plot config + annotations) renders into the reserved
+    # sidebar slot (see _render_save_restore_expander / app.main).
+    _render_save_restore_expander(
         selected_participant,
         selected_trial,
         canvas_width,
@@ -1287,19 +1624,49 @@ def render_single_trial_tab(
         viz_settings,
         base_font_size,
         trial_raw_gaze,
+        font_family=font_family,
         slot=plot_config_slot,
     )
 
+
+def render_bulk_export_tab(
+    combos: pd.DataFrame,
+    words_filtered: pd.DataFrame,
+    fixations_filtered: pd.DataFrame,
+    combos_all: pd.DataFrame,
+    words_all: pd.DataFrame,
+    fixations_all: pd.DataFrame,
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    base_font_size: int,
+    font_family: str,
+    viz_settings: dict,
+    line_spacing: float = DEFAULT_LINE_SPACING,
+    scale_text_to_boxes: bool = True,
+) -> None:
+    """Render the Bulk Export tab (TODO 1.6).
+
+    Bundles per-trial figures + tabular data for many trials into one zip.
+    Operates on the filtered trial pool by default; ticking "Export the whole
+    dataset" switches to the unfiltered frames (TODO 1.7)."""
+    st.subheader("Bulk export")
+    figure_settings = _build_figure_settings(viz_settings, False)
+    figure_settings["line_spacing"] = line_spacing
+    figure_settings["scale_text_to_boxes"] = scale_text_to_boxes
     _render_bulk_export(
         combos,
         words_filtered,
         fixations_filtered,
+        combos_all,
+        words_all,
+        fixations_all,
         canvas_width=int(canvas_width),
         canvas_height=int(canvas_height),
         base_font_size=int(base_font_size),
         font_family=font_family,
-        x_field=x_field,
-        y_field=y_field,
+        x_field=viz_settings["x_field"],
+        y_field=viz_settings["y_field"],
         figure_settings=figure_settings,
     )
 
@@ -1308,6 +1675,9 @@ def _render_bulk_export(
     combos: pd.DataFrame,
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
+    combos_all: pd.DataFrame,
+    words_all: pd.DataFrame,
+    fixations_all: pd.DataFrame,
     *,
     canvas_width: int,
     canvas_height: int,
@@ -1318,20 +1688,30 @@ def _render_bulk_export(
     figure_settings: dict,
 ) -> None:
     """Render configurable bulk-export UI (artifact picker + run + download)."""
-    st.divider()
-    st.markdown("### Bulk export")
     st.caption(
-        f"Up to **{len(combos)}** currently filtered trials are available. "
+        f"**{len(combos)}** trials match the current filters "
+        f"(**{len(combos_all)}** in the whole dataset). "
         "Choose a scope and which artifacts to bundle below."
     )
-    options = render_export_options(st, combos, key_prefix="single_export")
+    options = render_export_options(
+        st, combos, key_prefix="bulk_export", combos_all=combos_all
+    )
+    # Tick "Export the whole dataset" → export the unfiltered frames.
+    if options.export_unfiltered:
+        active_combos, active_words, active_fix = combos_all, words_all, fixations_all
+    else:
+        active_combos, active_words, active_fix = (
+            combos,
+            words_filtered,
+            fixations_filtered,
+        )
     run_col, info_col = st.columns([1, 3])
     with run_col:
         run = st.button(
             "Build export",
             type="primary",
             disabled=(
-                combos.empty
+                active_combos.empty
                 or not any(
                     [
                         options.include_png,
@@ -1359,9 +1739,9 @@ def _render_bulk_export(
             )
 
         zip_bytes, progress = bulk_export(
-            combos,
-            words_filtered,
-            fixations_filtered,
+            active_combos,
+            active_words,
+            active_fix,
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             base_font_size=base_font_size,
@@ -1454,312 +1834,7 @@ def _render_comparison_figure(
 
 
 # -----------------------------------------------------------------------------
-# Animation Tab
-# -----------------------------------------------------------------------------
-
-
-def _sync_anim_from_single(combos: pd.DataFrame) -> None:
-    """Pre-set anim tab's selector state to mirror the single tab's selection.
-
-    Fires only when the single tab's selection changed since the last run
-    (tracked via `_prev_shared_trial`). One-way sync by design — user
-    changes inside the anim tab are preserved across reruns until the
-    single tab moves again.
-
-    Respects whichever selection mode (Trial/Text/Participant) the anim tab
-    is currently in and writes to the matching state key, so the user's
-    mode choice isn't reset every time the single tab advances.
-    """
-    shared_pid = st.session_state.get("shared_selected_pid")
-    shared_trial = st.session_state.get("shared_selected_trial_id")
-    if not (shared_pid and shared_trial):
-        return
-    current = (shared_pid, shared_trial)
-    if st.session_state.get("_prev_shared_trial") == current:
-        return
-
-    # Find the row in `combos` so we can read trial_index / paragraph_id —
-    # needed by the slider (Participant mode) and the text selectbox (Text
-    # mode), which key off a different field than `trial_id`.
-    match = combos[
-        (combos["participant_id"] == shared_pid)
-        & (combos["trial_id"].astype(str) == str(shared_trial))
-    ]
-    if match.empty:
-        return
-    row = match.iloc[0]
-
-    mode = st.session_state.get("anim_select_trial_mode", "Trial")
-
-    if mode == "Trial":
-        trial_options = _ordered_trial_ids(combos)
-        try:
-            idx = trial_options.index(str(shared_trial))
-        except ValueError:
-            return
-        st.session_state["anim_trial_index"] = idx
-    elif mode == "Participant":
-        # Slider value is TRIAL_INDEX (int) when present, else paragraph_id
-        # (str) — matches `_select_trial_participant_mode`'s preference.
-        st.session_state["anim_participant"] = shared_pid
-        slider_value = None
-        for field in ("TRIAL_INDEX", "trial_index"):
-            if field in row.index and pd.notna(row[field]):
-                slider_value = row[field]
-                break
-        if slider_value is None:
-            for field in ("unique_paragraph_id", "paragraph_id"):
-                if field in row.index and pd.notna(row[field]):
-                    slider_value = str(row[field])
-                    break
-        if slider_value is not None:
-            st.session_state["anim_slider"] = slider_value
-    elif mode == "Text":
-        for field in ("unique_paragraph_id", "paragraph_id"):
-            if field in row.index and pd.notna(row[field]):
-                st.session_state["anim_text_id"] = str(row[field])
-                break
-        st.session_state["anim_participant_text"] = shared_pid
-
-    st.session_state["_prev_shared_trial"] = current
-
-
-def render_animation_tab(
-    words_filtered: pd.DataFrame,
-    fixations_filtered: pd.DataFrame,
-    combos: pd.DataFrame,
-    *,
-    canvas_width: int,
-    canvas_height: int,
-    base_font_size: int,
-    font_family: str,
-    viz_settings: dict,
-    line_spacing: float = DEFAULT_LINE_SPACING,
-    scale_text_to_boxes: bool = True,
-) -> None:
-    """Render the animated scanpath tab.
-
-    Layout mirrors the Interactive Plot tab: 30 / 70 split, selectors / info /
-    export controls in the left side panel and the animation plot on the
-    right.
-    """
-    # Sync trial selection from the single tab BEFORE the picker widgets
-    # render, so they pick up the seeded state as their initial value.
-    _sync_anim_from_single(combos)
-
-    col_side, col_main = st.columns([3, 7], gap="medium")
-
-    with col_side:
-        selected_participant, selected_trial, _mode, _text = select_trial(
-            combos, key_prefix="anim"
-        )
-    if not (selected_participant and selected_trial):
-        return
-
-    trial_words = words_filtered[
-        (words_filtered["participant_id"] == selected_participant)
-        & (words_filtered["trial_id"] == selected_trial)
-    ]
-    trial_fixations = fixations_filtered[
-        (fixations_filtered["participant_id"] == selected_participant)
-        & (fixations_filtered["trial_id"] == selected_trial)
-    ]
-
-    # Optional second scanpath, co-animated on the same real-time clock by
-    # `make_scanpath_animation`. Its selector is keyed under "anim_b" so it stays
-    # independent of the single-tab → anim sync (which targets "anim"); when the
-    # overlay is first enabled (or A's text changes) we seed it to another
-    # reading of the SAME text, preferring the same participant — see
-    # `_seed_anim_b_default`.
-    with col_side:
-        compare = st.checkbox(
-            "Overlay a second scanpath",
-            value=False,
-            key="anim_compare",
-            help=(
-                "Animate a second reading on the same timeline. Works best for "
-                "two readings of the same text (e.g. a re-reading, or another "
-                "participant)."
-            ),
-        )
-        sel_b_participant = sel_b_trial = None
-        if compare:
-            _seed_anim_b_default(combos, selected_participant, selected_trial)
-            sel_b_participant, sel_b_trial, _mode_b, _text_b = select_trial(
-                combos, key_prefix="anim_b"
-            )
-
-    trial_words_b = None
-    trial_fixations_b = None
-    if compare and sel_b_participant and sel_b_trial:
-        trial_words_b = words_filtered[
-            (words_filtered["participant_id"] == sel_b_participant)
-            & (words_filtered["trial_id"] == sel_b_trial)
-        ]
-        trial_fixations_b = fixations_filtered[
-            (fixations_filtered["participant_id"] == sel_b_participant)
-            & (fixations_filtered["trial_id"] == sel_b_trial)
-        ]
-
-    dual = (
-        compare
-        and trial_fixations_b is not None
-        and not trial_fixations_b.empty
-        and not trial_fixations.empty
-    )
-
-    # Playback speed — rendered on the right (next to the animation plot)
-    # because that's where the eye actually goes when adjusting playback.
-    # Frame durations are floor-clamped at ~16 ms (see `make_scanpath_animation`),
-    # so higher speeds aren't more expensive to render than lower ones; they
-    # just cap there for the shortest fixations.
-    speed_options = [0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 8.0]
-    speed_labels = ["×0.25", "×0.5", "×1", "×1.5", "×2", "×2.5", "×3", "×4", "×8"]
-    with col_main:
-        playback_speed = st.select_slider(
-            "Playback speed",
-            options=speed_options,
-            value=3.0,
-            format_func=lambda x: speed_labels[speed_options.index(x)],
-            help="Controls playback speed relative to actual fixation durations.",
-            key="anim_playback_speed",
-        )
-
-    with col_side:
-        _render_trial_header(
-            selected_participant,
-            selected_trial,
-            trial_words,
-            prefix="Animated scanpath:",
-        )
-        _render_paragraph_panel(
-            trial_words, trial_fixations=trial_fixations, expanded=False
-        )
-
-        if trial_fixations.empty:
-            st.info(
-                "The Animated Scanpath needs a **fixations** table — there's no "
-                "fixation scanpath to animate for this selection."
-            )
-        else:
-            # Quote the REAL animation runtime (see `animation_playback_ms`) so
-            # the stated playback time matches what the user observes; "reading
-            # time" is the recorded span (incl. saccade/blink gaps), not the sum
-            # of fixation durations.
-            reading_span_ms, playback_ms = animation_playback_ms(
-                [trial_fixations] + ([trial_fixations_b] if dual else []),
-                playback_speed,
-            )
-            if dual:
-                span_a = animation_playback_ms([trial_fixations], 1.0)[0]
-                span_b = animation_playback_ms([trial_fixations_b], 1.0)[0]
-                st.info(
-                    f"**A: {len(trial_fixations)} fixations** "
-                    f"({span_a / 1000:.1f}s) · **B: {len(trial_fixations_b)} "
-                    f"fixations** ({span_b / 1000:.1f}s)"
-                )
-                shorter = "A" if span_a <= span_b else "B"
-                st.caption(
-                    f"Playback at ×{playback_speed}: "
-                    f"**{playback_ms / 1000:.1f}s** — both co-animate on one "
-                    f"clock; the shorter reading ({shorter}) finishes first and "
-                    f"holds while the longer one continues."
-                )
-                if (sel_b_participant, sel_b_trial) == (
-                    selected_participant,
-                    selected_trial,
-                ):
-                    st.caption("⚠️ The second scanpath is the same trial as the first.")
-                else:
-                    text_a = _trial_text_id(trial_words)
-                    text_b = _trial_text_id(trial_words_b)
-                    if text_a is not None and text_b is not None and text_a != text_b:
-                        st.warning(
-                            "The two scanpaths are **different texts**, so the "
-                            "shared word boxes don't line up with the second "
-                            "reading — the spatial overlay isn't meaningful. This "
-                            "view is intended for two readings of the same "
-                            "paragraph."
-                        )
-            else:
-                st.info(
-                    f"**{len(trial_fixations)} fixations** · Reading time: "
-                    f"{reading_span_ms / 1000:.1f}s · Playback at "
-                    f"×{playback_speed}: {playback_ms / 1000:.1f}s"
-                )
-                if compare and sel_b_participant and sel_b_trial:
-                    st.warning(
-                        "The selected second scanpath has no fixations after "
-                        "filtering — showing only the first scanpath."
-                    )
-
-    if trial_fixations.empty:
-        return
-
-    # One builder for both cases: passing fixations_b/words_b switches it to the
-    # dual co-animation; without them it's the classic single replay.
-    fig = make_scanpath_animation(
-        trial_words,
-        trial_fixations,
-        canvas_width=int(canvas_width),
-        canvas_height=int(canvas_height),
-        base_font_size=int(base_font_size),
-        font_family=font_family,
-        playback_speed=playback_speed,
-        show_words=viz_settings["show_words"],
-        show_word_labels=viz_settings["show_labels"],
-        show_saccades=viz_settings["show_saccades"],
-        show_order=viz_settings["show_order"],
-        marker_size_range=viz_settings["marker_size_range"],
-        order_font_size=viz_settings["order_font_size"],
-        order_font_color=viz_settings["order_font_color"],
-        color_by=viz_settings["color_by"],
-        color_by_line=viz_settings.get("color_by_line", False),
-        fixation_colorscale=viz_settings["fixation_colorscale"],
-        fixation_color_range=viz_settings["fixation_color_range"],
-        show_colorbars=viz_settings["show_colorbars"],
-        background_color=viz_settings.get("background_color"),
-        fixations_b=trial_fixations_b if dual else None,
-        words_b=trial_words_b if dual else None,
-        label_a=f"{selected_participant} · {selected_trial}" if dual else "Scanpath A",
-        label_b=f"{sel_b_participant} · {sel_b_trial}" if dual else "Scanpath B",
-        line_spacing=line_spacing,
-        scale_text_to_boxes=scale_text_to_boxes,
-    )
-    with col_main:
-        _render_true_scale_chart(fig, key="animation")
-
-    with col_side:
-        if dual:
-            st.caption(
-                "**Controls:** ▶ Play co-animates both scanpaths on one shared "
-                "real-time clock (recorded fixation timings ÷ speed), so the "
-                "shorter reading finishes first and waits while the longer one "
-                "continues. Drag the slider to scrub by elapsed reading time. "
-                "Each orange highlight, ringed in its scanpath's colour, marks "
-                "that reader's current fixation."
-            )
-            file_stem = (
-                f"animation_{_safe_filename(selected_participant)}__"
-                f"{_safe_filename(selected_trial)}__vs__"
-                f"{_safe_filename(sel_b_participant)}__"
-                f"{_safe_filename(sel_b_trial)}"
-            )
-        else:
-            st.caption(
-                "**Controls:** ▶ Play replays the scan in real reading time ÷ "
-                "speed, ⏸ Pause stops, and the slider scrubs by elapsed reading "
-                "time. Orange highlight shows the current fixation."
-            )
-            file_stem = (
-                f"animation_{_safe_filename(selected_participant)}__"
-                f"{_safe_filename(selected_trial)}"
-            )
-        _render_animation_export(fig, file_stem=file_stem, playback_ms=playback_ms)
-
-
-# -----------------------------------------------------------------------------
-# Multiple Comparison Tab
+# Generations (WIP) Tab  (formerly "Multiple Comparison")
 # -----------------------------------------------------------------------------
 
 
@@ -1841,13 +1916,14 @@ def render_multiple_comparison_tab(
     line_spacing: float = DEFAULT_LINE_SPACING,
     scale_text_to_boxes: bool = True,
 ) -> None:
-    """Render the Multiple Comparison tab.
+    """Render the Generations (WIP) tab.
 
     Shows the real scanpath for the selected trial on top, then a configurable
     grid of model-generated scanpaths over the SAME text, and a similarity
     table scoring each model against the real reading (NLD plus placeholder
     metrics). The model scanpaths are synthetic placeholders until real model
-    outputs are connected — see :mod:`scanpath_studio.model_scanpaths`.
+    outputs are connected — see :mod:`scanpath_studio.model_scanpaths`. Work in
+    progress.
     """
     st.caption(
         "Compare a real scanpath with several **model-generated** scanpaths over "
@@ -1876,7 +1952,7 @@ def render_multiple_comparison_tab(
     if trial_words.empty or trial_fixations.empty:
         with col_main:
             st.info(
-                "Multiple Comparison needs a **words + fixations** table for the "
+                "Generations needs a **words + fixations** table for the "
                 "selected trial — it scores model scanpaths against the real "
                 "reading over the text."
             )

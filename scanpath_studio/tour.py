@@ -103,20 +103,20 @@ presented. **Advanced styling** holds colorscales and marker sizing.
     (
         "🗂 Five views of the data",
         """
-- **Interactive Plot** — the main scanpath; hover a word for its reading
-  measures, export PNG / SVG / PDF / HTML.
-- **Animated Scanpath** — replay the trial fixation by fixation; export
-  GIF / MP4.
-- **Multiple Comparison** — a grid of scanpaths across trials or readers.
+- **Scanpath Visualization** — the main scanpath; tick **Animate** to replay it
+  fixation by fixation. Hover a word for its reading measures; export.
+- **Generations (WIP)** — a grid of model-generated scanpaths over the text.
 - **Raw Data** — the normalized tables, downloadable.
 - **Data Statistics** — summary stats and distributions.
+- **Bulk Export** — bundle figures + tables across many trials into one zip.
 """,
     ),
     (
         "📝 Annotate & share",
         """
-Star ⭐, tag, and write notes on trials from the Interactive Plot tab, then
-filter to them or save the annotations as JSON (sidebar **Annotations**).
+Star ⭐, tag, and write notes on trials in the Scanpath Visualization tab, then
+filter to them. The sidebar **💾 Save & restore** panel saves the full plot
+configuration *and* your annotations to one JSON file — and reloads them.
 
 You can also **deep-link** into the app: URL parameters like
 `?participant=…&trial=…&show_heatmap=1` open a specific trial with preset
@@ -233,16 +233,17 @@ _SPOTLIGHT_STEPS = [
     {
         "selector": '[data-testid="stTabs"] [data-baseweb="tab-list"]',
         "title": "🗂 Five views of the data",
-        "body": "**Interactive Plot** — hover a word for its reading "
-        "measures; export PNG/SVG/PDF/HTML. **Animated Scanpath** — replay "
-        "the trial; export GIF/MP4. **Multiple Comparison** — a grid across "
-        "trials or readers. Plus **Raw Data** and **Data Statistics**.",
+        "body": "**Scanpath Visualization** — the main scanpath; tick "
+        "**Animate** to replay it. **Generations (WIP)** — a grid of "
+        "model scanpaths. Plus **Raw Data**, **Data Statistics**, and "
+        "**Bulk Export** for many trials at once.",
     },
     {
-        "selector": ".st-key-tour_grp_annotations",
-        "title": "📝 Annotate & share",
-        "body": "Star ⭐, tag, and write notes on trials from the Interactive "
-        "Plot tab; save or restore them as JSON here. URL parameters like "
+        "selector": ".st-key-tour_grp_save_restore",
+        "title": "💾 Save & restore",
+        "body": "Star ⭐, tag, and note trials in the Scanpath Visualization "
+        "tab. This panel saves the full plot configuration **and** your "
+        "annotations to one JSON file — and reloads them. URL parameters like "
         "`?participant=…&trial=…` deep-link straight to a trial.\n\n"
         "That's it — replay anytime via **🎓 Show tutorial** below. 👀",
     },

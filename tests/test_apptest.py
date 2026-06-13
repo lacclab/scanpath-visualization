@@ -81,10 +81,13 @@ class TestAppLaunches:
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
 
     def test_animation_export_controls_render(self):
-        # The animated-scanpath export selector offers HTML/GIF/MP4; selecting a
+        # Animation is now a checkbox in the Scanpath Visualization tab; with it
+        # on, the Export toggle offers the HTML/GIF/MP4 selector. Selecting a
         # rasterized format must render its options + Render button without
         # crashing (and without triggering the expensive Kaleido render).
         at = _make_apptest(synthetic=True)
+        at.run(timeout=30)
+        at.session_state["single_animate"] = True
         at.run(timeout=30)
         fmt_radios = [r for r in at.radio if list(r.options) == ["HTML", "GIF", "MP4"]]
         assert fmt_radios, "animation export-format radio not found"
@@ -135,12 +138,73 @@ class TestAppLaunches:
         assert "single_slider" in slider_keys
 
     def test_new_viz_toggles_build_without_error(self):
-        # Flip the new plot options (color-by-line, out-of-text, gray
-        # background) and confirm those code paths build without error.
+        # Flip the new plot options (color-by-line — now the "line" option in the
+        # color-by selector — out-of-text, gray background) and confirm those
+        # code paths build without error. These pre-set values mimic a Save &
+        # restore: the widgets must honour them (no inline value=/index= override
+        # — see _VIZ_WIDGET_DEFAULTS) rather than reset to their hardcoded default.
         at = _make_apptest(synthetic=True)
-        at.session_state["global_color_by_line"] = True
+        at.session_state["global_color_by"] = "line"
         at.session_state["global_highlight_out_of_text"] = True
+        at.session_state["global_critical_span_style"] = "Mark border"
         at.session_state["global_bg_choice"] = "Gray"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+        out_of_text = {c.key: c.value for c in at.checkbox if c.key}
+        assert out_of_text.get("global_highlight_out_of_text") is True, (
+            "restored out-of-text value was overridden by an inline default"
+        )
+
+    def test_animate_checkbox_renders_animation(self):
+        # The Scanpath Visualization tab's Animate checkbox folds the former
+        # animation tab in: the playback-speed slider must appear without error.
+        at = _make_apptest(synthetic=True)
+        at.session_state["single_animate"] = True
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+        assert "single_playback_speed" in [s.key for s in at.select_slider]
+
+    def test_bulk_export_whole_dataset_option(self):
+        # The Bulk Export tab ALWAYS offers an "export the whole dataset"
+        # checkbox (TODO 2.2), even with no sidebar filter active; toggling it on
+        # (export the unfiltered frames) builds clean.
+        at = _make_apptest(synthetic=True)
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert "bulk_export_unfiltered" in [c.key for c in at.checkbox], (
+            "whole-dataset checkbox missing"
+        )
+        at.session_state["bulk_export_unfiltered"] = True
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+
+    def test_participant_mode_sub_selection_methods(self):
+        # Participant mode offers a trial-index / text / trial-id sub-selector
+        # (TODO 1.15); picking Trial ID resolves a trial without error.
+        at = _make_apptest()
+        at.run(timeout=30)
+        at.session_state["single_select_trial_mode"] = "Participant"
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        sub = [
+            r for r in at.radio if set(r.options) == {"Trial index", "Text", "Trial ID"}
+        ]
+        assert sub, "participant-mode sub-selection radio not found"
+        sub[0].set_value("Trial ID")
+        at.run(timeout=30)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+
+    def test_participant_mode_stale_sub_method_does_not_crash(self):
+        # A stale "Trial index" sub-method pick must not crash when the current
+        # data offers only Text / Trial ID (the synthetic source has no
+        # trial-index column) — the radio's stale value is dropped, not raised.
+        at = _make_apptest(synthetic=True)
+        at.session_state["single_select_trial_mode"] = "Participant"
+        at.session_state["single_participant_by"] = "Trial index"  # unavailable here
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"

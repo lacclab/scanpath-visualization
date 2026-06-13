@@ -148,6 +148,45 @@ class TestPlotConfigRestore:
         assert ss["single_trial_id"] == "t2"
         assert ss["_skipped"] == []
 
+    def test_restores_text_highlighting_and_annotations(self):
+        # The merged "Save & restore" config (schema 2) also carries text
+        # sizing, highlighting, and annotations — all re-applied on restore.
+        config = dict(_full_config())
+        config["schema"] = 2
+        config["coloring"] = dict(config["coloring"], color_by="line")  # synthetic opt
+        config["text"] = {
+            "scale_text_to_boxes": False,
+            "line_spacing": 2.5,
+            "font_family": "Courier New",
+        }
+        config["highlighting"] = {
+            "critical_span_style": "Mark border",
+            "highlight_out_of_text": True,
+            "background_color": "#222222",
+        }
+        config["annotations"] = [
+            {
+                "participant_id": "p1",
+                "trial_id": "t2",
+                "star": True,
+                "tags": ["Review"],
+                "note": "hi",
+            }
+        ]
+        ss = _run(_restore_app, _config=config).session_state
+        assert ss["global_color_by"] == "line"  # "line" is a valid option now
+        assert ss["global_scale_text_to_boxes"] is False
+        assert ss["global_line_spacing"] == 2.5
+        assert ss["global_font_family"] == "Courier New"
+        assert ss["global_critical_span_style"] == "Mark border"
+        assert ss["global_highlight_out_of_text"] is True
+        assert ss["global_bg_choice"] == "Custom…"
+        assert ss["global_bg_custom"] == "#222222"
+        store = ss["trial_annotations"]
+        assert ("p1", "t2") in store
+        assert store[("p1", "t2")]["star"] is True
+        assert store[("p1", "t2")]["tags"] == ["Review"]
+
     def test_invalid_fields_are_skipped_not_applied(self):
         config = {
             "coloring": {"color_by": "does_not_exist", "heatmap_style": "Bogus"},
@@ -244,3 +283,74 @@ class TestApplyUploadedPlotConfig:
     def test_non_object_json_does_not_crash(self):
         ss = _run(_apply_app, _bytes=b"[1, 2, 3]").session_state
         assert "global_show_heatmap" not in ss
+
+
+def test_build_studio_config_includes_provenance_and_round_trips():
+    """The Save & restore config builder records provenance (app version, data
+    source, column mapping) + annotations and is JSON-serializable (TODO 4.1)."""
+    import json
+
+    import pandas as pd
+
+    from scanpath_studio.tabs import _build_studio_config
+
+    figure_settings = {
+        "show_words": True,
+        "show_word_labels": True,
+        "show_fixations": True,
+        "show_order": False,
+        "show_saccades": True,
+        "show_saccade_arrows": True,
+        "show_heatmap": False,
+        "show_raw_gaze": False,
+        "color_by": "line",
+        "heatmap_style": "Word boxes",
+        "show_colorbars": False,
+        "fixation_color_range": None,
+        "heatmap_range": None,
+        "fixation_colorscale": "Blues",
+        "heatmap_colorscale": "Oranges",
+        "marker_size_range": (8, 24),
+        "order_font_size": 14,
+        "order_font_color": "#111111",
+        "scale_text_to_boxes": True,
+        "line_spacing": 3.0,
+        "critical_span_style": "Mark border",
+        "highlight_out_of_text": True,
+        "background_color": "#222222",
+    }
+    cfg = _build_studio_config(
+        selected_participant="p1",
+        selected_trial="t1",
+        canvas_width=2560,
+        canvas_height=1440,
+        x_field="x",
+        y_field="y",
+        figure_settings=figure_settings,
+        viz_settings={"heatmap_metric": "duration_ms"},
+        base_font_size=16,
+        trial_raw_gaze=pd.DataFrame(),
+        font_family="Courier New",
+        annotation_records=[
+            {
+                "participant_id": "p1",
+                "trial_id": "t1",
+                "star": True,
+                "tags": [],
+                "note": "",
+            }
+        ],
+        column_mapping={"col_map_fix_x": "CURRENT_FIX_X"},
+        data_source="Use bundled demo",
+        app_version="9.9.9",
+    )
+    assert cfg["schema"] == 2
+    assert cfg["app"] == {"name": "Scanpath Studio", "version": "9.9.9"}
+    assert cfg["data_source"] == "Use bundled demo"
+    assert cfg["column_mapping"] == {"col_map_fix_x": "CURRENT_FIX_X"}
+    assert cfg["selection"] == {"participant_id": "p1", "trial_id": "t1"}
+    assert cfg["coloring"]["color_by"] == "line"
+    assert cfg["text"]["font_family"] == "Courier New"
+    assert cfg["highlighting"]["background_color"] == "#222222"
+    assert len(cfg["annotations"]) == 1
+    json.dumps(cfg)  # must be JSON-serializable

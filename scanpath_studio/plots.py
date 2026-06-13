@@ -1178,6 +1178,16 @@ def _add_interpolated_heatmap(
 # make the quote understate reality. Also keeps the briefest gaps perceptible.
 _ANIM_MIN_FRAME_MS = 16
 
+# Vertical space (px) reserved BELOW the animation plot for the transport
+# controls (play / pause / restart buttons + the time slider with its "Elapsed"
+# readout). The figure is grown by this much (plus a small safety buffer) and
+# the controls are placed in the bottom margin, so Plotly's automargin never has
+# to shrink the equal-aspect plot to fit them — which would make the word boxes
+# smaller than the true-to-scale label font computed for fitted_h (the
+# text-too-large bug). Keeps the animation plot the SAME size as the static one.
+_CONTROLS_MARGIN_PX = 116
+_CONTROLS_SAFETY_PX = 24
+
 
 def _scanpath_anim_specs(entries, marker_size_range):
     """Build per-scanpath animation specs from (fixations, color, label) entries.
@@ -1281,11 +1291,15 @@ def _animation_play_buttons(frame_duration):
         dict(
             type="buttons",
             showactive=False,
-            y=1.0,
-            x=0.05,
-            xanchor="right",
-            yanchor="bottom",
-            pad=dict(b=10, r=10),
+            # A horizontal row just below the plot (y=0 = plot bottom; yanchor=
+            # "top" hangs the row into the bottom margin); the time slider sits
+            # below it. direction="right" keeps the three buttons on one line.
+            direction="right",
+            y=0.0,
+            x=0.0,
+            xanchor="left",
+            yanchor="top",
+            pad=dict(t=8, l=8),
             buttons=[
                 dict(
                     label="▶ Play",
@@ -1346,7 +1360,9 @@ def _animation_time_slider(onset_times):
     return [
         dict(
             active=0,
-            yanchor="bottom",
+            # Sit below the plot (y=0 = plot bottom; yanchor="top" hangs it into
+            # the bottom margin), under the play/pause/restart buttons.
+            yanchor="top",
             xanchor="left",
             ticklen=0,
             minorticklen=0,
@@ -1360,10 +1376,10 @@ def _animation_time_slider(onset_times):
                 xanchor="right",
             ),
             transition=dict(duration=0),
-            pad=dict(b=10, t=10),
+            pad=dict(t=48, b=10),
             len=0.9,
-            x=0.1,
-            y=1.0,
+            x=0.05,
+            y=0.0,
             steps=[
                 dict(
                     args=[
@@ -1779,13 +1795,18 @@ def make_scanpath_animation(
     updatemenus = _animation_play_buttons(avg_frame_duration) if onset_times else []
 
     # fitted_w / fitted_h were computed up front (so the label scale matched).
-    # Sliders + play/pause buttons sit in the top margin (yanchor="bottom",
-    # y=1.0) so they're visible without scrolling past the plot.
+    # ALL transport controls (play/pause/restart buttons + the time slider with
+    # its "Elapsed" readout) sit BELOW the plot in the bottom margin. Critically,
+    # the figure is made tall enough that the plot region stays >= fitted_h after
+    # Plotly's automargin reserves space for those controls — otherwise the
+    # equal-aspect (`scaleanchor`) plot would shrink to fit the leftover height,
+    # making the word boxes smaller than the true-to-scale label font computed
+    # for fitted_h (text-too-large bug). _CONTROLS_MARGIN_PX is that reserve.
     layout = dict(
-        height=fitted_h + 80,
+        height=fitted_h + _CONTROLS_MARGIN_PX + _CONTROLS_SAFETY_PX,
         width=fitted_w,
         autosize=False,
-        margin=dict(l=0, r=0, t=80, b=0),
+        margin=dict(l=0, r=0, t=0, b=_CONTROLS_MARGIN_PX),
         xaxis=dict(
             showticklabels=False,
             showgrid=False,

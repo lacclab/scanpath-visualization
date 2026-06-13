@@ -97,8 +97,10 @@ def _select_trial_none_mode(
     st.session_state[state_key] = current_idx
 
     # Navigation buttons — compact (no `width="stretch"`) so they don't wrap
-    # to 3 lines inside the narrow 30% side panel.
-    nav_col1, nav_col2, select_col = st.columns([1, 1, 4])
+    # to 3 lines inside the narrow 30% side panel. `vertical_alignment="center"`
+    # drops the arrows to line up with the labelled selectbox beside them
+    # (otherwise they sit flush to the top, leaving empty space below).
+    nav_col1, nav_col2, select_col = st.columns([1, 1, 4], vertical_alignment="center")
     with nav_col1:
         if st.button(
             "◀",
@@ -219,27 +221,69 @@ def _select_trial_participant_mode(
         st.warning("No trials available for this participant.")
         return None, None, None
 
-    # Determine slider field
-    use_trial_index = (
-        trial_index_field and participant_trials[trial_index_field].notna().any()
-    )
-    if use_trial_index:
+    # Within the chosen participant, let the user pick which trial by trial
+    # index, by text, or by trial id — only offering the methods the data
+    # supports (trial index needs a TRIAL_INDEX column). "Trial index" is the
+    # default so deep links (?trial=N) and the prior behavior still land.
+    methods: list[str] = []
+    if trial_index_field and participant_trials[trial_index_field].notna().any():
+        methods.append("Trial index")
+    methods.append("Text")
+    methods.append("Trial ID")
+    # A filter can drop "Trial index" out of `methods` (a participant with no
+    # trial-index values) while session_state still holds it from a prior run —
+    # clear the stale pick so st.radio falls back to the first option instead of
+    # raising (same guard as the select_slider below / _select_trial_composite_mode).
+    sub_mode_key = f"{key_prefix}_participant_by" if key_prefix else None
+    if (
+        sub_mode_key
+        and sub_mode_key in st.session_state
+        and st.session_state[sub_mode_key] not in methods
+    ):
+        del st.session_state[sub_mode_key]
+    if len(methods) > 1:
+        st.markdown("##### Pick trial by")
+        sub_mode = st.radio(
+            "Pick trial by",
+            options=methods,
+            horizontal=True,
+            key=sub_mode_key,
+            label_visibility="collapsed",
+        )
+    else:
+        sub_mode = methods[0]
+
+    if sub_mode == "Trial index":
+        slider_field = trial_index_field
+        slider_label = "Trial index"
         slider_options = sorted(
             participant_trials[trial_index_field].dropna().unique().tolist()
         )
-        slider_label = "Trial index"
-        slider_field = trial_index_field
-    else:
+    elif sub_mode == "Text":
+        slider_field = paragraph_field
+        slider_label = "Text"
         slider_options = sorted(
             participant_trials[paragraph_field].dropna().astype(str).unique().tolist()
         )
-        slider_label = "Text"
-        slider_field = paragraph_field
+    else:  # Trial ID
+        slider_field = "trial_id"
+        slider_label = "Trial ID"
+        slider_options = sorted(
+            participant_trials["trial_id"].dropna().astype(str).unique().tolist()
+        )
 
     if not slider_options:
         return None, None, None
 
     state_key = f"{key_prefix}_slider" if key_prefix else "slider"
+    # Switching sub-method changes the option universe; drop a now-invalid
+    # stored value so st.select_slider falls back to the first option instead of
+    # raising (mirrors the guard in _select_trial_composite_mode).
+    if (
+        state_key in st.session_state
+        and st.session_state[state_key] not in slider_options
+    ):
+        del st.session_state[state_key]
 
     if len(slider_options) == 1:
         # st.select_slider breaks in the browser with a single option
@@ -278,7 +322,7 @@ def _select_trial_participant_mode(
     except ValueError:
         current_pos = 0
 
-    nav_prev, slider_col, nav_next = st.columns([1, 8, 1])
+    nav_prev, slider_col, nav_next = st.columns([1, 8, 1], vertical_alignment="center")
     with nav_prev:
         st.button(
             "◀",
@@ -326,11 +370,22 @@ def _resolve_participant_trial(
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Map a Participant-mode slider value to a concrete (participant, trial, text),
     offering a 'Reading' selectbox when the value matches several trials."""
-    if slider_field == paragraph_field:
+    # Text + trial-id sliders carry string values, so match as strings; the
+    # trial-index slider carries the raw (numeric) value and matches exactly.
+    if slider_field in (paragraph_field, "trial_id"):
         trial_candidates = participant_trials[
             participant_trials[slider_field].astype(str) == str(slider_value)
         ]
-        selected_text = str(slider_value)
+        selected_text = (
+            str(slider_value)
+            if slider_field == paragraph_field
+            else (
+                str(trial_candidates.iloc[0][paragraph_field])
+                if not trial_candidates.empty
+                and paragraph_field in trial_candidates.columns
+                else None
+            )
+        )
     else:
         trial_candidates = participant_trials[
             participant_trials[slider_field] == slider_value
@@ -459,11 +514,13 @@ def select_trial(
         st.warning("No trials available after filtering.")
         st.stop()
 
+    st.markdown("#### Select trials by")
     selection_mode = st.radio(
         label="Select trials by",
         options=["Trial", "Text", "Participant"],
         horizontal=True,
         key=f"{key_prefix}_select_trial_mode" if key_prefix else None,
+        label_visibility="collapsed",
     )
 
     trial_field = (

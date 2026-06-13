@@ -48,9 +48,14 @@ if __package__ is None or __package__ == "":
 
 from scanpath_studio.annotations import (
     filter_keys,
-    render_annotations_sidebar,
+    restore_records,
 )
-from scanpath_studio.constants import COLORSCALES, DEFAULT_LINE_SPACING, FONT_FAMILY
+from scanpath_studio.constants import (
+    BACKGROUND_PRESETS,
+    COLORSCALES,
+    DEFAULT_LINE_SPACING,
+    FONT_FAMILY,
+)
 from scanpath_studio.controls import (
     FIX_FIELD_SPECS,
     RAW_GAZE_FIELD_SPECS,
@@ -92,7 +97,7 @@ from scanpath_studio.data import (
 )
 from scanpath_studio.styles import get_app_css
 from scanpath_studio.tabs import (
-    render_animation_tab,
+    render_bulk_export_tab,
     render_data_statistics_tab,
     render_multiple_comparison_tab,
     render_raw_data_tab,
@@ -148,12 +153,12 @@ ONESTOP_CHOICE = "OneStop server bundle"
 # `_apply_url_preset()` to preset widgets when the page is opened from an
 # external tool with a deep link.
 #
-# Selection prefixes — every selectable tab (Interactive Plot, Animated
-# Scanpath, …) renders its own `select_trial` with a different `key_prefix`,
+# Selection prefixes — every selectable tab (Scanpath Visualization,
+# Generations, …) renders its own `select_trial` with a different `key_prefix`,
 # so a URL deep link has to seed all of them or only the first tab lands on
 # the requested trial. Keep this list in sync with the `key_prefix=` values
 # passed to `select_trial` in tabs.py.
-_SELECTION_PREFIXES = ("single", "anim", "multi")
+_SELECTION_PREFIXES = ("single", "multi")
 _URL_PRESETS = {
     # viz prefs (`controls.sidebar_controls`)
     "show_order": ("global_show_order", lambda v: v not in {"0", "false", "no"}),
@@ -229,6 +234,11 @@ def _apply_url_preset() -> Optional[str]:
     # auto-open it so the URL value is exposed in the sidebar.
     if "heatmap_colorscale" in qp or "fixation_colorscale" in qp:
         st.session_state.setdefault("global_advanced", True)
+
+    # Animation is now a checkbox in the Scanpath Visualization tab (no separate
+    # tab), so a legacy `?tab=animation` deep link just pre-ticks it.
+    if (qp.get("tab") or "").lower() == "animation":
+        st.session_state.setdefault("single_animate", True)
 
     source = qp.get("source")
     return source.lower() if source else None
@@ -437,12 +447,55 @@ def _restore_plot_config(
         if val is not None:
             put_valid(val in numeric, state_key, val, label)
 
+    text = section("text")
+    if "scale_text_to_boxes" in text:
+        put("global_scale_text_to_boxes", bool(text["scale_text_to_boxes"]))
+    if "line_spacing" in text:
+        n = number(text["line_spacing"])
+        if n is None:
+            skipped.append("line spacing")
+        else:
+            put("global_line_spacing", max(1.0, min(float(n), 10.0)))
+    if isinstance(text.get("font_family"), str) and text["font_family"].strip():
+        put("global_font_family", text["font_family"])
+
+    highlighting = section("highlighting")
+    if "critical_span_style" in highlighting:
+        css = highlighting["critical_span_style"]
+        put_valid(
+            css in ("Mark text", "Mark border", "None"),
+            "global_critical_span_style",
+            css,
+            "text highlighting",
+        )
+    if "highlight_out_of_text" in highlighting:
+        put("global_highlight_out_of_text", bool(highlighting["highlight_out_of_text"]))
+    bg = highlighting.get("background_color")
+    if isinstance(bg, str) and bg:
+        # Map a saved colour back to a preset name, else fall to the custom slot.
+        preset = next(
+            (n for n, v in BACKGROUND_PRESETS.items() if str(v).lower() == bg.lower()),
+            None,
+        )
+        if preset is not None:
+            put("global_bg_choice", preset)
+        else:
+            put("global_bg_choice", "Custom…")
+            put("global_bg_custom", bg)
+
     selection = section("selection")
     if selection:
         if _restore_selection(selection, combos):
             applied += 1
         else:
             skipped.append("trial selection")
+
+    # Annotations travel with schema-2 configs (Save & restore). Only restore
+    # when the key is present, so a plot-config-only file never clears them.
+    if "annotations" in config and isinstance(config["annotations"], list):
+        n_anno = restore_records(config["annotations"])
+        applied += 1
+        st.toast(f"Restored {n_anno} annotation(s) from config.", icon="📝")
 
     return applied, skipped
 
@@ -526,7 +579,9 @@ def _render_about_panel() -> None:
         "}"
     )
     with about_col:
-        with st.popover("About", icon="ℹ️", width="stretch"):
+        # `width="content"` keeps the button just as wide as its label instead
+        # of stretching across the column (which left whitespace either side).
+        with st.popover("About", icon="ℹ️", width="content"):
             st.markdown(
                 f"""
 **Scanpath Studio** v{__version__} — interactive visualization of eye
@@ -853,16 +908,16 @@ def _render_unmapped_view(
         "sidebar — the raw uploaded data is shown in the **Raw Data** tab below "
         "to help you choose. Still needed:\n\n" + "\n".join(f"- {p}" for p in problems)
     )
-    tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
+    tab_single, tab_multi, tab_raw, tab_stats, tab_bulk = st.tabs(
         [
-            "Interactive Plot",
-            "Animated Scanpath",
-            "Multiple Comparison",
+            "Scanpath Visualization",
+            "Generations (WIP)",
             "Raw Data",
             "Data Statistics",
+            "Bulk Export",
         ]
     )
-    for tab in (tab_single, tab_animation, tab_multi, tab_stats):
+    for tab in (tab_single, tab_multi, tab_stats, tab_bulk):
         with tab:
             st.info("Complete the column mapping in the sidebar to see this view.")
     with tab_raw:
@@ -1173,6 +1228,7 @@ def render_sidebar_canvas_controls(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
     data_choice: Optional[str] = None,
+    slot=None,
 ) -> Tuple[int, int, int, str, float, bool]:
     """Render canvas dimension and font controls in sidebar.
 
@@ -1212,7 +1268,11 @@ def render_sidebar_canvas_controls(
     st.session_state.setdefault("global_canvas_width", canvas_width)
     st.session_state.setdefault("global_canvas_height", canvas_height)
 
-    display = st.sidebar.expander("Display settings", expanded=False)
+    # "Experimental Setup" lives under the 📂 Data group (TODO 5), rendered into
+    # a slot reserved there by `main`; falls back to the sidebar when unset.
+    display = (slot if slot is not None else st.sidebar).expander(
+        "Experimental Setup", expanded=False
+    )
     canvas_width = display.number_input(
         "Monitor width (px)",
         min_value=100,
@@ -1232,20 +1292,23 @@ def render_sidebar_canvas_controls(
     # Reading text is true-to-scale by default: it auto-sizes to the word boxes
     # (text height = box_height / line_spacing) and scales with the figure, so it
     # always fills the real line slot. Untick to fall back to a fixed font size.
+    # Keyed (+ seeded) so the Save & restore panel can capture/reapply them.
+    st.session_state.setdefault("global_scale_text_to_boxes", True)
     scale_text_to_boxes = display.checkbox(
         "Scale text to boxes",
-        value=True,
+        key="global_scale_text_to_boxes",
         help="Size the reading text from the word boxes (height = box height ÷ "
         "line spacing) so it stays true to the real experiment at any zoom. "
         "Untick to use the fixed 'Figure font size' below instead.",
     )
+    st.session_state.setdefault("global_line_spacing", float(DEFAULT_LINE_SPACING))
     line_spacing = display.number_input(
         "Line spacing",
         min_value=1.0,
         max_value=10.0,
-        value=float(DEFAULT_LINE_SPACING),
         step=0.5,
         disabled=not scale_text_to_boxes,
+        key="global_line_spacing",
         help="Line slots per line of text. OneStop rendered one blank line above "
         "and one below each text line, so the box spans 3 line heights → 3.",
     )
@@ -1260,9 +1323,10 @@ def render_sidebar_canvas_controls(
         "the data has no word boxes, and always for axis/legend chrome.",
         key="global_base_font_size",
     )
+    st.session_state.setdefault("global_font_family", FONT_FAMILY)
     font_family = display.text_input(
         "Text font",
-        value=FONT_FAMILY,
+        key="global_font_family",
         help="Font for the word labels. Use the exact font from your experiment "
         "(e.g. 'Courier New') or a CSS fallback stack.",
     )
@@ -1332,6 +1396,10 @@ def main() -> None:
     # Data source selection (sidebar)
     _sidebar_group("📂 Data")
     data_choice = render_sidebar_data_source()
+    # Reserve the "Experimental Setup" slot under the 📂 Data group (TODO 5);
+    # the canvas/monitor/font controls fill it later (they need the filtered
+    # data), but it renders here — beside the data source it describes.
+    experimental_setup_slot = st.sidebar.container()
 
     # Load + map core data. The **Upload** source renders each table as an
     # [upload box → mapping] group in the sidebar (words, fixations, raw gaze) and
@@ -1366,6 +1434,11 @@ def main() -> None:
     # every other source loads it here (bundled demo sample, OneStop uploader).
     if raw_gaze_df is None:
         raw_gaze_df = load_raw_gaze_data(data_choice)
+
+    # Whole-dataset frames, captured BEFORE the sidebar "Filter trials" panel —
+    # the Bulk Export tab's "Export the whole dataset" option exports these,
+    # ignoring the current filters (TODO 1.7).
+    words_all, fixations_all = words_df, fixations_df
 
     # Trial-level filtering / grouping (sidebar): narrow by participant, by
     # condition (Hunting/Gathering, difficulty, first/repeated reading,
@@ -1447,10 +1520,10 @@ def main() -> None:
         else raw_gaze_filtered
     )
 
-    # Restore settings from an uploaded plot-config JSON BEFORE the sidebar
-    # widgets render, so they pick up the saved values (see _apply_url_preset
-    # for the same preset-then-render mechanism). The uploader lives in the
-    # "Plot configuration" panel below; its file persists across reruns.
+    # Restore settings + annotations from an uploaded config JSON BEFORE the
+    # sidebar widgets render, so they pick up the saved values (see
+    # _apply_url_preset for the same preset-then-render mechanism). The uploader
+    # lives in the "💾 Save & restore" panel below; its file persists across reruns.
     _apply_uploaded_plot_config(combos, fixations_filtered)
 
     # Canvas and visualization controls (sidebar). For a raw-gaze-only dataset,
@@ -1459,7 +1532,8 @@ def main() -> None:
     raw_gaze_only = words_filtered.empty and fixations_filtered.empty
     if raw_gaze_only and "global_show_raw_gaze" not in st.session_state:
         st.session_state["global_show_raw_gaze"] = True
-    _sidebar_group("🎨 Visualization")
+    # "Experimental Setup" (monitor/font/text-scaling) renders into its reserved
+    # slot under the 📂 Data group (TODO 5), not under 🎨 Visualization.
     (
         canvas_width,
         canvas_height,
@@ -1471,38 +1545,43 @@ def main() -> None:
         words_filtered,
         fixations_filtered if not fixations_filtered.empty else raw_gaze_filtered,
         data_choice,
+        slot=experimental_setup_slot,
     )
+    _sidebar_group("🎨 Visualization")
 
     has_raw_gaze = not raw_gaze_filtered.empty
     viz_settings = sidebar_controls(
         fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
     )
 
-    # Reserve the "Plot configuration" slot here so it renders under the
-    # 🎨 Visualization group; the Interactive Plot tab fills it later (it needs
-    # the live selection + figure settings for the download). See
-    # tabs._render_plot_config_expander.
-    plot_config_slot = st.sidebar.container()
+    # Reserve the "💾 Save & restore" slot here (a keyed container so the
+    # spotlight tour can target it) so it renders under the 🎨 Visualization
+    # group; the Scanpath Visualization tab fills it later (it needs the live
+    # selection + figure settings for the download). See
+    # tabs._render_save_restore_expander. This single panel merges the former
+    # Plot-configuration and Annotations sidebar panels (TODO 1.19).
+    save_restore_slot = st.sidebar.container(key="tour_grp_save_restore")
 
-    # Sidebar Annotations panel (download/restore JSON + count). The per-trial
-    # star/tags/notes editor lives in the Interactive Plot tab.
-    _sidebar_group("📝 Annotations")
-    render_annotations_sidebar()
+    # Whole-dataset combos for the Bulk Export tab's "Export the whole dataset"
+    # option, mirroring how `combos` is built from the filtered frames.
+    combos_all, _, _ = build_combo_options(
+        fixations_all
+        if not fixations_all.empty
+        else words_all
+        if not words_all.empty
+        else raw_gaze_df
+    )
 
-    # Tab pre-selection isn't supported by st.tabs (Streamlit limitation), so
-    # when the deep link asks for animation we surface a banner pointing to it.
-    requested_tab = (st.query_params.get("tab") or "").lower()
-    if requested_tab == "animation":
-        st.info("🎬 For the animated view, click the **Animated Scanpath** tab below.")
-
-    # Render tabbed interface
-    tab_single, tab_animation, tab_multi, tab_raw, tab_stats = st.tabs(
+    # Render tabbed interface. Animation is now a checkbox inside the Scanpath
+    # Visualization tab (no separate Animated Scanpath tab); Bulk Export has its
+    # own tab.
+    tab_single, tab_multi, tab_raw, tab_stats, tab_bulk = st.tabs(
         [
-            "Interactive Plot",
-            "Animated Scanpath",
-            "Multiple Comparison",
+            "Scanpath Visualization",
+            "Generations (WIP)",
             "Raw Data",
             "Data Statistics",
+            "Bulk Export",
         ]
     )
 
@@ -1519,21 +1598,7 @@ def main() -> None:
             raw_gaze=raw_gaze_filtered,
             line_spacing=line_spacing,
             scale_text_to_boxes=scale_text_to_boxes,
-            plot_config_slot=plot_config_slot,
-        )
-
-    with tab_animation:
-        render_animation_tab(
-            words_filtered,
-            fixations_filtered,
-            combos,
-            canvas_width=canvas_width,
-            canvas_height=canvas_height,
-            base_font_size=base_font_size,
-            font_family=font_family,
-            viz_settings=viz_settings,
-            line_spacing=line_spacing,
-            scale_text_to_boxes=scale_text_to_boxes,
+            plot_config_slot=save_restore_slot,
         )
 
     with tab_multi:
@@ -1562,6 +1627,23 @@ def main() -> None:
             canvas_width=canvas_width,
             base_font_size=base_font_size,
             font_family=font_family,
+        )
+
+    with tab_bulk:
+        render_bulk_export_tab(
+            combos,
+            words_filtered,
+            fixations_filtered,
+            combos_all,
+            words_all,
+            fixations_all,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            base_font_size=base_font_size,
+            font_family=font_family,
+            viz_settings=viz_settings,
+            line_spacing=line_spacing,
+            scale_text_to_boxes=scale_text_to_boxes,
         )
 
     # Sidebar Help group (bottom): replay the welcome tour (the tour itself

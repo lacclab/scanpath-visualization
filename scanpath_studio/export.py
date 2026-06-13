@@ -53,6 +53,9 @@ class ExportOptions:
     include_mega_table: bool = False
     table_format: str = "csv"  # "csv" | "parquet" | "both"
     png_scale: int = 2
+    # When True, export operates on the whole loaded dataset, ignoring the
+    # sidebar "Filter trials" panel; the caller supplies the unfiltered frames.
+    export_unfiltered: bool = False
     scope: str = "all"  # "all" | "trial" | "participant" | "text"
     scope_participant: Optional[str] = None
     scope_trial: Optional[str] = None
@@ -215,19 +218,50 @@ def _render_scope_picker(
 
 
 def render_export_options(
-    st_module, combos: pd.DataFrame, key_prefix: str = "export"
+    st_module,
+    combos: pd.DataFrame,
+    key_prefix: str = "export",
+    combos_all: Optional[pd.DataFrame] = None,
 ) -> ExportOptions:
-    """Render the bulk-export options UI and return a populated ExportOptions."""
+    """Render the bulk-export options UI and return a populated ExportOptions.
+
+    ``combos`` is the currently filtered trial pool; ``combos_all`` (when given)
+    is the whole loaded dataset. Ticking "Export the whole dataset" switches the
+    scope picker — and the export itself — to ``combos_all`` so the sidebar
+    filters are ignored.
+    """
     st = st_module
-    with st.expander("Bulk export options", expanded=False):
+    # No expander — the options are always displayed (TODO 2.1).
+    with st.container():
         st.markdown(
             "Choose which trials to include and which artifacts to bundle. "
             "Everything is packaged into a single zip you can download."
         )
 
         st.markdown("##### Scope")
+        # The whole-dataset toggle is always offered (TODO 2.2); it's a no-op
+        # only when no sidebar filter is active (filtered == whole dataset).
+        export_unfiltered = False
+        if combos_all is not None:
+            n_all, n_filtered = len(combos_all), len(combos)
+            export_unfiltered = st.checkbox(
+                f"Export ALL {n_all:,} trials in the dataset"
+                + (
+                    f" (ignoring the {n_filtered:,}-trial sidebar filter)"
+                    if n_all != n_filtered
+                    else ""
+                ),
+                value=False,
+                key=f"{key_prefix}_unfiltered",
+                help="Off: export the currently filtered trials. On: export "
+                "every trial in the loaded dataset, regardless of the "
+                "**Filter trials** panel.",
+            )
+        active_combos = (
+            combos_all if (export_unfiltered and combos_all is not None) else combos
+        )
         scope, scope_pid, scope_trial, scope_text = _render_scope_picker(
-            st, combos, key_prefix
+            st, active_combos, key_prefix
         )
 
         st.markdown("##### Figures")
@@ -297,6 +331,7 @@ def render_export_options(
         include_mega_table=include_mega_table,
         table_format=table_format,
         png_scale=int(png_scale),
+        export_unfiltered=export_unfiltered,
         scope=scope,
         scope_participant=scope_pid,
         scope_trial=scope_trial,
