@@ -6,6 +6,17 @@ secondaryBackgroundColor = "#f5f7fa"
 textColor = "#212529"
 font = "sans-serif"
 
+# Dark variant for the app chrome (sidebar, header, tabs, controls). Users switch
+# via the ☰ menu → Settings → Appearance, or have it follow their OS. The
+# scanpath plot itself deliberately stays light in both themes — it reproduces
+# the experiment's stimulus, which was shown on a light display — so only the
+# surrounding UI darkens.
+[theme.dark]
+primaryColor = "#5aa9e6"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1c2030"
+textColor = "#e8eaed"
+
 [server]
 runOnSave = true
 maxUploadSize = 500

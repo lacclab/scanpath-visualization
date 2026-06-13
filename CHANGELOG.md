@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dark mode.** Ships a polished dark theme for the app chrome (☰ →
+  **Settings → Appearance**, or follows your OS). The scanpath plot stays light
+  in both themes, so it always reproduces the experiment's stimulus faithfully.
 - **Raw-gaze-only datasets.** Upload just a raw-gaze table (no words or
   fixations) and visualize the gaze trace — the Interactive Plot draws the
   time-coloured gaze scatter, the trial picker and Data Statistics work off the
