@@ -37,6 +37,11 @@ _VIZ_WIDGET_DEFAULTS = {
     "global_order_font_color": "#111111",
     "global_fixation_colorscale": DEFAULT_FIXATION_COLORSCALE,
     "global_heatmap_colorscale": DEFAULT_HEATMAP_COLORSCALE,
+    # Restorable by the Save & restore config too, so seed here (no inline
+    # value=/index=) to avoid Streamlit's "default value but also set via
+    # Session State API" warning when a restore pre-sets them.
+    "global_critical_span_style": "Mark text",
+    "global_highlight_out_of_text": False,
 }
 
 
@@ -512,7 +517,6 @@ def sidebar_controls(
     show_order = viz.checkbox("Fixation index", key="global_show_order")
     highlight_out_of_text = viz.checkbox(
         "Mark out-of-text fixations",
-        value=False,
         key="global_highlight_out_of_text",
         help="Draw a red ✕ on fixations that fall outside every word box.",
     )
@@ -526,7 +530,6 @@ def sidebar_controls(
     critical_span_style = viz.radio(
         "Text highlighting",
         options=["Mark text", "Mark border", "None"],
-        index=0,
         horizontal=True,
         key="global_critical_span_style",
         disabled=not show_labels,
@@ -553,11 +556,14 @@ def sidebar_controls(
     )
 
     # Plot background. White by default; some analyses prefer a neutral gray.
+    # Seed via session_state (no inline index=) so a Save & restore config can
+    # pre-set it without the "default + session_state" warning.
     bg_options = list(BACKGROUND_PRESETS.keys()) + ["Custom…"]
+    _drop_stale("global_bg_choice", bg_options)
+    st.session_state.setdefault("global_bg_choice", bg_options[0])
     bg_choice = viz.selectbox(
         "Plot background",
         options=bg_options,
-        index=0,
         key="global_bg_choice",
         help="Background of the plotting area (and exported figures).",
     )

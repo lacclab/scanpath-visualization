@@ -140,14 +140,21 @@ class TestAppLaunches:
     def test_new_viz_toggles_build_without_error(self):
         # Flip the new plot options (color-by-line — now the "line" option in the
         # color-by selector — out-of-text, gray background) and confirm those
-        # code paths build without error.
+        # code paths build without error. These pre-set values mimic a Save &
+        # restore: the widgets must honour them (no inline value=/index= override
+        # — see _VIZ_WIDGET_DEFAULTS) rather than reset to their hardcoded default.
         at = _make_apptest(synthetic=True)
         at.session_state["global_color_by"] = "line"
         at.session_state["global_highlight_out_of_text"] = True
+        at.session_state["global_critical_span_style"] = "Mark border"
         at.session_state["global_bg_choice"] = "Gray"
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
+        out_of_text = {c.key: c.value for c in at.checkbox if c.key}
+        assert out_of_text.get("global_highlight_out_of_text") is True, (
+            "restored out-of-text value was overridden by an inline default"
+        )
 
     def test_animate_checkbox_renders_animation(self):
         # The Scanpath Visualization tab's Animate checkbox folds the former

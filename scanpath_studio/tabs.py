@@ -1384,10 +1384,11 @@ def render_single_trial_tab(
     col_side, col_main = st.columns([3, 7], gap="medium")
 
     with col_side:
-        # Trial Info heading + a slot filled once the selection (and any compare
-        # trial) is known — so the info sits ABOVE the trial selectors
-        # (TODO 1.11 / 1.12 / 1.14).
-        st.markdown("### Trial Info")
+        # A slot for the Trial Info block (heading + info), filled once the
+        # selection (and any compare trial) is known — so the info sits ABOVE the
+        # trial selectors (TODO 1.11 / 1.12 / 1.14). The heading lives in the
+        # fill (below), not here, so it isn't left dangling above an empty space
+        # when select_trial `st.stop()`s or returns no trial.
         trial_info_slot = st.container()
         selected_participant, selected_trial, selection_mode, selected_text = (
             select_trial(combos, key_prefix="single")
@@ -1476,6 +1477,7 @@ def render_single_trial_tab(
 
     # Fill the Trial Info slot now the selection (+ any compare trial) is known.
     with trial_info_slot:
+        st.markdown("### Trial Info")
         _render_trial_info(
             selected_participant,
             selected_trial,
