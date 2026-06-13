@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **PoTeC loader.** `sps.load_potec(root, download=True)` /
+  `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
+  — its filename-encoded ids and separate character-AoI coordinates can't go
+  through the generic upload flow. An in-app **Public datasets** source (with
+  a dataset registry built for more corpora) ships feature-flagged off
+  (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
+  release.
+
+## [0.19.0] - 2026-06-13
+
+### Added
 - **Dark mode.** Ships a polished dark theme for the app chrome (☰ →
   **Settings → Appearance**, or follows your OS). The scanpath plot stays light
   in both themes, so it always reproduces the experiment's stimulus faithfully.
@@ -20,13 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON uploader that re-applies a previously downloaded config — layers, coloring,
   sizing, text/highlighting, canvas, axes, trial selection, and annotations —
   silently skipping anything that doesn't fit the loaded data.
-- **PoTeC loader.** `sps.load_potec(root, download=True)` /
-  `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
-  — its filename-encoded ids and separate character-AoI coordinates can't go
-  through the generic upload flow. An in-app **Public datasets** source (with
-  a dataset registry built for more corpora) ships feature-flagged off
-  (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
-  release.
 
 ### Changed
 - **Reorganized layout & usability pass.** The **Animated Scanpath** tab folds
@@ -337,6 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Test suite grown from 85 to 114 tests.
 
+[0.19.0]: https://github.com/lacclab/scanpath-studio/releases/tag/v0.19.0
 [0.14.0]: https://github.com/lacclab/scanpath-studio/releases/tag/v0.14.0
 [0.13.0]: https://github.com/lacclab/scanpath-studio/releases/tag/v0.13.0
 [0.12.0]: https://github.com/lacclab/scanpath-studio/releases/tag/v0.12.0
