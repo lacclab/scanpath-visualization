@@ -83,7 +83,7 @@ def normalized_words_df():
             "width": [50, 50, 50],
             "height": [50, 50, 50],
             "text": ["word1", "word2", "word3"],
-            "paragraph_id": ["para1", "para1", "para1"],
+            "text_id": ["para1", "para1", "para1"],
             "line_idx": [1, 1, 1],
         }
     )

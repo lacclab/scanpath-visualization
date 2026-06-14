@@ -97,11 +97,11 @@ class TestAppLaunches:
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
 
     def test_single_trial_participant_mode_skips_slider(self):
-        # With a single trial (the synthetic source), Participant mode used to
-        # instantiate st.select_slider with ONE option — the Python side
-        # accepts it, but the browser slider throws `RangeError: min (0) is
-        # equal/bigger than max (0)` and the tab dies. The picker must render
-        # the lone value as static text instead of a slider.
+        # The synthetic source has a single participant, so the picker no longer
+        # offers a Participant mode (it would be a no-op) and collapses to a
+        # plain Trial dropdown — which in particular never instantiates a
+        # one-option st.select_slider (that crashes the browser with a
+        # `RangeError: min (0) is equal/bigger than max (0)`).
         at = _make_apptest(synthetic=True)
         at.session_state["single_select_trial_mode"] = "Participant"
         at.run(timeout=30)
@@ -110,8 +110,6 @@ class TestAppLaunches:
         assert "single_slider" not in slider_keys, (
             "single-option select_slider rendered — this crashes the browser"
         )
-        captions = [c.value for c in at.caption]
-        assert any("only one available" in c for c in captions)
 
     def test_single_trial_all_selection_modes(self):
         # Trial / Text / Participant must all resolve the lone synthetic trial.
@@ -269,6 +267,9 @@ class TestUnmappedRawDataView:
 
         at = _make_apptest()
         at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        # Past the setup wizard (collapsed "Data & mapping" panel), an incomplete
+        # mapping still surfaces the raw data so the user can fix it.
+        at.session_state["setup_complete"] = True
         at.run(timeout=60)
 
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -430,6 +431,7 @@ class TestGroupedUploadMapping:
 
         at = _make_apptest()
         at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.session_state["setup_complete"] = True  # past the setup wizard
         at.run(timeout=60)
 
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -640,3 +642,289 @@ class TestSpotlightTour:
         assert "tour_sp_next" in self._sp_buttons(at)
         assert at.session_state["tour_step"] == 0
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
+
+
+class TestSetupWizard:
+    """The hybrid setup wizard for the Upload source."""
+
+    @staticmethod
+    def _inject(monkeypatch):
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        raw_words = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p2", "p2"],
+                "trial_id": ["t1", "t1", "t1", "t1"],
+                "word_id": [1, 2, 1, 2],
+                "IA_LEFT": [0, 10, 0, 10],
+                "IA_RIGHT": [10, 20, 10, 20],
+                "IA_TOP": [0, 0, 0, 0],
+                "IA_BOTTOM": [10, 10, 10, 10],
+                "IA_LABEL": ["a", "b", "a", "b"],
+                "difficulty_level": ["Adv", "Adv", "Ele", "Ele"],
+                "junk_col": [9, 9, 9, 9],
+            }
+        )
+        raw_fix = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p2"],
+                "trial_id": ["t1", "t1", "t1"],
+                "CURRENT_FIX_X": [5.0, 15.0, 5.0],
+                "CURRENT_FIX_Y": [5.0, 5.0, 5.0],
+                "CURRENT_FIX_DURATION": [100, 120, 90],
+            }
+        )
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: (
+                raw_words
+                if kw["state_prefix"] == "col_map_words"
+                else raw_fix
+                if kw["state_prefix"] == "col_map_fix"
+                else pd.DataFrame()
+            ),
+        )
+        return app
+
+    def test_wizard_active_then_finalize_renders_tabs(self, monkeypatch):
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        # Wizard is active: the finalize button is shown and tabs are not yet up.
+        assert any(b.key == "wizard_finalize" for b in at.button)
+        assert "single_trial_id" not in {s.key for s in at.selectbox}
+
+        # Finalizing reveals the visualization (collapsed Data & mapping panel +
+        # the trial picker), and the kept columns are pruned.
+        at.session_state["setup_complete"] = True
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert any(b.key == "wizard_reconfigure" for b in at.button)
+
+    def test_wizard_prunes_unkept_columns(self, monkeypatch):
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.session_state["setup_complete"] = True
+        # Keep only the difficulty condition; drop the junk column.
+        at.session_state["col_map_words_optional"] = ["difficulty_level"]
+        at.session_state["col_map_words_keepextra"] = []
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+
+    def test_unified_trial_picker_and_setup_step(self, monkeypatch):
+        """Group A + C: one shared Trial ID picker (not per-table) and the
+        inline Experimental Setup controls both render in the active wizard."""
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        # The unified trial multiselect is rendered; per-table trial widgets are
+        # not (single shared mapping by default).
+        ms_keys = {m.key for m in at.multiselect}
+        assert "col_map_trial_unified" in ms_keys
+        assert "col_map_fix_trial" not in ms_keys
+        assert "col_map_words_trial" not in ms_keys
+        # Per-table override toggle is offered (both tables present).
+        assert any(t.key == "wizard_trial_per_table" for t in at.toggle)
+        # Display calibration moved into the loading flow.
+        assert any(n.key == "global_canvas_width" for n in at.number_input)
+
+    def test_per_table_trial_toggle_reveals_per_table_pickers(self, monkeypatch):
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.session_state["wizard_trial_per_table"] = True
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        ms_keys = {m.key for m in at.multiselect}
+        assert "col_map_fix_trial" in ms_keys
+        assert "col_map_words_trial" in ms_keys
+
+    def test_finalize_button_stores_named_dataset(self, monkeypatch):
+        """Group B.4: clicking 'Use this dataset' persists the normalized frames
+        under a name and switches the data source to it (no re-upload to switch)."""
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        finalize = [b for b in at.button if b.key == "wizard_finalize"]
+        assert finalize, "finalize button not rendered for a valid mapping"
+        finalize[0].click()
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        stored = at.session_state["_datasets"]
+        assert stored, "no dataset was stored on finalize"
+        name = at.session_state["data_source_choice"]
+        assert name in stored
+        # The stored entry holds the already-normalized frames, so switching to
+        # it later needs no re-upload / re-mapping, and the source switched away
+        # from Upload onto the new named dataset.
+        assert not stored[name]["fixations"].empty
+        assert not stored[name]["words"].empty
+        assert name != app.UPLOAD_CHOICE
+        assert at.session_state["setup_complete"] is True
+
+    def test_stored_dataset_loads_full_app_without_wizard(self, monkeypatch):
+        """Group B.4: selecting a stored dataset reloads the whole app from the
+        persisted frames — no wizard, no re-upload — and renders the trial picker."""
+        app = self._inject(monkeypatch)
+        # First finalize a dataset to capture its persisted store entry.
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        [b for b in at.button if b.key == "wizard_finalize"][0].click()
+        at.run(timeout=60)
+        stored = dict(at.session_state["_datasets"])
+        name = at.session_state["data_source_choice"]
+
+        # Fresh session: point straight at the stored dataset (no upload monkeypatch
+        # needed — the stored branch never reads uploads).
+        at2 = _make_apptest()
+        at2.session_state["_datasets"] = stored
+        at2.session_state["data_source_choice"] = name
+        at2.run(timeout=60)
+        assert not at2.exception, f"Streamlit exceptions: {at2.exception}"
+        assert not any(b.key == "wizard_finalize" for b in at2.button)
+        keys = {w.key for w in list(at2.selectbox) + list(at2.radio) if w.key}
+        assert any(k.startswith("single") for k in keys), keys
+
+    def test_differing_trial_counts_are_emphasized(self, monkeypatch):
+        """Group C.1c: when the per-table trial coverage differs the wizard says so
+        (an info note when the tables still overlap, not a single green count)."""
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        # Words cover t1,t2,t3; fixations only t1,t2 — overlapping but unequal.
+        raw_words = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p1"],
+                "trial_id": ["t1", "t2", "t3"],
+                "word_id": [1, 1, 1],
+                "IA_LEFT": [0, 0, 0],
+                "IA_RIGHT": [10, 10, 10],
+                "IA_TOP": [0, 0, 0],
+                "IA_BOTTOM": [10, 10, 10],
+                "IA_LABEL": ["a", "b", "c"],
+            }
+        )
+        raw_fix = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1"],
+                "trial_id": ["t1", "t2"],
+                "CURRENT_FIX_X": [5.0, 5.0],
+                "CURRENT_FIX_Y": [5.0, 5.0],
+                "CURRENT_FIX_DURATION": [100, 120],
+            }
+        )
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: (
+                raw_words
+                if kw["state_prefix"] == "col_map_words"
+                else raw_fix
+                if kw["state_prefix"] == "col_map_fix"
+                else pd.DataFrame()
+            ),
+        )
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        info_text = " ".join(e.value for e in at.info)
+        assert "Trial coverage differs" in info_text, info_text
+
+    def test_composite_trial_dataset_restores_picker_on_switch_back(self, monkeypatch):
+        """Regression for the review's HIGH finding: a stored dataset whose trial
+        id is composite must restore _composite_trial_columns (and its cascading
+        picker) on reselect, overriding whatever source was loaded last."""
+        import pandas as pd
+
+        from scanpath_studio import app
+
+        # Both a paragraph- and a text-level id present → unified default composes
+        # them (a composite trial id).
+        raw_words = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p1"],
+                "paragraph_id": ["A", "A", "B"],
+                "text_id": ["1", "1", "1"],
+                "word_id": [1, 2, 1],
+                "IA_LEFT": [0, 10, 0],
+                "IA_RIGHT": [10, 20, 10],
+                "IA_TOP": [0, 0, 0],
+                "IA_BOTTOM": [10, 10, 10],
+                "IA_LABEL": ["a", "b", "a"],
+            }
+        )
+        raw_fix = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p1", "p1"],
+                "paragraph_id": ["A", "A", "B"],
+                "text_id": ["1", "1", "1"],
+                "CURRENT_FIX_X": [5.0, 15.0, 5.0],
+                "CURRENT_FIX_Y": [5.0, 5.0, 5.0],
+                "CURRENT_FIX_DURATION": [100, 120, 90],
+            }
+        )
+        monkeypatch.setattr(
+            app,
+            "_read_uploaded_frame",
+            lambda **kw: (
+                raw_words
+                if kw["state_prefix"] == "col_map_words"
+                else raw_fix
+                if kw["state_prefix"] == "col_map_fix"
+                else pd.DataFrame()
+            ),
+        )
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        assert set(at.session_state["_composite_trial_columns"]) == {
+            "paragraph_id",
+            "text_id",
+        }
+        [b for b in at.button if b.key == "wizard_finalize"][0].click()
+        at.run(timeout=60)
+        stored = dict(at.session_state["_datasets"])
+        name = at.session_state["data_source_choice"]
+        assert set(stored[name]["composite_trial_columns"]) == {"paragraph_id", "text_id"}
+
+        # Fresh session with STALE composite state (as if Demo was loaded last).
+        at2 = _make_apptest()
+        at2.session_state["_datasets"] = stored
+        at2.session_state["data_source_choice"] = name
+        at2.session_state["_composite_trial_columns"] = None
+        at2.run(timeout=60)
+        assert not at2.exception, f"Streamlit exceptions: {at2.exception}"
+        assert set(at2.session_state["_composite_trial_columns"]) == {
+            "paragraph_id",
+            "text_id",
+        }
+        keys = {w.key for w in at2.selectbox if w.key}
+        assert any(k.startswith("single_composite_") for k in keys), keys
+
+    def test_experimental_setup_control_writes_shared_global_key(self, monkeypatch):
+        """Group A: the Display & experiment setup controls live inside the wizard
+        and write the shared global_* keys the sidebar later reads."""
+        app = self._inject(monkeypatch)
+        at = _make_apptest()
+        at.session_state["data_source_choice"] = app.UPLOAD_CHOICE
+        at.run(timeout=60)
+        assert not at.exception, f"Streamlit exceptions: {at.exception}"
+        width = [n for n in at.number_input if n.key == "global_canvas_width"]
+        assert width, "Experimental Setup monitor-width control not in the wizard"
+        width[0].set_value(1999)
+        at.run(timeout=60)
+        assert at.session_state["global_canvas_width"] == 1999

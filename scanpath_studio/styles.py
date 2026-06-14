@@ -44,6 +44,11 @@ def get_app_css() -> str:
         opacity: 1 !important;
     }
     /* "About" popover in the header: pill-shaped trigger + readable body width */
+    /* The button is content-sized (width="content") and sits in a narrow column;
+       align it to the column's right edge so it lines up with the right edge of
+       the page content. The `about_btn` wrapper is a flex column, so this only
+       moves the About button — no other popover (e.g. the plot toolbar). */
+    .st-key-about_btn { align-items: flex-end; }
     div[data-testid="stPopover"] button { border-radius: 999px; }
     div[data-testid="stPopover"] button p { white-space: nowrap; }
     div[data-testid="stPopoverBody"] {
@@ -51,5 +56,46 @@ def get_app_css() -> str:
         max-width: min(32rem, 95vw);
     }
     div[data-testid="stPopoverBody"] p { line-height: 1.45; }
+
+    /* === Emphasised loading spinner ============================================
+       The cache_data spinners ("Reading uploaded data…", "Normalizing data…", …)
+       can run for a while on a large upload, so make them an unmissable pulsing
+       banner instead of a small inline spinner. Blue tint + border reads on both
+       the light and dark themes; the keyframes are scoped so the app-wide
+       "animation: none" rules above don't kill the pulse or the spin. */
+    div[data-testid="stSpinner"] {
+        display: flex !important;
+        align-items: center;
+        gap: 0.9rem;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 1.2rem 1.5rem !important;
+        margin: 0.7rem 0 !important;
+        border-radius: 14px;
+        border: 1px solid #185fa5;
+        background: linear-gradient(90deg, #1f77b4, #3a8fd0 55%, #5aa9e6);
+        box-shadow: 0 8px 24px rgba(31, 119, 180, 0.38);
+        animation: sps-spinner-pulse 1.6s ease-in-out infinite !important;
+    }
+    /* white message text on the filled blue banner */
+    div[data-testid="stSpinner"] p,
+    div[data-testid="stSpinner"] div {
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.2px;
+        color: #ffffff !important;
+    }
+    /* enlarge the spinning Material icon (sized by font-size; it spins natively) */
+    div[data-testid="stSpinner"] [data-testid="stIconMaterial"] {
+        font-size: 2.5rem !important;
+        width: 2.5rem !important;
+        height: 2.5rem !important;
+        color: #ffffff !important;
+    }
+    @keyframes sps-spinner-pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(90, 169, 230, 0.6), 0 8px 24px rgba(31,119,180,0.38); }
+        70%  { box-shadow: 0 0 0 16px rgba(90, 169, 230, 0.0), 0 8px 24px rgba(31,119,180,0.38); }
+        100% { box-shadow: 0 0 0 0 rgba(90, 169, 230, 0.0), 0 8px 24px rgba(31,119,180,0.38); }
+    }
     </style>
     """

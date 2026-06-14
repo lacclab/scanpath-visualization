@@ -179,9 +179,9 @@ def _render_scope_picker(
     scope_trial: Optional[str] = None
     scope_text: Optional[str] = None
     text_col = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in combos.columns
-        else ("paragraph_id" if "paragraph_id" in combos.columns else None)
+        "unique_text_id"
+        if "unique_text_id" in combos.columns
+        else ("text_id" if "text_id" in combos.columns else None)
     )
 
     if scope == "trial" and not combos.empty:
@@ -207,7 +207,7 @@ def _render_scope_picker(
         )
     elif scope == "text" and not combos.empty:
         if text_col is None:
-            st.info("No text/paragraph id is available in this dataset.")
+            st.info("No text id is available in this dataset.")
         else:
             texts = sorted(combos[text_col].dropna().astype(str).unique())
             scope_text = st.selectbox(
@@ -352,9 +352,9 @@ def _apply_scope(combos: pd.DataFrame, options: ExportOptions) -> pd.DataFrame:
         ]
     if options.scope == "text" and options.scope_text:
         text_col = (
-            "unique_paragraph_id"
-            if "unique_paragraph_id" in combos.columns
-            else ("paragraph_id" if "paragraph_id" in combos.columns else None)
+            "unique_text_id"
+            if "unique_text_id" in combos.columns
+            else ("text_id" if "text_id" in combos.columns else None)
         )
         if text_col is None:
             return combos
@@ -403,7 +403,7 @@ def bulk_export(
         "",
         "## Data dictionary",
         "Canonical column names from the visualization tool:",
-        "- participant_id, trial_id, paragraph_id, word_id",
+        "- participant_id, trial_id, text_id, word_id",
         "- x, y, width, height (word bounding boxes in screen px)",
         "- x, y, duration_ms, timestamp_ms (fixations)",
         "- first_fixation_ms (FFD), first_pass_gaze_duration_ms (FPRT / gaze duration)",

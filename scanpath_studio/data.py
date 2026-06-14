@@ -16,6 +16,32 @@ import streamlit as st
 from .constants import DEFAULT_FIGURE_SIZE, PACKAGE_NAME
 
 
+def frame_fingerprint(df: Optional[pd.DataFrame]) -> tuple:
+    """Cheap, content-sensitive identity for a DataFrame.
+
+    Used as an *explicit* ``@st.cache_data`` key for functions that take an
+    underscore-prefixed (un-hashed) frame argument — so Streamlit never re-hashes
+    a multi-million-row frame on every rerun just to look up the cache. We sample
+    shape + column names + a hash of the first/last rows, which uniquely
+    identifies real datasets while staying O(1) in the row count.
+
+    Two genuinely different frames could in principle collide, but the head/tail
+    hash plus the exact row count makes that astronomically unlikely for real
+    eye-tracking tables. Falls back to ``(n, columns)`` if hashing raises (e.g. a
+    column of unhashable objects).
+    """
+    if df is None or getattr(df, "empty", True):
+        return (0, ())
+    cols = tuple(map(str, df.columns))
+    n = int(len(df))
+    try:
+        head = int(pd.util.hash_pandas_object(df.head(64), index=True).sum())
+        tail = int(pd.util.hash_pandas_object(df.tail(64), index=True).sum())
+    except Exception:
+        head = tail = 0
+    return (n, cols, head, tail)
+
+
 # ---------------------------------------------------------------------------
 # Server-side OneStop data source.
 #
@@ -37,6 +63,21 @@ def onestop_data_dir() -> Optional[Path]:
     """Resolved value of `$ONESTOP_DATA_DIR`, or `None` if unset/blank."""
     raw = os.environ.get(ONESTOP_DATA_DIR_ENV, "").strip()
     return Path(raw) if raw else None
+
+
+def onestop_full_bundle_exists() -> bool:
+    """True when the full OneStop CSV.zip exports are present (not just per-pid
+    shards).
+
+    When the whole corpus is available the app loads it once and filters in-app
+    (so switching participant is instant); a shards-only setup must instead load
+    one participant's shard at a time (it can't materialize the ~60 GB corpus)."""
+    base = onestop_data_dir()
+    if base is None:
+        return False
+    return (base / "ia_Paragraph.csv.zip").exists() and (
+        base / "fixations_Paragraph.csv.zip"
+    ).exists()
 
 
 def _onestop_shard_paths(base: Path, pid: str) -> Tuple[Path, Path]:
@@ -254,7 +295,15 @@ TRIAL_CANDIDATES = [
     "trial",
     "trial_index",
 ]
-PARAGRAPH_CANDIDATES = ["unique_paragraph_id", "paragraph_id"]
+# Source column names that identify which *text* (passage) a row belongs to.
+# Output canonical column is `text_id` (was `paragraph_id`); the source names stay
+# as the real-world conventions so auto-detection keeps working.
+TEXT_ID_CANDIDATES = [
+    "unique_paragraph_id",
+    "paragraph_id",
+    "unique_text_id",
+    "text_id",
+]
 TEXT_CANDIDATES = [
     "text",
     "IA_LABEL",
@@ -331,7 +380,7 @@ def propose_word_schema(words: pd.DataFrame) -> Dict[str, Optional[str]]:
     return dict(
         participant=pick_column(words, PARTICIPANT_CANDIDATES),
         trial=pick_column(words, TRIAL_CANDIDATES),
-        paragraph=pick_column(words, PARAGRAPH_CANDIDATES),
+        text_id=pick_column(words, TEXT_ID_CANDIDATES),
         word_id=pick_column(words, WORD_ID_CANDIDATES),
         text=pick_column(words, TEXT_CANDIDATES),
         line=pick_column(words, LINE_CANDIDATES),
@@ -351,7 +400,7 @@ def propose_fix_schema(fixations: pd.DataFrame) -> Dict[str, Optional[str]]:
     return dict(
         participant=pick_column(fixations, PARTICIPANT_CANDIDATES),
         trial=pick_column(fixations, TRIAL_CANDIDATES),
-        paragraph=pick_column(fixations, PARAGRAPH_CANDIDATES),
+        text_id=pick_column(fixations, TEXT_ID_CANDIDATES),
         fixation_id=pick_column(fixations, FIX_FIXATION_ID_CANDIDATES),
         timestamp=pick_column(fixations, FIX_TIMESTAMP_CANDIDATES),
         duration=pick_column(fixations, FIX_DURATION_CANDIDATES),
@@ -409,8 +458,9 @@ def validate_fix_schema(schema: Dict[str, Optional[str]]) -> list:
     coordinates from the matching word-box centers — see
     ``fill_fixation_xy_from_words``."""
     problems = []
+    # Participant is optional — a dataset without it is treated as a single
+    # anonymous reader (see SYNTHETIC_PARTICIPANT).
     for key, label in [
-        ("participant", "Participant ID"),
         ("trial", "Trial ID"),
         ("duration", "Duration"),
     ]:
@@ -428,8 +478,8 @@ def validate_fix_schema(schema: Dict[str, Optional[str]]) -> list:
 def validate_raw_gaze_schema(schema: Dict[str, Optional[str]]) -> list:
     """Return a list of human-readable problems with a raw gaze schema."""
     problems = []
+    # Participant optional — single anonymous reader when absent.
     for key, label in [
-        ("participant", "Participant ID"),
         ("trial", "Trial ID"),
         ("x", "X"),
         ("y", "Y"),
@@ -603,8 +653,11 @@ def infer_raw_gaze_schema(raw_gaze: pd.DataFrame) -> Optional[Dict[str, str]]:
 
 def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
     """Normalize raw gaze data to canonical column names."""
-    df = pd.DataFrame()
-    df["participant_id"] = raw_gaze[schema["participant"]].astype(str)
+    df = pd.DataFrame(index=raw_gaze.index)
+    if schema.get("participant"):
+        df["participant_id"] = raw_gaze[schema["participant"]].astype(str)
+    else:
+        df["participant_id"] = SYNTHETIC_PARTICIPANT
     trial_cols = trial_mapping_columns(schema["trial"])
     if len(trial_cols) > 1:
         # User-composed unique trial ID — see normalize_words.
@@ -619,10 +672,10 @@ def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.Dat
         df["trial_id"] = raw_gaze[trial_col].astype(str)
         if "unique_trial_id" in raw_gaze.columns:
             df["unique_trial_id"] = raw_gaze["unique_trial_id"].astype(str)
-    # Raw gaze has no paragraph concept; mirror trial_id so a raw-gaze-only
+    # Raw gaze has no text/passage concept; mirror trial_id so a raw-gaze-only
     # dataset still works with the trial picker (utils.build_combo_options needs
-    # a paragraph column).
-    df["paragraph_id"] = df["trial_id"]
+    # a text_id column).
+    df["text_id"] = df["trial_id"]
     if schema.get("text"):
         df["text"] = raw_gaze[schema["text"]].astype(str)
     else:
@@ -664,6 +717,13 @@ def infer_fix_schema(fixations: pd.DataFrame) -> Optional[Dict[str, str]]:
 STIMULUS_PARTICIPANT = ""
 STIMULUS_WORDS_FLAG = "_stimulus_words"
 
+# Synthetic participant id used when a dataset has no participant column at all
+# (a single anonymous reader). Distinct from STIMULUS_PARTICIPANT ("") so it
+# never collides with the stimulus-word broadcast machinery — participant_id is
+# always present downstream (combos/filters/annotations/export/measures groupby),
+# and the UI hides the participant selector when there's only this one value.
+SYNTHETIC_PARTICIPANT = "(all)"
+
 
 def broadcast_stimulus_words(
     words: pd.DataFrame, fixations: pd.DataFrame
@@ -682,6 +742,11 @@ def broadcast_stimulus_words(
         return words
     words = words.drop(columns=[STIMULUS_WORDS_FLAG])
     if words.empty or fixations.empty:
+        # No fixations to broadcast across (e.g. a words-only dataset): there's a
+        # single anonymous reader, so give the placeholder a real synthetic id.
+        if not words.empty:
+            words = words.copy()
+            words["participant_id"] = SYNTHETIC_PARTICIPANT
         return words
     pairs = fixations[["participant_id", "trial_id"]].drop_duplicates()
     pairs["participant_id"] = pairs["participant_id"].astype(str)
@@ -772,7 +837,192 @@ def _disambiguate_repeated_readings(
     return df
 
 
-def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Optional-field registry. Drives (a) which known optional source columns are
+# carried into the normalized frame and (b) the setup wizard's opt-out checklist.
+# Each entry: (source, dest, kind, category) where `kind` ∈
+# {numeric, string, boolean, passthrough} and `category` ∈
+# {measure, linguistic, meta} groups the fields in the UI. Matched by exact
+# source name (same as the legacy keep-lists this replaced).
+# ---------------------------------------------------------------------------
+WORD_OPTIONAL_FIELDS = [
+    ("IA_FIRST_FIXATION_DURATION", "first_fixation_ms", "numeric", "measure"),
+    ("IA_DWELL_TIME", "total_fixation_duration_ms", "numeric", "measure"),
+    ("IA_FIRST_RUN_DWELL_TIME", "first_pass_gaze_duration_ms", "numeric", "measure"),
+    (
+        "IA_SECOND_RUN_DWELL_TIME",
+        "higher_pass_fixation_duration_ms",
+        "numeric",
+        "measure",
+    ),
+    ("IA_LAST_RUN_DWELL_TIME", "last_run_dwell_time_ms", "numeric", "measure"),
+    ("IA_FIXATION_COUNT", "n_fixations", "numeric", "measure"),
+    ("IA_SKIP", "skip_flag", "boolean", "measure"),
+    ("IA_REGRESSION_IN_COUNT", "regression_in_count", "numeric", "measure"),
+    ("IA_REGRESSION_OUT_COUNT", "regression_out_count", "numeric", "measure"),
+    ("IA_REGRESSION_IN", "regression_in_flag", "boolean", "measure"),
+    ("IA_REGRESSION_OUT", "regression_out_flag", "boolean", "measure"),
+    (
+        "IA_REGRESSION_PATH_DURATION",
+        "regression_path_duration_ms",
+        "numeric",
+        "measure",
+    ),
+    ("TRIAL_DWELL_TIME", "trial_dwell_time_ms", "numeric", "measure"),
+    ("TRIAL_FIXATION_COUNT", "trial_fixation_count", "numeric", "measure"),
+    ("TRIAL_IA_COUNT", "trial_ia_count", "numeric", "measure"),
+    ("word_length", "word_length", "numeric", "measure"),
+    ("word_length_no_punctuation", "word_length_no_punctuation", "numeric", "measure"),
+    ("gpt2_surprisal", "gpt2_surprisal", "numeric", "linguistic"),
+    ("wordfreq_frequency", "wordfreq_frequency", "numeric", "linguistic"),
+    ("subtlex_frequency", "subtlex_frequency", "numeric", "linguistic"),
+    ("universal_pos", "universal_pos", "string", "linguistic"),
+    ("ptb_pos", "ptb_pos", "string", "linguistic"),
+    ("Reduced_POS", "reduced_pos", "string", "linguistic"),
+    ("dependency_relation", "dependency_relation", "string", "linguistic"),
+    ("morphological_features", "morphological_features", "string", "linguistic"),
+    ("entity_type", "entity_type", "string", "linguistic"),
+    ("head_word_index", "head_word_index", "numeric", "linguistic"),
+    ("distance_to_head", "distance_to_head", "numeric", "linguistic"),
+    ("left_dependents_count", "left_dependents_count", "numeric", "linguistic"),
+    ("right_dependents_count", "right_dependents_count", "numeric", "linguistic"),
+    (SOURCE_FILE_COLUMN, SOURCE_FILE_COLUMN, "passthrough", "meta"),
+    ("TRIAL_INDEX", "TRIAL_INDEX", "passthrough", "meta"),
+    ("trial_index", "trial_index", "passthrough", "meta"),
+    ("article_batch", "article_batch", "passthrough", "meta"),
+    ("article_id", "article_id", "passthrough", "meta"),
+    ("difficulty_level", "difficulty_level", "passthrough", "meta"),
+    ("article_title", "article_title", "passthrough", "meta"),
+    ("question", "question", "passthrough", "meta"),
+    ("question_preview", "question_preview", "boolean", "meta"),
+    ("selected_answer", "selected_answer", "passthrough", "meta"),
+    ("is_correct", "is_correct", "passthrough", "meta"),
+    ("repeated_reading_trial", "repeated_reading_trial", "boolean", "meta"),
+    ("critical_span_indices", "critical_span_indices", "passthrough", "meta"),
+    ("distractor_span_indices", "distractor_span_indices", "passthrough", "meta"),
+    ("aspan_ind_start", "aspan_ind_start", "passthrough", "meta"),
+    ("aspan_ind_end", "aspan_ind_end", "passthrough", "meta"),
+    ("dspan_ind_start", "dspan_ind_start", "passthrough", "meta"),
+    ("dspan_ind_end", "dspan_ind_end", "passthrough", "meta"),
+    ("is_in_aspan", "is_in_aspan", "boolean", "meta"),
+    ("is_in_dspan", "is_in_dspan", "boolean", "meta"),
+]
+
+FIX_OPTIONAL_FIELDS = [
+    (SOURCE_FILE_COLUMN, SOURCE_FILE_COLUMN, "passthrough", "meta"),
+    ("TRIAL_INDEX", "TRIAL_INDEX", "passthrough", "meta"),
+    ("trial_index", "trial_index", "passthrough", "meta"),
+    ("article_batch", "article_batch", "passthrough", "meta"),
+    ("article_id", "article_id", "passthrough", "meta"),
+    ("difficulty_level", "difficulty_level", "passthrough", "meta"),
+    ("article_title", "article_title", "passthrough", "meta"),
+    ("question", "question", "passthrough", "meta"),
+    ("selected_answer", "selected_answer", "passthrough", "meta"),
+    ("is_correct", "is_correct", "passthrough", "meta"),
+    ("repeated_reading_trial", "repeated_reading_trial", "boolean", "meta"),
+    ("question_preview", "question_preview", "boolean", "meta"),
+]
+
+
+def _schema_source_columns(schema: Dict) -> set:
+    """Set of raw source column names a normalization schema references."""
+    cols: set = set()
+    for value in schema.values():
+        if not value:
+            continue
+        if isinstance(value, list):
+            cols.update(value)
+        else:
+            cols.add(value)
+    return cols
+
+
+def _apply_optional_fields(
+    df: pd.DataFrame, source: pd.DataFrame, registry: list, keep: Optional[set]
+) -> set:
+    """Carry registry-listed optional source columns into ``df`` (renamed +
+    dtype-coerced). ``keep`` is ``None`` (carry every detected field — the
+    backward-compatible default) or a set of *source* column names to limit to.
+    Returns the set of source columns actually emitted."""
+    emitted: set = set()
+    for src, dest, kind, _category in registry:
+        if src not in source.columns:
+            continue
+        if keep is not None and src not in keep:
+            continue
+        emitted.add(src)
+        col = source[src]
+        if kind == "numeric":
+            df[dest] = pd.to_numeric(col, errors="coerce")
+        elif kind == "string":
+            df[dest] = col.astype(str)
+        elif kind == "boolean":
+            df[dest] = col.fillna(False).astype(bool)
+        else:
+            df[dest] = col
+    return emitted
+
+
+def _carry_extra_columns(
+    df: pd.DataFrame, source: pd.DataFrame, keep: Optional[set], skip: set
+) -> None:
+    """Carry user-chosen extra ``keep`` source columns through verbatim, skipping
+    those already emitted (canonical / registry) or in ``skip``."""
+    if not keep:
+        return
+    for col in keep:
+        if col in source.columns and col not in skip and col not in df.columns:
+            df[col] = source[col].to_numpy()
+
+
+def categorize_columns(raw: pd.DataFrame, schema: Dict, registry: list) -> Dict:
+    """Split a raw frame's columns into {mapped, detected_optional, unclaimed}.
+
+    ``mapped`` = source columns the schema references; ``detected_optional`` =
+    registry entries present in the frame (each ``{source, dest, category}``);
+    ``unclaimed`` = everything else (offered as filter fields / extra keeps)."""
+    mapped = {c for c in _schema_source_columns(schema) if c in raw.columns}
+    detected = [
+        {"source": src, "dest": dest, "category": category}
+        for src, dest, _kind, category in registry
+        if src in raw.columns
+    ]
+    detected_sources = {d["source"] for d in detected}
+    unclaimed = [
+        c for c in raw.columns if c not in mapped and c not in detected_sources
+    ]
+    return {"mapped": mapped, "detected_optional": detected, "unclaimed": unclaimed}
+
+
+def compute_keep_columns(
+    schema: Dict,
+    *,
+    optional_sources: Optional[Iterable[str]] = None,
+    filter_fields: Optional[Iterable[str]] = None,
+    keep_columns: Optional[Iterable[str]] = None,
+) -> set:
+    """Source columns to retain before normalization (everything else is dropped
+    for speed). Union of: schema-mapped sources, always-kept structural columns,
+    chosen optional fields, chosen filter fields, and extra keep columns."""
+    keep = set(_schema_source_columns(schema))
+    # Structural columns consulted directly by normalize_* (not via schema).
+    for col in (
+        SOURCE_FILE_COLUMN,
+        "unique_trial_id",
+        "unique_paragraph_id",
+        "TRIAL_INDEX",
+        "trial_index",
+    ):
+        keep.add(col)
+    for group in (optional_sources, filter_fields, keep_columns):
+        if group:
+            keep.update(group)
+    return keep
+
+
+def normalize_words(
+    words: pd.DataFrame, schema: Dict[str, str], *, keep_columns: Optional[set] = None
+) -> pd.DataFrame:
     # The explicit index makes scalar assignments (e.g. the stimulus-level
     # participant placeholder) fill every row even when assigned first.
     df = pd.DataFrame(index=words.index)
@@ -802,12 +1052,12 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         if "unique_trial_id" in words.columns:
             df["unique_trial_id"] = words["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in words.columns:
-        df["unique_paragraph_id"] = words["unique_paragraph_id"].astype(str)
-        df["paragraph_id"] = df["unique_paragraph_id"]
-    elif schema.get("paragraph"):
-        df["paragraph_id"] = words[schema["paragraph"]].astype(str)
+        df["unique_text_id"] = words["unique_paragraph_id"].astype(str)
+        df["text_id"] = df["unique_text_id"]
+    elif schema.get("text_id"):
+        df["text_id"] = words[schema["text_id"]].astype(str)
     else:
-        df["paragraph_id"] = df["trial_id"]
+        df["text_id"] = df["trial_id"]
     df["word_id"] = pd.to_numeric(words[schema["word_id"]], errors="coerce")
     if schema.get("text"):
         df["text"] = words[schema["text"]].astype(str)
@@ -834,92 +1084,29 @@ def normalize_words(words: pd.DataFrame, schema: Dict[str, str]) -> pd.DataFrame
         df["width"] = right - left
         df["height"] = bottom - top
 
-    extra_meta = [
-        SOURCE_FILE_COLUMN,
-        "TRIAL_INDEX",
-        "trial_index",
-        "article_batch",
-        "article_id",
-        "difficulty_level",
-        "article_title",
-        "question",
-        "question_preview",
-        "selected_answer",
-        "is_correct",
-        "repeated_reading_trial",
-        "critical_span_indices",
-        "distractor_span_indices",
-        "aspan_ind_start",
-        "aspan_ind_end",
-        "dspan_ind_start",
-        "dspan_ind_end",
-        "is_in_aspan",
-        "is_in_dspan",
-    ]
-    _bool_cols = {
-        "repeated_reading_trial",
-        "question_preview",
-        "is_in_aspan",
-        "is_in_dspan",
-    }
-    for col in extra_meta:
-        if col in words.columns:
-            if col in _bool_cols:
-                df[col] = words[col].fillna(False).astype(bool)
-            else:
-                df[col] = words[col]
-
-    metric_map = {
-        "IA_FIRST_FIXATION_DURATION": ("first_fixation_ms", "numeric"),
-        "IA_DWELL_TIME": ("total_fixation_duration_ms", "numeric"),
-        "IA_FIRST_RUN_DWELL_TIME": ("first_pass_gaze_duration_ms", "numeric"),
-        "IA_SECOND_RUN_DWELL_TIME": ("higher_pass_fixation_duration_ms", "numeric"),
-        "IA_LAST_RUN_DWELL_TIME": ("last_run_dwell_time_ms", "numeric"),
-        "IA_FIXATION_COUNT": ("n_fixations", "numeric"),
-        "IA_SKIP": ("skip_flag", "boolean"),
-        "IA_REGRESSION_IN_COUNT": ("regression_in_count", "numeric"),
-        "IA_REGRESSION_OUT_COUNT": ("regression_out_count", "numeric"),
-        "IA_REGRESSION_IN": ("regression_in_flag", "boolean"),
-        "IA_REGRESSION_OUT": ("regression_out_flag", "boolean"),
-        "IA_REGRESSION_PATH_DURATION": ("regression_path_duration_ms", "numeric"),
-        "TRIAL_DWELL_TIME": ("trial_dwell_time_ms", "numeric"),
-        "TRIAL_FIXATION_COUNT": ("trial_fixation_count", "numeric"),
-        "TRIAL_IA_COUNT": ("trial_ia_count", "numeric"),
-        "word_length": ("word_length", "numeric"),
-        "word_length_no_punctuation": ("word_length_no_punctuation", "numeric"),
-        "gpt2_surprisal": ("gpt2_surprisal", "numeric"),
-        "wordfreq_frequency": ("wordfreq_frequency", "numeric"),
-        "subtlex_frequency": ("subtlex_frequency", "numeric"),
-        "universal_pos": ("universal_pos", "string"),
-        "ptb_pos": ("ptb_pos", "string"),
-        "Reduced_POS": ("reduced_pos", "string"),
-        "dependency_relation": ("dependency_relation", "string"),
-        "morphological_features": ("morphological_features", "string"),
-        "entity_type": ("entity_type", "string"),
-        "head_word_index": ("head_word_index", "numeric"),
-        "distance_to_head": ("distance_to_head", "numeric"),
-        "left_dependents_count": ("left_dependents_count", "numeric"),
-        "right_dependents_count": ("right_dependents_count", "numeric"),
-    }
-    for source, (dest, kind) in metric_map.items():
-        if source not in words.columns:
-            continue
-        if kind == "numeric":
-            df[dest] = pd.to_numeric(words[source], errors="coerce")
-        elif kind == "string":
-            df[dest] = words[source].astype(str)
-        else:
-            df[dest] = words[source].fillna(False).astype(bool)
+    emitted = _apply_optional_fields(df, words, WORD_OPTIONAL_FIELDS, keep_columns)
+    if keep_columns is not None:
+        _carry_extra_columns(
+            df, words, keep_columns, _schema_source_columns(schema) | emitted
+        )
 
     df = _preserve_composite_columns(df, words, schema["trial"])
     return df
 
 
 def normalize_fixations(
-    fixations: pd.DataFrame, schema: Dict[str, str]
+    fixations: pd.DataFrame,
+    schema: Dict[str, str],
+    *,
+    keep_columns: Optional[set] = None,
 ) -> pd.DataFrame:
-    df = pd.DataFrame()
-    df["participant_id"] = fixations[schema["participant"]].astype(str)
+    # Explicit index so a constant participant placeholder fills every row.
+    df = pd.DataFrame(index=fixations.index)
+    if schema.get("participant"):
+        df["participant_id"] = fixations[schema["participant"]].astype(str)
+    else:
+        # No participant column → a single anonymous reader.
+        df["participant_id"] = SYNTHETIC_PARTICIPANT
     trial_cols = trial_mapping_columns(schema["trial"])
     if len(trial_cols) > 1:
         # User-composed unique trial ID — see normalize_words.
@@ -932,22 +1119,23 @@ def normalize_fixations(
             else trial_cols[0]
         )
         df["trial_id"] = fixations[trial_col].astype(str)
-        df = _disambiguate_repeated_readings(
-            df, fixations, schema["participant"], trial_col
-        )
+        if schema.get("participant"):
+            df = _disambiguate_repeated_readings(
+                df, fixations, schema["participant"], trial_col
+            )
         if "unique_trial_id" in fixations.columns:
             df["unique_trial_id"] = fixations["unique_trial_id"].astype(str)
-    paragraph_col = (
+    text_id_col = (
         "unique_paragraph_id"
         if "unique_paragraph_id" in fixations.columns
-        else schema.get("paragraph")
+        else schema.get("text_id")
     )
-    if paragraph_col:
-        df["paragraph_id"] = fixations[paragraph_col].astype(str)
+    if text_id_col:
+        df["text_id"] = fixations[text_id_col].astype(str)
     else:
-        df["paragraph_id"] = df["trial_id"]
+        df["text_id"] = df["trial_id"]
     if "unique_paragraph_id" in fixations.columns:
-        df["unique_paragraph_id"] = fixations["unique_paragraph_id"].astype(str)
+        df["unique_text_id"] = fixations["unique_paragraph_id"].astype(str)
     # X/Y may be unmapped for AOI-sequence datasets (no pixel coordinates) —
     # left NaN here and filled from word-box centers by harmonize_frames().
     for coord in ("x", "y"):
@@ -1007,24 +1195,11 @@ def normalize_fixations(
     else:
         df["noise_flag"] = False
 
-    meta_cols = [
-        SOURCE_FILE_COLUMN,
-        "TRIAL_INDEX",
-        "trial_index",
-        "article_batch",
-        "article_id",
-        "difficulty_level",
-        "article_title",
-        "question",
-        "selected_answer",
-        "is_correct",
-    ]
-    for col in meta_cols:
-        if col in fixations.columns:
-            df[col] = fixations[col]
-    for bool_col in ("repeated_reading_trial", "question_preview"):
-        if bool_col in fixations.columns:
-            df[bool_col] = fixations[bool_col].fillna(False).astype(bool)
+    emitted = _apply_optional_fields(df, fixations, FIX_OPTIONAL_FIELDS, keep_columns)
+    if keep_columns is not None:
+        _carry_extra_columns(
+            df, fixations, keep_columns, _schema_source_columns(schema) | emitted
+        )
 
     df = _preserve_composite_columns(df, fixations, schema["trial"])
 
@@ -1043,7 +1218,7 @@ def normalize_fixations(
 WORDS_CANONICAL_COLUMNS: Dict[str, str] = {
     "participant_id": "object",
     "trial_id": "object",
-    "paragraph_id": "object",
+    "text_id": "object",
     "word_id": "float64",
     "text": "object",
     "line_idx": "float64",
@@ -1055,7 +1230,7 @@ WORDS_CANONICAL_COLUMNS: Dict[str, str] = {
 FIX_CANONICAL_COLUMNS: Dict[str, str] = {
     "participant_id": "object",
     "trial_id": "object",
-    "paragraph_id": "object",
+    "text_id": "object",
     "x": "float64",
     "y": "float64",
     "duration_ms": "float64",
@@ -1101,6 +1276,28 @@ def filter_data(
     fixations: pd.DataFrame,
     filters: Dict,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    # When the participant/trial selection covers the whole frame (the default —
+    # any narrowing already happened upstream in filter_trials), skip the two
+    # O(n) membership masks entirely; only the optional fixation-level filters
+    # below apply. ``default_filters`` sets the cover-all flags.
+    cover_all = bool(
+        filters.get("_participants_cover_all") and filters.get("_trials_cover_all")
+    )
+    if cover_all:
+        # participant/trial cover the whole frame and default_filters set the
+        # pass/saccade/eye filters to their full value sets (no-ops), so only the
+        # noise filter can actually narrow the fixations. Return the frames
+        # untouched (no full-frame mask, no copy) when there's nothing to drop —
+        # the common large-upload case where there's no noise data.
+        include_noise = filters.get("include_noise", True)
+        if (
+            not include_noise
+            and "noise_flag" in fixations.columns
+            and bool(fixations["noise_flag"].fillna(False).to_numpy().any())
+        ):
+            return words, fixations[~fixations["noise_flag"].fillna(False)]
+        return words, fixations
+
     participants = filters.get("participants") or _union_column_values(
         words, fixations, "participant_id"
     )
@@ -1109,7 +1306,6 @@ def filter_data(
         trials
     )
     words_filtered = words[word_mask]
-
     fix_mask = fixations["participant_id"].isin(participants) & fixations[
         "trial_id"
     ].isin(trials)
@@ -1147,9 +1343,11 @@ def filter_trials(
     """
     w, f = words, fixations
     if participants:
+        # participant_id is already string after normalization (as the metadata
+        # filters below also assume), so skip a full-column .astype(str) recast.
         keep = set(map(str, participants))
-        w = w[w["participant_id"].astype(str).isin(keep)]
-        f = f[f["participant_id"].astype(str).isin(keep)]
+        w = w[w["participant_id"].isin(keep)]
+        f = f[f["participant_id"].isin(keep)]
     for col, allowed in (metadata or {}).items():
         if not allowed:
             continue
@@ -1226,7 +1424,18 @@ def compute_canvas_size(
     return max(width, 100), max(height, 100)
 
 
-@st.cache_data(show_spinner=False)
+# Primary EyeLink IA measures. When a words frame already carries all of these
+# (a pre-aggregated export, e.g. OneStop), the fixation-based recompute is a
+# fallback whose output is discarded by the "existing values win" merge — so we
+# skip it entirely. See compute_per_word_measures for the precedence rule.
+_PREAGGREGATED_METRIC_COLUMNS = [
+    "first_fixation_ms",
+    "first_pass_gaze_duration_ms",
+    "total_fixation_duration_ms",
+    "n_fixations",
+]
+
+
 def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.DataFrame:
     """Return per-word reading measures.
 
@@ -1234,15 +1443,34 @@ def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.Dat
     export), those values are preserved. Anything missing is computed from
     fixations + bounding boxes via `measures.compute_per_word_measures`.
 
-    Cached: this function is invoked across the app on each rerun. Streamlit's
-    hash is by DataFrame identity/content, so identical inputs reuse the result.
+    Cached on a cheap content *fingerprint* of the inputs (see
+    ``frame_fingerprint``) rather than a full DataFrame hash, so a rerun that
+    doesn't change the data reuses the result without re-hashing millions of
+    rows. The frames themselves are passed un-hashed (underscore args).
     """
+    return _compute_word_metrics_cached(
+        words,
+        fixations,
+        cache_key=(frame_fingerprint(words), frame_fingerprint(fixations)),
+    )
+
+
+@st.cache_data(show_spinner="Computing reading measures…")
+def _compute_word_metrics_cached(
+    _words: pd.DataFrame, _fixations: pd.DataFrame, cache_key
+) -> pd.DataFrame:
     from .measures import compute_per_word_measures
 
-    if words.empty:
-        return words.copy()
+    if _words.empty:
+        return _words.copy()
 
-    enriched = compute_per_word_measures(fixations, words)
+    # Pre-aggregated reading measures win over computed ones, so when the words
+    # frame already carries the EyeLink IA measures we skip the O(fixations)
+    # assignment + per-word temporal walk entirely (minutes on the full corpus).
+    if all(col in _words.columns for col in _PREAGGREGATED_METRIC_COLUMNS):
+        enriched = _words
+    else:
+        enriched = compute_per_word_measures(_fixations, _words)
 
     metric_fields = [
         "first_fixation_ms",
@@ -1282,7 +1510,7 @@ def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.Dat
     base_fields = [
         "participant_id",
         "trial_id",
-        "paragraph_id",
+        "text_id",
         "word_id",
         "text",
         "line_idx",
@@ -1333,17 +1561,38 @@ def compute_word_metrics(words: pd.DataFrame, fixations: pd.DataFrame) -> pd.Dat
 
 
 def default_filters(words: pd.DataFrame, fixations: pd.DataFrame) -> Dict:
-    filters = dict(
-        participants=_union_column_values(words, fixations, "participant_id"),
-        trials=_union_column_values(words, fixations, "trial_id"),
+    """Default ("everything selected") filter dict for the current frames.
+
+    Cached on a cheap content fingerprint so the full-column ``unique()`` scans
+    don't re-run on every rerun when the data hasn't changed.
+    """
+    return _default_filters_cached(
+        words,
+        fixations,
+        cache_key=(frame_fingerprint(words), frame_fingerprint(fixations)),
     )
-    if "pass_index" in fixations.columns:
-        filters["pass_indices"] = sorted(fixations["pass_index"].dropna().unique())
-    if "saccade_type" in fixations.columns:
+
+
+@st.cache_data(show_spinner=False)
+def _default_filters_cached(
+    _words: pd.DataFrame, _fixations: pd.DataFrame, cache_key
+) -> Dict:
+    filters = dict(
+        participants=_union_column_values(_words, _fixations, "participant_id"),
+        trials=_union_column_values(_words, _fixations, "trial_id"),
+        # The participant/trial lists above are the *full* unique set of the
+        # (already trial-filtered) frame, so filter_data's membership masks are
+        # no-ops — flag that so it can skip the two O(n) scans.
+        _participants_cover_all=True,
+        _trials_cover_all=True,
+    )
+    if "pass_index" in _fixations.columns:
+        filters["pass_indices"] = sorted(_fixations["pass_index"].dropna().unique())
+    if "saccade_type" in _fixations.columns:
         filters["saccade_types"] = sorted(
-            fixations["saccade_type"].dropna().astype(str).unique()
+            _fixations["saccade_type"].dropna().astype(str).unique()
         )
-    if "eye" in fixations.columns:
-        filters["eyes"] = sorted(fixations["eye"].dropna().astype(str).unique())
-    filters["include_noise"] = False if "noise_flag" in fixations.columns else True
+    if "eye" in _fixations.columns:
+        filters["eyes"] = sorted(_fixations["eye"].dropna().astype(str).unique())
+    filters["include_noise"] = False if "noise_flag" in _fixations.columns else True
     return filters

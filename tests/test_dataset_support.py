@@ -298,9 +298,10 @@ def test_stimulus_words_broadcast_and_aoi_xy(stimulus_words_df, aoi_fixations_df
     assert len(fig.data) > 0
 
 
-def test_stimulus_words_without_fixations_keep_placeholder(stimulus_words_df):
+def test_stimulus_words_without_fixations_get_synthetic_participant(stimulus_words_df):
     words, fixations = sps.load_scanpath_data(words=stimulus_words_df)
-    assert (words["participant_id"] == "").all()
+    # No fixations to broadcast across → a single anonymous reader.
+    assert (words["participant_id"] == data_module.SYNTHETIC_PARTICIPANT).all()
     assert data_module.STIMULUS_WORDS_FLAG not in words.columns
 
 
@@ -414,3 +415,65 @@ def test_load_potec_unknown_text(potec_root):
 def test_load_potec_missing_data_message(tmp_path):
     with pytest.raises(FileNotFoundError, match="download=True"):
         datasets_module.load_potec(tmp_path, texts=["b0"])
+
+
+# ---------------------------------------------------------------------------
+# Column keep-list / pruning (perf core)
+# ---------------------------------------------------------------------------
+
+
+def test_keep_columns_prunes_normalized_frame():
+    words = pd.DataFrame(
+        {
+            "participant_id": ["p1", "p1"],
+            "trial_id": ["t1", "t1"],
+            "word_id": [1, 2],
+            "IA_LEFT": [0, 10],
+            "IA_RIGHT": [10, 20],
+            "IA_TOP": [0, 0],
+            "IA_BOTTOM": [10, 10],
+            "IA_LABEL": ["a", "b"],
+            "gpt2_surprisal": [1.0, 2.0],
+            "difficulty_level": ["Adv", "Adv"],
+            "junk": [9, 9],
+        }
+    )
+    schema = data_module.propose_word_schema(words)
+
+    # Default (keep_columns=None): all detected optional fields kept, junk dropped.
+    full = data_module.normalize_words(words, schema)
+    assert "gpt2_surprisal" in full.columns
+    assert "difficulty_level" in full.columns
+    assert "junk" not in full.columns
+
+    # Pruned: only the chosen optional + explicit extra keep survive.
+    keep = data_module.compute_keep_columns(
+        schema, optional_sources=["gpt2_surprisal"], keep_columns=["junk"]
+    )
+    thin = data_module.normalize_words(words, schema, keep_columns=keep)
+    assert "gpt2_surprisal" in thin.columns
+    assert "junk" in thin.columns  # carried verbatim
+    assert "difficulty_level" not in thin.columns  # detected but not chosen
+
+
+def test_categorize_columns_splits_mapped_detected_unclaimed():
+    words = pd.DataFrame(
+        {
+            "participant_id": ["p1"],
+            "trial_id": ["t1"],
+            "word_id": [1],
+            "x": [0],
+            "y": [0],
+            "width": [1],
+            "height": [1],
+            "gpt2_surprisal": [1.0],
+            "my_custom_col": [3],
+        }
+    )
+    schema = data_module.propose_word_schema(words)
+    cats = data_module.categorize_columns(
+        words, schema, data_module.WORD_OPTIONAL_FIELDS
+    )
+    assert "participant_id" in cats["mapped"]
+    assert any(d["source"] == "gpt2_surprisal" for d in cats["detected_optional"])
+    assert "my_custom_col" in cats["unclaimed"]

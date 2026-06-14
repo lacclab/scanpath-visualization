@@ -19,7 +19,7 @@ class TestBuildComboOptions:
             {
                 "participant_id": ["p1", "p1", "p2"],
                 "trial_id": ["t1", "t2", "t1"],
-                "paragraph_id": ["para1", "para1", "para1"],
+                "text_id": ["para1", "para1", "para1"],
             }
         )
         combos, labels, label_to_combo = build_combo_options(fixations)
@@ -28,7 +28,7 @@ class TestBuildComboOptions:
         assert len(label_to_combo) == 3
         assert "participant_id" in combos.columns
         assert "trial_id" in combos.columns
-        assert "paragraph_id" in combos.columns
+        assert "text_id" in combos.columns
 
     def test_build_combo_options_with_unique_ids(self):
         fixations = pd.DataFrame(
@@ -36,7 +36,7 @@ class TestBuildComboOptions:
                 "participant_id": ["p1", "p1"],
                 "trial_id": ["t1", "t1"],
                 "unique_trial_id": ["ut1", "ut1"],
-                "unique_paragraph_id": ["up1", "up1"],
+                "unique_text_id": ["up1", "up1"],
             }
         )
         combos, labels, label_to_combo = build_combo_options(fixations)
@@ -47,7 +47,7 @@ class TestBuildComboOptions:
             {
                 "participant_id": ["p1", "p1"],
                 "trial_id": ["t1", "t2"],
-                "paragraph_id": ["para1", "para1"],
+                "text_id": ["para1", "para1"],
                 "TRIAL_INDEX": [1, 2],
             }
         )
@@ -167,7 +167,7 @@ class TestBuildComparisonOptions:
             {
                 "participant_id": ["p1", "p1", "p2"],
                 "trial_id": ["t1", "t2", "t1"],
-                "paragraph_id": ["para1", "para1", "para1"],
+                "text_id": ["para1", "para1", "para1"],
             }
         )
         options = _build_comparison_options(combos, "Text", "p1", "t1", "para1")
@@ -180,7 +180,7 @@ class TestBuildComparisonOptions:
             {
                 "participant_id": ["p1", "p2", "p3"],
                 "trial_id": ["t1", "t1", "t1"],
-                "paragraph_id": ["para1", "para1", "para2"],
+                "text_id": ["para1", "para1", "para2"],
             }
         )
         options = _build_comparison_options(combos, "Participant", "p1", "t1", "para1")
@@ -193,7 +193,7 @@ class TestBuildComparisonOptions:
             {
                 "participant_id": ["p1", "p2"],
                 "trial_id": ["t1", "t1"],
-                "paragraph_id": ["para1", "para2"],
+                "text_id": ["para1", "para2"],
             }
         )
         options = _build_comparison_options(combos, "None", "p1", "t1", None)
@@ -201,12 +201,12 @@ class TestBuildComparisonOptions:
         # Should not include the primary trial
         assert not any(opt[0] == "p1" and opt[1] == "t1" for opt in options)
 
-    def test_build_comparison_options_with_unique_paragraph_id(self):
+    def test_build_comparison_options_with_unique_text_id(self):
         combos = pd.DataFrame(
             {
                 "participant_id": ["p1", "p2"],
                 "trial_id": ["t1", "t1"],
-                "unique_paragraph_id": ["up1", "up1"],
+                "unique_text_id": ["up1", "up1"],
             }
         )
         options = _build_comparison_options(combos, "Text", "p1", "t1", "up1")

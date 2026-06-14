@@ -87,7 +87,7 @@ _MAX_DUR_MS = 800
 _FIX_COLUMNS = [
     "participant_id",
     "trial_id",
-    "paragraph_id",
+    "text_id",
     "x",
     "y",
     "duration_ms",
@@ -170,7 +170,7 @@ def generate_model_scanpath(
     *,
     model_index: int,
     reference_trial_id: object,
-    paragraph_id: Optional[object] = None,
+    text_id: Optional[object] = None,
     nonce: int = 0,
 ) -> pd.DataFrame:
     """One model's synthetic scanpath over ``words``, in canonical fixation form.
@@ -239,12 +239,12 @@ def generate_model_scanpath(
         timestamps[i] = acc
         acc += int(durations[i]) + SACCADE_GAP_MS
 
-    para = paragraph_id if paragraph_id is not None else reference_trial_id
+    para = text_id if text_id is not None else reference_trial_id
     return pd.DataFrame(
         {
             "participant_id": [profile.name] * k,
             "trial_id": [str(reference_trial_id)] * k,
-            "paragraph_id": [str(para)] * k,
+            "text_id": [str(para)] * k,
             "x": fix_x,
             "y": fix_y,
             "duration_ms": durations,
@@ -265,7 +265,7 @@ def generate_model_scanpaths(
     *,
     n_models: int = DEFAULT_N_MODELS,
     reference_trial_id: object,
-    paragraph_id: Optional[object] = None,
+    text_id: Optional[object] = None,
     nonce: int = 0,
 ) -> Dict[str, pd.DataFrame]:
     """Generate ``n_models`` synthetic scanpaths over ``words``.
@@ -282,7 +282,7 @@ def generate_model_scanpaths(
             profile,
             model_index=index,
             reference_trial_id=reference_trial_id,
-            paragraph_id=paragraph_id,
+            text_id=text_id,
             nonce=nonce,
         )
         for index, profile in enumerate(profiles)

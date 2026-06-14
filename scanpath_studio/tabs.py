@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 
 from scanpath_studio.annotations import render_trial_annotations
 from scanpath_studio.constants import DEFAULT_LINE_SPACING
-from scanpath_studio.data import compute_word_metrics
+from scanpath_studio.data import compute_word_metrics, frame_fingerprint
 from scanpath_studio.model_scanpaths import (
     DEFAULT_N_MODELS,
     generate_model_scanpaths,
@@ -45,6 +45,7 @@ from scanpath_studio.animation_export import (
 from scanpath_studio.utils import (
     build_comparison_options,
     compute_trial_stats,
+    extract_trial,
     friendly_trial_label,
     gather_trial_metadata,
     safe_summary,
@@ -145,7 +146,7 @@ def _render_true_scale_chart(
 
 def _trial_text_id(trial_words: pd.DataFrame) -> Optional[str]:
     """Best-available text identifier for a trial's words (for same-text checks)."""
-    for col in ("unique_paragraph_id", "paragraph_id"):
+    for col in ("unique_text_id", "text_id"):
         if col in trial_words.columns and not trial_words.empty:
             value = trial_words[col].iloc[0]
             if pd.notna(value):
@@ -428,6 +429,69 @@ def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) ->
     )
 
 
+def _figure_input_key(
+    words: pd.DataFrame, fixations: pd.DataFrame, build_kwargs: dict
+) -> tuple:
+    """Complete, hashable cache key for a single-trial scanpath figure.
+
+    Auto-derived from *all* build inputs — the frame fingerprints plus every
+    kwarg — so changing any setting busts the cache. Deriving it mechanically
+    (rather than listing settings by hand) means it can't drift out of sync with
+    the figure builder and show a stale plot."""
+    parts = [
+        ("__words__", frame_fingerprint(words)),
+        ("__fixations__", frame_fingerprint(fixations)),
+    ]
+    for k in sorted(build_kwargs):
+        v = build_kwargs[k]
+        if isinstance(v, pd.DataFrame):
+            parts.append((k, frame_fingerprint(v)))
+        elif isinstance(v, dict):
+            parts.append((k, tuple(sorted((str(a), str(b)) for a, b in v.items()))))
+        elif isinstance(v, (list, tuple)):
+            parts.append((k, tuple(v)))
+        else:
+            try:
+                hash(v)
+                parts.append((k, v))
+            except TypeError:
+                parts.append((k, str(v)))
+    return tuple(parts)
+
+
+@st.cache_data(show_spinner="Rendering scanpath…")
+def _cached_scanpath_figure(
+    _words: pd.DataFrame, _fixations: pd.DataFrame, _build_kwargs: dict, fig_key
+):
+    """Build + cache a static single-trial scanpath figure.
+
+    Frames and kwargs are passed un-hashed; ``fig_key`` (from
+    ``_figure_input_key``) is the cache key, so a rerun with the same trial and
+    settings reuses the figure instead of rebuilding all its traces/shapes."""
+    return make_scanpath_figure(_words, _fixations, **_build_kwargs)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_model_scanpaths(
+    _words: pd.DataFrame,
+    n_models: int,
+    reference_trial_id: object,
+    text_id: object,
+    nonce: int,
+    words_fp,
+) -> dict:
+    """Cache the (deterministic) synthetic model scanpaths for a trial so they
+    aren't regenerated on every rerun — the Generations tab renders each time the
+    app reruns, including while the user is on a different tab."""
+    return generate_model_scanpaths(
+        _words,
+        n_models=n_models,
+        reference_trial_id=reference_trial_id,
+        text_id=text_id,
+        nonce=nonce,
+    )
+
+
 def _render_comparison_controls(
     combos: pd.DataFrame,
     selection_mode: str,
@@ -627,8 +691,12 @@ def _render_trial_header(
     while the header stays in the side panel.
     """
     lines = [f"**{prefix}** `{trial_id}`", f"Participant: `{participant}`"]
+    # The text/passage id may live under its canonical name or a pre-rename
+    # source name (unique_paragraph_id etc.), which can also double as a composite
+    # component — recognise all of them so the line reads "Text:" either way.
+    text_cols = ("unique_text_id", "text_id", "unique_paragraph_id", "paragraph_id")
     text_id = None
-    for col in ("unique_paragraph_id", "paragraph_id"):
+    for col in text_cols:
         if col in trial_words.columns and not trial_words.empty:
             value = trial_words[col].iloc[0]
             if pd.notna(value):
@@ -641,7 +709,7 @@ def _render_trial_header(
     # are shown — so the opaque `a_b_c` id is spelled out. Participant and the
     # paragraph/text column are already covered above, so they're skipped.
     composite_cols = st.session_state.get("_composite_trial_columns") or []
-    already_shown = {"participant_id", "unique_paragraph_id", "paragraph_id"}
+    already_shown = {"participant_id", *text_cols}
     for col in composite_cols:
         if col in already_shown or col not in trial_words.columns or trial_words.empty:
             continue
@@ -668,7 +736,7 @@ def _render_paragraph_panel(
     Skips silently when no word text is available."""
     if "text" not in trial_words.columns or trial_words.empty:
         return
-    with st.expander("Paragraph & question", expanded=expanded):
+    with st.expander("Text & question", expanded=expanded):
         _render_paragraph_with_spans(trial_words)
 
         # Reading regime: in OneStop, question_preview=True means the reader saw
@@ -1143,14 +1211,8 @@ def _build_compare_meta(
     side-by-side metadata table, or None when no comparison is active."""
     if compare_participant is None or compare_trial is None:
         return None
-    compare_words = words_filtered[
-        (words_filtered["participant_id"] == compare_participant)
-        & (words_filtered["trial_id"] == compare_trial)
-    ]
-    compare_fix = fixations_filtered[
-        (fixations_filtered["participant_id"] == compare_participant)
-        & (fixations_filtered["trial_id"] == compare_trial)
-    ]
+    compare_words = extract_trial(words_filtered, compare_participant, compare_trial)
+    compare_fix = extract_trial(fixations_filtered, compare_participant, compare_trial)
     # Short, distinct column headers: participant ids when comparing different
     # participants (the common same-text case), else the trial ids — the long
     # ids otherwise overflow the narrow panel.
@@ -1414,20 +1476,13 @@ def render_single_trial_tab(
     if not (selected_participant and selected_trial):
         return
 
-    trial_words = words_filtered[
-        (words_filtered["participant_id"] == selected_participant)
-        & (words_filtered["trial_id"] == selected_trial)
-    ]
-    trial_fixations = fixations_filtered[
-        (fixations_filtered["participant_id"] == selected_participant)
-        & (fixations_filtered["trial_id"] == selected_trial)
-    ]
+    trial_words = extract_trial(words_filtered, selected_participant, selected_trial)
+    trial_fixations = extract_trial(
+        fixations_filtered, selected_participant, selected_trial
+    )
     trial_raw_gaze = pd.DataFrame()
     if raw_gaze is not None and not raw_gaze.empty:
-        trial_raw_gaze = raw_gaze[
-            (raw_gaze["participant_id"] == selected_participant)
-            & (raw_gaze["trial_id"] == selected_trial)
-        ]
+        trial_raw_gaze = extract_trial(raw_gaze, selected_participant, selected_trial)
 
     trial_has_raw_gaze = not trial_raw_gaze.empty
     global_raw_toggle = bool(viz_settings.get("show_raw_gaze"))
@@ -1588,9 +1643,7 @@ def render_single_trial_tab(
                 f"{compare_participant}__{compare_trial}"
             )
         else:
-            displayed_fig = make_scanpath_figure(
-                trial_words,
-                trial_fixations,
+            build_kwargs = dict(
                 canvas_width=int(canvas_width),
                 canvas_height=int(canvas_height),
                 base_font_size=int(base_font_size),
@@ -1598,6 +1651,12 @@ def render_single_trial_tab(
                 x_field=x_field,
                 y_field=y_field,
                 **figure_settings,
+            )
+            displayed_fig = _cached_scanpath_figure(
+                trial_words,
+                trial_fixations,
+                build_kwargs,
+                fig_key=_figure_input_key(trial_words, trial_fixations, build_kwargs),
             )
             _render_true_scale_chart(displayed_fig, key="single")
 
@@ -1803,20 +1862,16 @@ def _render_comparison_figure(
     scale_text_to_boxes: bool = True,
 ):
     """Render comparison figure for two trials."""
-    paragraph_field = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in combos.columns
-        else "paragraph_id"
-    )
+    text_field = "unique_text_id" if "unique_text_id" in combos.columns else "text_id"
 
     def _lookup_text_id(participant_id: str, trial_id: str) -> Optional[str]:
         match = combos[
             (combos["participant_id"] == participant_id)
             & (combos["trial_id"] == trial_id)
         ]
-        if match.empty or paragraph_field not in match.columns:
+        if match.empty or text_field not in match.columns:
             return None
-        return str(match.iloc[0][paragraph_field])
+        return str(match.iloc[0][text_field])
 
     label_pool: set[str] = set()
     primary_text_id = selected_text or _lookup_text_id(
@@ -1959,14 +2014,10 @@ def render_multiple_comparison_tab(
     if not (selected_participant and selected_trial):
         return
 
-    trial_words = words_filtered[
-        (words_filtered["participant_id"] == selected_participant)
-        & (words_filtered["trial_id"] == selected_trial)
-    ]
-    trial_fixations = fixations_filtered[
-        (fixations_filtered["participant_id"] == selected_participant)
-        & (fixations_filtered["trial_id"] == selected_trial)
-    ]
+    trial_words = extract_trial(words_filtered, selected_participant, selected_trial)
+    trial_fixations = extract_trial(
+        fixations_filtered, selected_participant, selected_trial
+    )
     if trial_words.empty or trial_fixations.empty:
         with col_main:
             st.info(
@@ -1999,13 +2050,14 @@ def render_multiple_comparison_tab(
             )
         nonce = int(st.session_state.get("multi_nonce", 0))
 
-        paragraph_id = _trial_text_id(trial_words)
-        models = generate_model_scanpaths(
+        text_id = _trial_text_id(trial_words)
+        models = _cached_model_scanpaths(
             trial_words,
-            n_models=n_models,
-            reference_trial_id=selected_trial,
-            paragraph_id=paragraph_id,
-            nonce=nonce,
+            n_models,
+            selected_trial,
+            text_id,
+            nonce,
+            words_fp=frame_fingerprint(trial_words),
         )
 
         # Fixation-index window: restrict which fixations are drawn (and scored
@@ -2260,30 +2312,69 @@ def _render_paginated_dataframe(
     st.caption(caption)
 
     if download_name and not df.empty:
-        col_csv, col_parquet, _ = st.columns([1, 1, 4])
-        with col_csv:
-            st.download_button(
-                "Download CSV",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name=f"{download_name}.csv",
-                mime="text/csv",
-                key=f"{key}_csv_download",
-            )
-        with col_parquet:
-            import io as _io
+        _render_download_buttons(df, key, download_name)
 
-            buf = _io.BytesIO()
-            try:
-                df.to_parquet(buf, index=False)
-                st.download_button(
-                    "Download Parquet",
-                    data=buf.getvalue(),
-                    file_name=f"{download_name}.parquet",
-                    mime="application/octet-stream",
-                    key=f"{key}_parquet_download",
-                )
-            except Exception:
-                pass
+
+# Above this many rows, serializing the *whole* frame for the download buttons
+# on every rerun (st.download_button evaluates its ``data`` eagerly) is a top
+# cost on large corpora — a multi-million-row CSV/Parquet rebuilt each render.
+# Past the threshold we defer it behind an explicit button instead.
+_EAGER_DOWNLOAD_MAX_ROWS = 50_000
+
+
+@st.cache_data(show_spinner="Preparing download…")
+def _frame_to_csv_bytes(_df: pd.DataFrame, cache_key) -> bytes:
+    return _df.to_csv(index=False).encode("utf-8")
+
+
+@st.cache_data(show_spinner="Preparing download…")
+def _frame_to_parquet_bytes(_df: pd.DataFrame, cache_key) -> Optional[bytes]:
+    import io as _io
+
+    buf = _io.BytesIO()
+    try:
+        _df.to_parquet(buf, index=False)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _render_download_buttons(df: pd.DataFrame, key: str, download_name: str) -> None:
+    """CSV/Parquet download buttons whose serialization is cached and (for large
+    frames) deferred behind a button, so it isn't rebuilt on every rerun."""
+    fp = frame_fingerprint(df)
+    prepared_key = f"{key}_download_ready"
+    if len(df) > _EAGER_DOWNLOAD_MAX_ROWS and not st.session_state.get(prepared_key):
+        st.button(
+            f"Prepare downloads ({len(df):,} rows)",
+            key=f"{key}_prepare_download",
+            help="Serialize the full table to CSV/Parquet for download.",
+            on_click=lambda: st.session_state.__setitem__(prepared_key, True),
+        )
+        st.caption(
+            "Large table — downloads are prepared on demand to keep the app responsive."
+        )
+        return
+
+    col_csv, col_parquet, _ = st.columns([1, 1, 4])
+    with col_csv:
+        st.download_button(
+            "Download CSV",
+            data=_frame_to_csv_bytes(df, cache_key=fp),
+            file_name=f"{download_name}.csv",
+            mime="text/csv",
+            key=f"{key}_csv_download",
+        )
+    with col_parquet:
+        parquet_bytes = _frame_to_parquet_bytes(df, cache_key=fp)
+        if parquet_bytes is not None:
+            st.download_button(
+                "Download Parquet",
+                data=parquet_bytes,
+                file_name=f"{download_name}.parquet",
+                mime="application/octet-stream",
+                key=f"{key}_parquet_download",
+            )
 
 
 def render_metrics_tab(
@@ -2409,6 +2500,117 @@ _MEASURE_OPTIONS = [
 ]
 
 
+@st.cache_data(show_spinner="Computing dataset statistics…")
+def _dataset_statistics(
+    _words: pd.DataFrame,
+    _fixations: pd.DataFrame,
+    _raw_gaze: pd.DataFrame,
+    cache_key,
+) -> dict:
+    """Compute the Data Statistics tab's summary aggregates.
+
+    Pure function of the (filtered) frames, cached on a cheap fingerprint so the
+    full-corpus ``groupby``/``unique``/``mean`` scans don't re-run on every rerun
+    (e.g. when the user merely selects a different trial)."""
+    participant_ids = set(_words["participant_id"].unique()) | set(
+        _fixations["participant_id"].unique()
+    )
+    trial_ids = set(_words["trial_id"].unique()) | set(_fixations["trial_id"].unique())
+    if "participant_id" in _raw_gaze.columns:
+        participant_ids |= set(_raw_gaze["participant_id"].unique())
+        trial_ids |= set(_raw_gaze["trial_id"].unique())
+    text_col = "unique_text_id" if "unique_text_id" in _words.columns else "text_id"
+    text_ids = set(_words[text_col].unique()) if text_col in _words.columns else set()
+
+    mean_fix_dur = (
+        float(_fixations["duration_ms"].mean())
+        if not _fixations.empty and "duration_ms" in _fixations.columns
+        else None
+    )
+    mean_sac = (
+        float(_fixations["saccade_amplitude"].dropna().mean() or 0)
+        if not _fixations.empty and "saccade_amplitude" in _fixations.columns
+        else None
+    )
+    if "is_regression" in _fixations.columns and not _fixations.empty:
+        reg_label, reg_rate = (
+            "Regression rate",
+            float(_fixations["is_regression"].mean()) * 100,
+        )
+    elif "regression_out_flag" in _words.columns and not _words.empty:
+        reg_label, reg_rate = (
+            "Words w/ regression-out",
+            float(_words["regression_out_flag"].mean()) * 100,
+        )
+    else:
+        reg_label, reg_rate = "Regression rate", None
+    if (
+        not _fixations.empty
+        and "duration_ms" in _fixations.columns
+        and not _words.empty
+    ):
+        total_ms = _fixations.groupby(["participant_id", "trial_id"])[
+            "duration_ms"
+        ].sum()
+        n_words = _words.groupby(["participant_id", "trial_id"]).size()
+        per_trial = (
+            n_words.reindex(total_ms.index).fillna(0) * 60_000
+        ) / total_ms.replace(0, pd.NA)
+        wpm = float(per_trial.dropna().mean()) if per_trial.dropna().size else 0.0
+    else:
+        wpm = None
+
+    trial_source = _fixations if not _fixations.empty else _words
+    trials_per_participant = (
+        trial_source.groupby("participant_id")["trial_id"].nunique()
+        if not trial_source.empty
+        else pd.Series(dtype=float)
+    )
+    fixations_per_trial = (
+        _fixations.groupby(["participant_id", "trial_id"]).size()
+        if not _fixations.empty
+        else pd.Series(dtype=float)
+    )
+    words_per_trial = (
+        _words.groupby(["participant_id", "trial_id"]).size()
+        if not _words.empty
+        else pd.Series(dtype=float)
+    )
+    stats_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Trials per participant",
+                **safe_summary(trials_per_participant),
+            },
+            {"Metric": "Fixations per trial", **safe_summary(fixations_per_trial)},
+            {"Metric": "Words per trial", **safe_summary(words_per_trial)},
+        ]
+    ).rename(
+        columns={
+            "mean": "Mean",
+            "std": "Std",
+            "min": "Min",
+            "median": "Median",
+            "max": "Max",
+        }
+    )
+
+    return {
+        "n_participants": len(participant_ids),
+        "n_texts": len(text_ids),
+        "n_trials": len(trial_ids),
+        "n_fixations": len(_fixations),
+        "n_words": len(_words),
+        "n_gaze": len(_raw_gaze),
+        "mean_fix_dur": mean_fix_dur,
+        "mean_sac": mean_sac,
+        "reg_label": reg_label,
+        "reg_rate": reg_rate,
+        "wpm": wpm,
+        "stats_df": stats_df,
+    }
+
+
 def render_data_statistics_tab(
     words_filtered: pd.DataFrame,
     fixations_filtered: pd.DataFrame,
@@ -2422,118 +2624,50 @@ def render_data_statistics_tab(
     """Render dataset statistics tab with reading-research summaries."""
     st.subheader("Dataset statistics")
 
-    participant_ids = set(words_filtered["participant_id"].unique()) | set(
-        fixations_filtered["participant_id"].unique()
-    )
-    trial_ids = set(words_filtered["trial_id"].unique()) | set(
-        fixations_filtered["trial_id"].unique()
-    )
-    # Raw-gaze-only datasets have no words/fixations — count from the gaze.
-    if "participant_id" in raw_gaze_filtered.columns:
-        participant_ids |= set(raw_gaze_filtered["participant_id"].unique())
-        trial_ids |= set(raw_gaze_filtered["trial_id"].unique())
-    paragraph_col = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in words_filtered.columns
-        else "paragraph_id"
-    )
-    text_ids = (
-        set(words_filtered[paragraph_col].unique())
-        if paragraph_col in words_filtered.columns
-        else set()
+    stats = _dataset_statistics(
+        words_filtered,
+        fixations_filtered,
+        raw_gaze_filtered,
+        cache_key=(
+            frame_fingerprint(words_filtered),
+            frame_fingerprint(fixations_filtered),
+            frame_fingerprint(raw_gaze_filtered),
+        ),
     )
 
     top_cols = st.columns(6)
-    top_cols[0].metric("Participants", f"{len(participant_ids):,}")
-    top_cols[1].metric("Texts", f"{len(text_ids):,}")
-    top_cols[2].metric("Trials", f"{len(trial_ids):,}")
-    top_cols[3].metric("Fixations", f"{len(fixations_filtered):,}")
-    top_cols[4].metric("Words", f"{len(words_filtered):,}")
+    top_cols[0].metric("Participants", f"{stats['n_participants']:,}")
+    top_cols[1].metric("Texts", f"{stats['n_texts']:,}")
+    top_cols[2].metric("Trials", f"{stats['n_trials']:,}")
+    top_cols[3].metric("Fixations", f"{stats['n_fixations']:,}")
+    top_cols[4].metric("Words", f"{stats['n_words']:,}")
     top_cols[5].metric(
         "Gaze points",
-        f"{len(raw_gaze_filtered):,}" if not raw_gaze_filtered.empty else "0",
+        f"{stats['n_gaze']:,}" if stats["n_gaze"] else "0",
         help="Counts raw gaze samples if provided.",
     )
 
     rr_cols = st.columns(4)
-    if not fixations_filtered.empty and "duration_ms" in fixations_filtered.columns:
-        mean_fix_dur = float(fixations_filtered["duration_ms"].mean())
-        rr_cols[0].metric("Mean fixation dur (ms)", f"{mean_fix_dur:.0f}")
-    else:
-        rr_cols[0].metric("Mean fixation dur (ms)", "—")
-    if (
-        not fixations_filtered.empty
-        and "saccade_amplitude" in fixations_filtered.columns
-    ):
-        mean_sac = float(fixations_filtered["saccade_amplitude"].dropna().mean() or 0)
-        rr_cols[1].metric("Mean saccade amp (px)", f"{mean_sac:.0f}")
-    else:
-        rr_cols[1].metric("Mean saccade amp (px)", "—")
-    if "is_regression" in fixations_filtered.columns and not fixations_filtered.empty:
-        reg_rate = float(fixations_filtered["is_regression"].mean()) * 100
-        rr_cols[2].metric("Regression rate", f"{reg_rate:.1f} %")
-    elif "regression_out_flag" in words_filtered.columns and not words_filtered.empty:
-        reg_rate = float(words_filtered["regression_out_flag"].mean()) * 100
-        rr_cols[2].metric("Words w/ regression-out", f"{reg_rate:.1f} %")
-    else:
-        rr_cols[2].metric("Regression rate", "—")
-    if (
-        not fixations_filtered.empty
-        and "duration_ms" in fixations_filtered.columns
-        and not words_filtered.empty
-    ):
-        total_ms = fixations_filtered.groupby(["participant_id", "trial_id"])[
-            "duration_ms"
-        ].sum()
-        n_words = words_filtered.groupby(["participant_id", "trial_id"]).size()
-        per_trial = (
-            n_words.reindex(total_ms.index).fillna(0) * 60_000
-        ) / total_ms.replace(0, pd.NA)
-        wpm = float(per_trial.dropna().mean()) if per_trial.dropna().size else 0.0
-        rr_cols[3].metric("Reading speed (wpm)", f"{wpm:.0f}")
-    else:
-        rr_cols[3].metric("Reading speed (wpm)", "—")
+    rr_cols[0].metric(
+        "Mean fixation dur (ms)",
+        f"{stats['mean_fix_dur']:.0f}" if stats["mean_fix_dur"] is not None else "—",
+    )
+    rr_cols[1].metric(
+        "Mean saccade amp (px)",
+        f"{stats['mean_sac']:.0f}" if stats["mean_sac"] is not None else "—",
+    )
+    rr_cols[2].metric(
+        stats["reg_label"],
+        f"{stats['reg_rate']:.1f} %" if stats["reg_rate"] is not None else "—",
+    )
+    rr_cols[3].metric(
+        "Reading speed (wpm)",
+        f"{stats['wpm']:.0f}" if stats["wpm"] is not None else "—",
+    )
 
     st.divider()
 
-    trial_source = (
-        fixations_filtered if not fixations_filtered.empty else words_filtered
-    )
-    trials_per_participant = (
-        trial_source.groupby("participant_id")["trial_id"].nunique()
-        if not trial_source.empty
-        else pd.Series(dtype=float)
-    )
-    fixations_per_trial = (
-        fixations_filtered.groupby(["participant_id", "trial_id"]).size()
-        if not fixations_filtered.empty
-        else pd.Series(dtype=float)
-    )
-    words_per_trial = (
-        words_filtered.groupby(["participant_id", "trial_id"]).size()
-        if not words_filtered.empty
-        else pd.Series(dtype=float)
-    )
-
-    stats_df = pd.DataFrame(
-        [
-            {
-                "Metric": "Trials per participant",
-                **safe_summary(trials_per_participant),
-            },
-            {"Metric": "Fixations per trial", **safe_summary(fixations_per_trial)},
-            {"Metric": "Words per trial", **safe_summary(words_per_trial)},
-        ]
-    )
-    stats_df = stats_df.rename(
-        columns={
-            "mean": "Mean",
-            "std": "Std",
-            "min": "Min",
-            "median": "Median",
-            "max": "Max",
-        }
-    )
+    stats_df = stats["stats_df"]
 
     st.dataframe(
         stats_df,
@@ -2553,9 +2687,20 @@ def render_data_statistics_tab(
     if fixations_filtered.empty:
         st.info("No fixations available for distribution plot.")
     else:
+        # The overlay only reads pre-aggregated per-word measure columns
+        # (FFD/FPRT/TFD). Use them straight off the words frame when present
+        # rather than recomputing measures over the *whole* filtered corpus just
+        # for this histogram (which runs on every rerun). Datasets without those
+        # columns simply skip the overlay.
+        _overlay_cols = (
+            "first_fixation_ms",
+            "first_pass_gaze_duration_ms",
+            "total_fixation_duration_ms",
+        )
         overlay_measures = (
-            compute_word_metrics(words_filtered, fixations_filtered)
+            words_filtered
             if not words_filtered.empty
+            and any(c in words_filtered.columns for c in _overlay_cols)
             else None
         )
         hist = make_fixation_duration_histogram(
@@ -2578,14 +2723,10 @@ def render_data_statistics_tab(
     if not (selected_participant and selected_trial):
         return
 
-    trial_words = words_filtered[
-        (words_filtered["participant_id"] == selected_participant)
-        & (words_filtered["trial_id"] == selected_trial)
-    ]
-    trial_fixations = fixations_filtered[
-        (fixations_filtered["participant_id"] == selected_participant)
-        & (fixations_filtered["trial_id"] == selected_trial)
-    ]
+    trial_words = extract_trial(words_filtered, selected_participant, selected_trial)
+    trial_fixations = extract_trial(
+        fixations_filtered, selected_participant, selected_trial
+    )
     if trial_words.empty or trial_fixations.empty:
         st.info("Select a trial with both words and fixations to see measures.")
         return

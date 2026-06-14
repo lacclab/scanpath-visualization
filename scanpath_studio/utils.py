@@ -7,6 +7,8 @@ from typing import Dict, Iterable, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
+from .data import frame_fingerprint
+
 
 # -----------------------------------------------------------------------------
 # Trial combo building
@@ -16,41 +18,69 @@ import streamlit as st
 def build_combo_options(
     fixations: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, list[str], Dict[str, Tuple[str, str]]]:
-    """Build participant/trial/paragraph combinations for selection UI.
+    """Build participant/trial/text combinations for selection UI.
 
     Returns:
         Tuple of (combos DataFrame, label list, label-to-combo mapping).
+
+    Cached on a cheap fingerprint of the frame + the composite-trial columns, so
+    the full-frame ``drop_duplicates`` + label build don't re-run on every rerun
+    (e.g. selecting a different trial). The session-state read happens here, in
+    the un-cached wrapper, and is threaded into the cached core as an argument.
     """
-    paragraph_col = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in fixations.columns
-        else "paragraph_id"
+    composite_cols = tuple(st.session_state.get("_composite_trial_columns") or [])
+    return _build_combo_options_cached(
+        fixations,
+        composite_cols,
+        cache_key=(frame_fingerprint(fixations), composite_cols),
     )
+
+
+@st.cache_data(show_spinner="Building trial list…")
+def _build_combo_options_cached(
+    _fixations: pd.DataFrame,
+    composite_cols: Tuple[str, ...],
+    cache_key,
+) -> Tuple[pd.DataFrame, list[str], Dict[str, Tuple[str, str]]]:
+    fixations = _fixations
     trial_col = (
         "unique_trial_id" if "unique_trial_id" in fixations.columns else "trial_id"
     )
-    combo_cols = ["participant_id", trial_col, paragraph_col]
-    for col in ["unique_trial_id", "unique_paragraph_id", "TRIAL_INDEX", "trial_index"]:
+    # The text/passage column is optional. Normalized frames carry a text_id (it
+    # falls back to trial_id when no text is mapped), but a frame may arrive with
+    # only the source name (e.g. unique_paragraph_id — the pre-rename text id, and
+    # which can also be a composite-trial component). Detect it via the same
+    # priority list normalization uses, and *copy* it to text_id rather than
+    # renaming so a shared composite component column survives for the picker.
+    text_col = next(
+        (
+            c
+            for c in ("unique_text_id", "text_id", "unique_paragraph_id", "paragraph_id")
+            if c in fixations.columns
+        ),
+        None,
+    )
+    combo_cols = ["participant_id", trial_col]
+    if text_col is not None and text_col not in combo_cols:
+        combo_cols.append(text_col)
+    for col in ["unique_trial_id", "unique_text_id", "TRIAL_INDEX", "trial_index"]:
         if col in fixations.columns and col not in combo_cols:
             combo_cols.append(col)
     # Carry the composite trial id's component columns through, so the trial
     # picker can offer one cascading selector per part (see select_trial).
-    for col in st.session_state.get("_composite_trial_columns") or []:
+    for col in composite_cols:
         if col in fixations.columns and col not in combo_cols:
             combo_cols.append(col)
 
-    combos = (
-        fixations[combo_cols]
-        .drop_duplicates()
-        .rename(columns={trial_col: "trial_id", paragraph_col: "paragraph_id"})
-    )
+    combos = fixations[combo_cols].drop_duplicates().rename(columns={trial_col: "trial_id"})
+    if "text_id" not in combos.columns:
+        combos["text_id"] = (
+            combos[text_col] if text_col is not None else combos["trial_id"]
+        )
     if trial_col == "unique_trial_id" and "unique_trial_id" not in combos.columns:
         combos["unique_trial_id"] = combos["trial_id"]
-    if (
-        paragraph_col == "unique_paragraph_id"
-        and "unique_paragraph_id" not in combos.columns
-    ):
-        combos["unique_paragraph_id"] = combos["paragraph_id"]
+    if text_col == "unique_text_id" and "unique_text_id" not in combos.columns:
+        combos["unique_text_id"] = combos["text_id"]
     sort_cols = ["participant_id"]
     if "TRIAL_INDEX" in combos.columns:
         sort_cols.append("TRIAL_INDEX")
@@ -60,7 +90,7 @@ def build_combo_options(
     combos = combos.sort_values(sort_cols)
 
     combo_labels = [
-        f"{row.participant_id} / {row.trial_id} · {row.paragraph_id}"
+        f"{row.participant_id} / {row.trial_id} · {row.text_id}"
         for row in combos.itertuples()
     ]
     label_to_combo = dict(
@@ -72,13 +102,43 @@ def build_combo_options(
     return combos, combo_labels, label_to_combo
 
 
+@st.cache_data(show_spinner=False)
+def _trial_positions(_frame: pd.DataFrame, cache_key) -> Dict[Tuple[str, str], object]:
+    """Map ``(participant_id, trial_id)`` → positional row indices.
+
+    Built once per frame (cached on its fingerprint) so extracting a single
+    trial is an O(trial) ``iloc`` rather than an O(corpus) boolean mask on every
+    rerun — and shared across the tabs, which all slice the same filtered frames.
+    """
+    if _frame is None or _frame.empty:
+        return {}
+    grouped = _frame.groupby(["participant_id", "trial_id"], sort=False).indices
+    # Normalise keys to (str, str) so lookups match the picker's string values.
+    return {(str(p), str(t)): idx for (p, t), idx in grouped.items()}
+
+
+def extract_trial(frame: pd.DataFrame, participant_id, trial_id) -> pd.DataFrame:
+    """Rows of one (participant, trial), sliced via the cached position index.
+
+    Equivalent to ``frame[(frame.participant_id == p) & (frame.trial_id == t)]``
+    but O(trial) instead of O(corpus) once the index is built — the per-rerun win
+    on large datasets, where every tab extracts the selected trial."""
+    if frame is None or getattr(frame, "empty", True):
+        return frame
+    positions = _trial_positions(frame, cache_key=frame_fingerprint(frame))
+    pos = positions.get((str(participant_id), str(trial_id)))
+    if pos is None or len(pos) == 0:
+        return frame.iloc[0:0]
+    return frame.iloc[pos]
+
+
 # -----------------------------------------------------------------------------
 # Trial selection UI
 # -----------------------------------------------------------------------------
 
 
 def _select_trial_none_mode(
-    combos: pd.DataFrame, trial_field: str, paragraph_field: str, key_prefix: str
+    combos: pd.DataFrame, trial_field: str, text_field: str, key_prefix: str
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Handle trial selection when mode is 'None' (direct trial selection)."""
     available_trials = combos.drop_duplicates(subset=[trial_field])
@@ -137,34 +197,30 @@ def _select_trial_none_mode(
     chosen = available_trials[
         available_trials[trial_field].astype(str) == selected_trial_label
     ].iloc[0]
-    selected_text = (
-        str(chosen[paragraph_field]) if paragraph_field in chosen.index else None
-    )
+    selected_text = str(chosen[text_field]) if text_field in chosen.index else None
     return chosen["participant_id"], chosen["trial_id"], selected_text
 
 
 def _select_trial_text_mode(
-    combos: pd.DataFrame, paragraph_field: str, key_prefix: str
+    combos: pd.DataFrame, text_field: str, key_prefix: str
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Handle trial selection when mode is 'Text' (select by text first)."""
-    paragraph_options = sorted(combos[paragraph_field].dropna().astype(str).unique())
-    if not paragraph_options:
+    text_options = sorted(combos[text_field].dropna().astype(str).unique())
+    if not text_options:
         st.warning("No texts available after filtering.")
         st.stop()
 
-    selected_paragraph = st.selectbox(
+    selected_text = st.selectbox(
         "Text",
-        options=paragraph_options,
+        options=text_options,
         key=f"{key_prefix}_text_id" if key_prefix else None,
     )
-    if not selected_paragraph:
+    if not selected_text:
         st.warning("No text selected after filtering.")
         st.stop()
 
-    paragraph_combos = combos[
-        combos[paragraph_field].astype(str) == str(selected_paragraph)
-    ]
-    participant_options = sorted(paragraph_combos["participant_id"].dropna().unique())
+    text_combos = combos[combos[text_field].astype(str) == str(selected_text)]
+    participant_options = sorted(text_combos["participant_id"].dropna().unique())
     if not participant_options:
         st.warning("No participants available for this text.")
         st.stop()
@@ -177,12 +233,12 @@ def _select_trial_text_mode(
 
     # Handle multiple readings
     candidate_trials = (
-        paragraph_combos[paragraph_combos["participant_id"] == selected_participant]
+        text_combos[text_combos["participant_id"] == selected_participant]
         .drop_duplicates(subset=["trial_id"])
         .sort_values("trial_id")
     )
     if candidate_trials.empty:
-        return None, None, selected_paragraph
+        return None, None, selected_text
 
     if len(candidate_trials) > 1:
         trial_options = candidate_trials["trial_id"].tolist()
@@ -195,12 +251,12 @@ def _select_trial_text_mode(
     else:
         selected_trial = candidate_trials.iloc[0]["trial_id"]
 
-    return selected_participant, selected_trial, selected_paragraph
+    return selected_participant, selected_trial, selected_text
 
 
 def _select_trial_participant_mode(
     combos: pd.DataFrame,
-    paragraph_field: str,
+    text_field: str,
     trial_index_field: Optional[str],
     key_prefix: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -260,10 +316,10 @@ def _select_trial_participant_mode(
             participant_trials[trial_index_field].dropna().unique().tolist()
         )
     elif sub_mode == "Text":
-        slider_field = paragraph_field
+        slider_field = text_field
         slider_label = "Text"
         slider_options = sorted(
-            participant_trials[paragraph_field].dropna().astype(str).unique().tolist()
+            participant_trials[text_field].dropna().astype(str).unique().tolist()
         )
     else:  # Trial ID
         slider_field = "trial_id"
@@ -298,7 +354,7 @@ def _select_trial_participant_mode(
             selected_participant,
             slider_field,
             slider_value,
-            paragraph_field,
+            text_field,
             key_prefix,
         )
 
@@ -355,7 +411,7 @@ def _select_trial_participant_mode(
         selected_participant,
         slider_field,
         slider_value,
-        paragraph_field,
+        text_field,
         key_prefix,
     )
 
@@ -365,24 +421,23 @@ def _resolve_participant_trial(
     selected_participant: str,
     slider_field: str,
     slider_value,
-    paragraph_field: str,
+    text_field: str,
     key_prefix: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Map a Participant-mode slider value to a concrete (participant, trial, text),
     offering a 'Reading' selectbox when the value matches several trials."""
     # Text + trial-id sliders carry string values, so match as strings; the
     # trial-index slider carries the raw (numeric) value and matches exactly.
-    if slider_field in (paragraph_field, "trial_id"):
+    if slider_field in (text_field, "trial_id"):
         trial_candidates = participant_trials[
             participant_trials[slider_field].astype(str) == str(slider_value)
         ]
         selected_text = (
             str(slider_value)
-            if slider_field == paragraph_field
+            if slider_field == text_field
             else (
-                str(trial_candidates.iloc[0][paragraph_field])
-                if not trial_candidates.empty
-                and paragraph_field in trial_candidates.columns
+                str(trial_candidates.iloc[0][text_field])
+                if not trial_candidates.empty and text_field in trial_candidates.columns
                 else None
             )
         )
@@ -391,9 +446,8 @@ def _resolve_participant_trial(
             participant_trials[slider_field] == slider_value
         ]
         selected_text = (
-            str(trial_candidates.iloc[0][paragraph_field])
-            if not trial_candidates.empty
-            and paragraph_field in trial_candidates.columns
+            str(trial_candidates.iloc[0][text_field])
+            if not trial_candidates.empty and text_field in trial_candidates.columns
             else None
         )
 
@@ -419,10 +473,14 @@ def _resolve_participant_trial(
 
 # Friendly labels for the cascading selectors in composite-trial mode. Unknown
 # component columns fall back to their raw name (most informative for arbitrary
-# uploads); the two canonical ids reuse the Participant / Text wording so the UI
-# reads the same as the dedicated modes.
+# uploads); the canonical ids reuse the Participant / Text wording so the UI
+# reads the same as the dedicated modes. Composite components are preserved under
+# their *source* names (data._preserve_composite_columns), so the pre-rename
+# paragraph names map to "Text" too — the canonical text_id was paragraph_id.
 _COMPONENT_LABELS = {
     "participant_id": "Participant",
+    "unique_text_id": "Text",
+    "text_id": "Text",
     "unique_paragraph_id": "Text",
     "paragraph_id": "Text",
 }
@@ -443,7 +501,7 @@ def _composite_columns_for(combos: pd.DataFrame) -> list[str]:
 def _select_trial_composite_mode(
     combos: pd.DataFrame,
     component_cols: list[str],
-    paragraph_field: str,
+    text_field: str,
     key_prefix: str,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Trial selection when the trial id was composed from several columns.
@@ -494,7 +552,7 @@ def _select_trial_composite_mode(
         row = candidates.iloc[0]
         selected_trial = row["trial_id"]
 
-    text = str(row[paragraph_field]) if paragraph_field in row.index else None
+    text = str(row[text_field]) if text_field in row.index else None
     return row["participant_id"], selected_trial, text
 
 
@@ -514,44 +572,59 @@ def select_trial(
         st.warning("No trials available after filtering.")
         st.stop()
 
-    st.markdown("#### Select trials by")
-    selection_mode = st.radio(
-        label="Select trials by",
-        options=["Trial", "Text", "Participant"],
-        horizontal=True,
-        key=f"{key_prefix}_select_trial_mode" if key_prefix else None,
-        label_visibility="collapsed",
-    )
-
     trial_field = (
         "unique_trial_id" if "unique_trial_id" in combos.columns else "trial_id"
     )
-    paragraph_field = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in combos.columns
-        else "paragraph_id"
-    )
+    text_field = "unique_text_id" if "unique_text_id" in combos.columns else "text_id"
     trial_index_field = next(
         (c for c in ["TRIAL_INDEX", "trial_index"] if c in combos.columns), None
     )
+
+    # Only offer the Text / Participant modes when those dimensions actually vary
+    # — a single anonymous participant or a single text makes them no-ops, so the
+    # picker collapses to a plain trial dropdown.
+    modes = ["Trial"]
+    if text_field in combos.columns and combos[text_field].nunique(dropna=True) > 1:
+        modes.append("Text")
+    if (
+        "participant_id" in combos.columns
+        and combos["participant_id"].nunique(dropna=True) > 1
+    ):
+        modes.append("Participant")
+
+    mode_key = f"{key_prefix}_select_trial_mode" if key_prefix else None
+    # Drop a stale stored mode that's no longer offered so the radio doesn't raise.
+    if mode_key and st.session_state.get(mode_key) not in modes:
+        st.session_state.pop(mode_key, None)
+    if len(modes) > 1:
+        st.markdown("#### Select trials by")
+        selection_mode = st.radio(
+            label="Select trials by",
+            options=modes,
+            horizontal=True,
+            key=mode_key,
+            label_visibility="collapsed",
+        )
+    else:
+        selection_mode = "Trial"
 
     if selection_mode == "Trial":
         composite_cols = _composite_columns_for(combos)
         if len(composite_cols) >= 2:
             participant, trial, text = _select_trial_composite_mode(
-                combos, composite_cols, paragraph_field, key_prefix
+                combos, composite_cols, text_field, key_prefix
             )
         else:
             participant, trial, text = _select_trial_none_mode(
-                combos, trial_field, paragraph_field, key_prefix
+                combos, trial_field, text_field, key_prefix
             )
     elif selection_mode == "Text":
         participant, trial, text = _select_trial_text_mode(
-            combos, paragraph_field, key_prefix
+            combos, text_field, key_prefix
         )
     else:
         participant, trial, text = _select_trial_participant_mode(
-            combos, paragraph_field, trial_index_field, key_prefix
+            combos, text_field, trial_index_field, key_prefix
         )
 
     return participant, trial, selection_mode, text
@@ -671,10 +744,10 @@ def friendly_trial_label(
         if not trial_contains_text:
             base = f"{base} (trial {trial_str})" if trial_str else base
         elif trial_str != text_str:
-            # Surface any trial_id suffix beyond the paragraph id (e.g. a
+            # Surface any trial_id suffix beyond the text id (e.g. a
             # repeat-reading "_r2" tag added during normalization). Without
             # this the primary and compare titles look identical when a
-            # participant re-read the same paragraph.
+            # participant re-read the same text.
             extra = trial_str
             if extra.lower().startswith(text_str.lower()):
                 extra = extra[len(text_str) :].lstrip("_- ")
@@ -703,11 +776,7 @@ def build_comparison_options(
     - Same text trials first (marked with ★)
     - Other trials after
     """
-    paragraph_field = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in combos.columns
-        else "paragraph_id"
-    )
+    text_field = "unique_text_id" if "unique_text_id" in combos.columns else "text_id"
 
     options: list[Tuple[str, str, str]] = []
     added = set()
@@ -717,7 +786,7 @@ def build_comparison_options(
         for row in df.itertuples():
             key = (row.participant_id, row.trial_id)
             if key not in added and key != (primary_participant, primary_trial):
-                text_id = getattr(row, paragraph_field, "")
+                text_id = getattr(row, text_field, "")
                 label = friendly_trial_label(
                     row.participant_id,
                     row.trial_id,
@@ -731,13 +800,13 @@ def build_comparison_options(
     if primary_text:
         # Same text first
         same_text_all = combos[
-            (combos[paragraph_field].astype(str) == str(primary_text))
+            (combos[text_field].astype(str) == str(primary_text))
         ].drop_duplicates(subset=["participant_id", "trial_id"])
         add_options(same_text_all, "★ ")
 
         # Then other texts
         other_texts = combos[
-            (combos[paragraph_field].astype(str) != str(primary_text))
+            (combos[text_field].astype(str) != str(primary_text))
         ].drop_duplicates(subset=["participant_id", "trial_id"])
         add_options(other_texts)
     else:
