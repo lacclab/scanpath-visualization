@@ -1360,23 +1360,27 @@ def _finalize_wizard_dataset() -> None:
     store = st.session_state.setdefault("_datasets", {})
     store[ds_name] = payload
     # Apply the source switch through the plain pending key that
-    # render_sidebar_data_source consumes before the radio instantiates.
+    # render_sidebar_data_source consumes before the radio instantiates, and
+    # leave the wizard.
     st.session_state["_pending_source_choice"] = ds_name
+    st.session_state["_show_upload_wizard"] = False
     st.session_state["setup_complete"] = True
 
 
 def _enter_add_data_wizard() -> None:
-    """Switch the data source to the upload wizard.
+    """Open the upload wizard (the "➕ Add data" button's ``on_click`` callback).
 
-    Runs as the "➕ Add data" button's ``on_click`` callback — i.e. *before* any
-    widget (including the ``data_source_choice`` radio) is instantiated on the
-    rerun — so it may reassign that widget's key. An in-body handler can't:
-    Streamlit forbids modifying ``st.session_state.data_source_choice`` once the
-    radio with that key has rendered."""
+    Tracks the wizard in a *plain* ``_show_upload_wizard`` flag rather than
+    stuffing ``UPLOAD_CHOICE`` into the ``data_source_choice`` radio key. The
+    radio isn't rendered while the wizard is open, and Streamlit garbage-collects
+    a not-rendered widget key after a couple of reruns — which used to silently
+    drop ``data_source_choice`` mid-wizard (more so for a composite trial id,
+    which needs more interactions/reruns) and bounce the user back to the main
+    app. The flag is never GC'd, and the radio's value stays a real source."""
     st.session_state["_prev_source"] = st.session_state.get(
         "data_source_choice", DEMO_CHOICE
     )
-    st.session_state["data_source_choice"] = UPLOAD_CHOICE
+    st.session_state["_show_upload_wizard"] = True
     st.session_state["setup_complete"] = False
     _reset_wizard_widgets()
 
@@ -1406,16 +1410,24 @@ def render_sidebar_data_source() -> str:
     pending = st.session_state.pop("_pending_source_choice", None)
     if pending is not None:
         st.session_state["data_source_choice"] = pending
+        # A real source was chosen (finalize / cancel) → leave the wizard.
+        st.session_state["_show_upload_wizard"] = False
 
-    # While the upload wizard is active/editing, its value (UPLOAD_CHOICE) isn't
-    # a selectable source — don't render the radio (Streamlit would reject an
-    # out-of-options value); offer a way out instead.
-    if st.session_state.get("data_source_choice") == UPLOAD_CHOICE:
+    # The upload wizard is tracked by a plain flag, not by parking UPLOAD_CHOICE
+    # in the radio key (which Streamlit would garbage-collect mid-wizard — see
+    # _enter_add_data_wizard). The legacy ``data_source_choice == UPLOAD_CHOICE``
+    # is still honoured so AppTests / `?source=upload` deep links can open the
+    # wizard directly. While it's open, don't render the radio; offer a way out.
+    if (
+        st.session_state.get("_show_upload_wizard")
+        or st.session_state.get("data_source_choice") == UPLOAD_CHOICE
+    ):
         source.caption("➕ Adding a dataset — fill in the setup wizard →")
         if source.button("✕ Cancel", key="cancel_add_data"):
             st.session_state["_pending_source_choice"] = st.session_state.get(
                 "_prev_source", DEMO_CHOICE
             )
+            st.session_state["_show_upload_wizard"] = False
             st.session_state["setup_complete"] = True
             st.rerun()
         return UPLOAD_CHOICE
@@ -2308,7 +2320,7 @@ def main() -> None:
     elif url_source == "demo":
         st.session_state.setdefault("data_source_choice", DEMO_CHOICE)
     elif url_source == "upload":
-        st.session_state.setdefault("data_source_choice", UPLOAD_CHOICE)
+        st.session_state.setdefault("_show_upload_wizard", True)
 
     # First-visit welcome tour. After the URL presets, so embeds and
     # deep-linked sessions can suppress it — but BEFORE the heavy data/plot

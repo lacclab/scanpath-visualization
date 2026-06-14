@@ -697,12 +697,12 @@ class TestSetupWizard:
         return app
 
     def test_add_data_button_enters_wizard(self):
-        """Clicking '➕ Add data' from a built-in source switches into the upload
-        wizard. Regression: the handler reassigned the data_source_choice radio
-        key inline, which Streamlit forbids after the radio is instantiated — it
-        must run in an on_click callback instead."""
-        from scanpath_studio import app
-
+        """Clicking '➕ Add data' from a built-in source opens the upload wizard.
+        Regression: the handler must run in an on_click callback (Streamlit forbids
+        reassigning a widget key inline), and the wizard state rides a plain
+        ``_show_upload_wizard`` flag — NOT the data_source_choice radio key, which
+        Streamlit garbage-collects while the radio isn't rendered (bouncing the
+        user out of the wizard mid-edit, esp. for a composite trial id)."""
         at = _make_apptest(synthetic=True)
         at.run(timeout=60)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
@@ -711,8 +711,12 @@ class TestSetupWizard:
         add[0].click()
         at.run(timeout=60)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
-        assert at.session_state["data_source_choice"] == app.UPLOAD_CHOICE
+        assert at.session_state["_show_upload_wizard"] is True
         assert at.session_state["setup_complete"] is False
+        # The wizard owns the page: its sidebar Cancel button shows and the
+        # normal data-source radio is gone.
+        assert any(b.key == "cancel_add_data" for b in at.button)
+        assert not any(r.key == "data_source_choice" for r in at.radio)
 
     def test_wizard_active_then_finalize_renders_tabs(self, monkeypatch):
         app = self._inject(monkeypatch)
