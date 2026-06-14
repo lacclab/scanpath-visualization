@@ -556,6 +556,7 @@ def sidebar_controls(
 
     viz.divider()
     # --- Fixations --------------------------------------------------------
+    viz.markdown("**Fixations**")
     show_fix = viz.checkbox("Fixations", key="global_show_fix")
     color_by = viz.selectbox(
         "Color fixations by",
@@ -611,6 +612,7 @@ def sidebar_controls(
 
     viz.divider()
     # --- Saccades ---------------------------------------------------------
+    viz.markdown("**Saccades**")
     show_saccades = viz.checkbox("Saccades", key="global_show_saccades")
     show_saccade_arrows = viz.checkbox(
         "Saccade direction arrows",
@@ -620,6 +622,7 @@ def sidebar_controls(
 
     viz.divider()
     # --- Text -------------------------------------------------------------
+    viz.markdown("**Text**")
     show_labels = viz.checkbox("Text", key="global_show_labels")
     critical_span_style = viz.radio(
         "Text highlighting",
@@ -637,6 +640,7 @@ def sidebar_controls(
 
     viz.divider()
     # --- Heatmap ----------------------------------------------------------
+    viz.markdown("**Heatmap**")
     show_heatmap = viz.checkbox("Heatmap", key="global_show_heatmap")
     heatmap_style = viz.radio(
         "Heatmap style",
