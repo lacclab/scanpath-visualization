@@ -377,7 +377,7 @@ class TestCompositeTrialId:
     WORD_SCHEMA = {
         "participant": "participant_id",
         "trial": ["participant_id", "para", "rep"],
-        "paragraph": "para",
+        "text_id": "para",
         "word_id": "word_id",
         "text": None,
         "line": None,
@@ -394,7 +394,7 @@ class TestCompositeTrialId:
     FIX_SCHEMA = {
         "participant": "participant_id",
         "trial": ["participant_id", "para", "rep"],
-        "paragraph": "para",
+        "text_id": "para",
         "fixation_id": None,
         "timestamp": None,
         "duration": "dur",

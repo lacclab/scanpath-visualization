@@ -884,19 +884,25 @@ def _add_word_level_heatmap(
     heatmap_range: Optional[Tuple[float, float]],
     show_colorbars: bool,
 ) -> None:
+    # Pull the fixation coordinates (and optional weights) into numpy arrays once,
+    # then test box membership per word against the arrays. Same O(words × fix)
+    # work as before but without rebuilding pandas Series each iteration, and with
+    # O(fix) memory (no full words × fix matrix).
+    fx = pd.to_numeric(fixations[x_field], errors="coerce").to_numpy(dtype=float)
+    fy = pd.to_numeric(fixations[y_field], errors="coerce").to_numpy(dtype=float)
+    w_arr = (
+        pd.to_numeric(weights, errors="coerce").to_numpy(dtype=float)
+        if weights is not None
+        else None
+    )
     word_values = []
     for word_row in words.itertuples():
         wx0, wy0 = word_row.x, word_row.y
         wx1, wy1 = wx0 + word_row.width, wy0 + word_row.height
-        in_word = (
-            (fixations[x_field] >= wx0)
-            & (fixations[x_field] <= wx1)
-            & (fixations[y_field] >= wy0)
-            & (fixations[y_field] <= wy1)
-        )
+        in_word = (fx >= wx0) & (fx <= wx1) & (fy >= wy0) & (fy <= wy1)
         val = (
-            float(weights[in_word].sum())
-            if weights is not None
+            float(np.nansum(w_arr[in_word]))
+            if w_arr is not None
             else float(in_word.sum())
         )
         word_values.append(val)
@@ -1858,8 +1864,8 @@ def _resolve_trial_display_name(
     if trial_labels is not None and len(trial_labels) > idx:
         return trial_labels[idx]
     text_id = None
-    if "paragraph_id" in trial_words.columns and not trial_words.empty:
-        text_id = trial_words["paragraph_id"].iloc[0]
+    if "text_id" in trial_words.columns and not trial_words.empty:
+        text_id = trial_words["text_id"].iloc[0]
     text_str = str(text_id) if text_id is not None else ""
     trial_str = str(trial_id)
     contains_text = text_str and text_str.lower() in trial_str.lower()
@@ -2356,16 +2362,49 @@ def make_fixation_duration_histogram(
         )
         return fig
     durations = pd.to_numeric(fixations["duration_ms"], errors="coerce").dropna()
-    fig.add_trace(
-        go.Histogram(
-            x=durations,
-            nbinsx=bins,
-            marker=dict(
-                color=COMPARISON_PALETTE[0], line=dict(color="white", width=0.5)
-            ),
-            name="All fixations",
+
+    # Pre-bin server-side and draw bars instead of go.Histogram, which would
+    # serialize *every* raw value to the browser — prohibitive for millions of
+    # fixations. All series share one set of bin edges so the overlays align.
+    series_list = [("All fixations", durations.to_numpy(), COMPARISON_PALETTE[0], 1.0)]
+    if overlay_words is not None and not overlay_words.empty:
+        for name, col in (
+            ("FFD", "first_fixation_ms"),
+            ("FPRT", "first_pass_gaze_duration_ms"),
+            ("TFD", "total_fixation_duration_ms"),
+        ):
+            if col in overlay_words.columns:
+                vals = pd.to_numeric(overlay_words[col], errors="coerce").dropna()
+                if not vals.empty:
+                    series_list.append((name, vals.to_numpy(), None, 0.4))
+
+    all_vals = np.concatenate([arr for _, arr, _, _ in series_list])
+    lo = float(all_vals.min()) if all_vals.size else 0.0
+    hi = float(all_vals.max()) if all_vals.size else 1.0
+    if hi <= lo:
+        hi = lo + 1.0
+    edges = np.linspace(lo, hi, bins + 1)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    bar_width = float(edges[1] - edges[0])
+
+    for name, arr, color, opacity in series_list:
+        counts, _ = np.histogram(arr, bins=edges)
+        marker = (
+            dict(color=color, line=dict(color="white", width=0.5))
+            if color is not None
+            else None
         )
-    )
+        fig.add_trace(
+            go.Bar(
+                x=centers,
+                y=counts,
+                width=bar_width,
+                name=name,
+                opacity=opacity,
+                marker=marker,
+            )
+        )
+
     mean_ms = float(durations.mean()) if len(durations) else 0.0
     median_ms = float(durations.median()) if len(durations) else 0.0
     fig.add_vline(
@@ -2380,26 +2419,6 @@ def make_fixation_duration_histogram(
         annotation_text=f"median {median_ms:.0f} ms",
         annotation_position="top left",
     )
-    overlay = []
-    if overlay_words is not None and not overlay_words.empty:
-        if "first_fixation_ms" in overlay_words.columns:
-            overlay.append(("FFD", overlay_words["first_fixation_ms"]))
-        if "first_pass_gaze_duration_ms" in overlay_words.columns:
-            overlay.append(("FPRT", overlay_words["first_pass_gaze_duration_ms"]))
-        if "total_fixation_duration_ms" in overlay_words.columns:
-            overlay.append(("TFD", overlay_words["total_fixation_duration_ms"]))
-    for name, series in overlay:
-        vals = pd.to_numeric(series, errors="coerce").dropna()
-        if vals.empty:
-            continue
-        fig.add_trace(
-            go.Histogram(
-                x=vals,
-                nbinsx=bins,
-                opacity=0.4,
-                name=name,
-            )
-        )
     fig.update_layout(
         height=height,
         width=canvas_width,

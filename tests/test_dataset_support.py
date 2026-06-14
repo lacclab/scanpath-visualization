@@ -298,9 +298,10 @@ def test_stimulus_words_broadcast_and_aoi_xy(stimulus_words_df, aoi_fixations_df
     assert len(fig.data) > 0
 
 
-def test_stimulus_words_without_fixations_keep_placeholder(stimulus_words_df):
+def test_stimulus_words_without_fixations_get_synthetic_participant(stimulus_words_df):
     words, fixations = sps.load_scanpath_data(words=stimulus_words_df)
-    assert (words["participant_id"] == "").all()
+    # No fixations to broadcast across → a single anonymous reader.
+    assert (words["participant_id"] == data_module.SYNTHETIC_PARTICIPANT).all()
     assert data_module.STIMULUS_WORDS_FLAG not in words.columns
 
 
@@ -317,6 +318,61 @@ def test_fix_schema_requires_xy_or_word_id():
     )
     with pytest.raises(ValueError, match="Word/IA ID"):
         sps.load_scanpath_data(fixations=no_position)
+
+
+def test_participant_less_fixations_get_synthetic_participant():
+    """A fixations table with no participant column loads (participant is now
+    optional) and every row is stamped with the synthetic participant."""
+    fixations = pd.DataFrame(
+        {
+            "trial_id": ["t1", "t1", "t2"],
+            "x": [10.0, 20.0, 30.0],
+            "y": [5.0, 5.0, 5.0],
+            "duration_ms": [100, 120, 90],
+        }
+    )
+    _words, fix = sps.load_scanpath_data(fixations=fixations)
+    assert (fix["participant_id"] == data_module.SYNTHETIC_PARTICIPANT).all()
+
+
+def test_asymmetric_participant_reconciles_word_boxes():
+    """Words carry a participant id but fixations don't — the boxes must be
+    re-keyed to the synthetic participant the trial picker uses, or they'd be
+    silently invisible (extract_trial would find none)."""
+    words = pd.DataFrame(
+        {
+            "participant_id": ["sub1", "sub1"],
+            "trial_id": ["t1", "t1"],
+            "word_id": [1, 2],
+            "word": ["Hello", "world"],
+            "left": [100, 200],
+            "right": [180, 280],
+            "top": [50, 50],
+            "bottom": [100, 100],
+        }
+    )
+    fixations = pd.DataFrame(
+        {
+            "trial_id": ["t1", "t1"],
+            "x": [140.0, 240.0],
+            "y": [75.0, 75.0],
+            "duration_ms": [180, 200],
+        }
+    )
+    words_n, fix_n = sps.load_scanpath_data(words=words, fixations=fixations)
+    assert set(fix_n["participant_id"]) == {data_module.SYNTHETIC_PARTICIPANT}
+    assert set(words_n["participant_id"]) == {data_module.SYNTHETIC_PARTICIPANT}
+    # The boxes for the trial the picker offers ('(all)', 't1') are now reachable.
+    fig = sps.plot_scanpath(words_n, fix_n, data_module.SYNTHETIC_PARTICIPANT, "t1")
+    assert len(fig.data) > 0
+
+
+def test_frame_fingerprint_distinguishes_unhashable_columns():
+    """Two frames identical in shape + columns but differing in a list-valued
+    (unhashable) column must not collapse to the same cache key."""
+    a = pd.DataFrame({"x": [1, 2], "spans": [[1, 2], [3, 4]]})
+    b = pd.DataFrame({"x": [1, 2], "spans": [[9, 9], [8, 8]]})
+    assert data_module.frame_fingerprint(a) != data_module.frame_fingerprint(b)
 
 
 # ---------------------------------------------------------------------------
@@ -414,3 +470,65 @@ def test_load_potec_unknown_text(potec_root):
 def test_load_potec_missing_data_message(tmp_path):
     with pytest.raises(FileNotFoundError, match="download=True"):
         datasets_module.load_potec(tmp_path, texts=["b0"])
+
+
+# ---------------------------------------------------------------------------
+# Column keep-list / pruning (perf core)
+# ---------------------------------------------------------------------------
+
+
+def test_keep_columns_prunes_normalized_frame():
+    words = pd.DataFrame(
+        {
+            "participant_id": ["p1", "p1"],
+            "trial_id": ["t1", "t1"],
+            "word_id": [1, 2],
+            "IA_LEFT": [0, 10],
+            "IA_RIGHT": [10, 20],
+            "IA_TOP": [0, 0],
+            "IA_BOTTOM": [10, 10],
+            "IA_LABEL": ["a", "b"],
+            "gpt2_surprisal": [1.0, 2.0],
+            "difficulty_level": ["Adv", "Adv"],
+            "junk": [9, 9],
+        }
+    )
+    schema = data_module.propose_word_schema(words)
+
+    # Default (keep_columns=None): all detected optional fields kept, junk dropped.
+    full = data_module.normalize_words(words, schema)
+    assert "gpt2_surprisal" in full.columns
+    assert "difficulty_level" in full.columns
+    assert "junk" not in full.columns
+
+    # Pruned: only the chosen optional + explicit extra keep survive.
+    keep = data_module.compute_keep_columns(
+        schema, optional_sources=["gpt2_surprisal"], keep_columns=["junk"]
+    )
+    thin = data_module.normalize_words(words, schema, keep_columns=keep)
+    assert "gpt2_surprisal" in thin.columns
+    assert "junk" in thin.columns  # carried verbatim
+    assert "difficulty_level" not in thin.columns  # detected but not chosen
+
+
+def test_categorize_columns_splits_mapped_detected_unclaimed():
+    words = pd.DataFrame(
+        {
+            "participant_id": ["p1"],
+            "trial_id": ["t1"],
+            "word_id": [1],
+            "x": [0],
+            "y": [0],
+            "width": [1],
+            "height": [1],
+            "gpt2_surprisal": [1.0],
+            "my_custom_col": [3],
+        }
+    )
+    schema = data_module.propose_word_schema(words)
+    cats = data_module.categorize_columns(
+        words, schema, data_module.WORD_OPTIONAL_FIELDS
+    )
+    assert "participant_id" in cats["mapped"]
+    assert any(d["source"] == "gpt2_surprisal" for d in cats["detected_optional"])
+    assert "my_custom_col" in cats["unclaimed"]

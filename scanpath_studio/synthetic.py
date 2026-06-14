@@ -53,7 +53,7 @@ def make_synthetic_words() -> pd.DataFrame:
         {
             "participant_id": [PARTICIPANT] * n,
             "trial_id": [TRIAL] * n,
-            "paragraph_id": [PARAGRAPH] * n,
+            "text_id": [PARAGRAPH] * n,
             "word_id": list(range(n)),
             "text": list(_WORD_TEXT),
             # line_idx is intentionally a constant: real OneStop IA exports do
@@ -93,7 +93,7 @@ def make_synthetic_fixations() -> pd.DataFrame:
         {
             "participant_id": [PARTICIPANT] * n,
             "trial_id": [TRIAL] * n,
-            "paragraph_id": [PARAGRAPH] * n,
+            "text_id": [PARAGRAPH] * n,
             "x": [r[0] for r in _FIX_ROWS],
             "y": [r[1] for r in _FIX_ROWS],
             "duration_ms": [r[2] for r in _FIX_ROWS],

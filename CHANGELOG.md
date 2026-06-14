@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Guided setup wizard for uploads.** Uploading now walks you through a
+  step-by-step flow — upload your tables, map the trial id, then only the few
+  required fields — instead of wrestling with column-mapping expanders in the
+  sidebar. Live counts ("✓ N trials loaded", participants, texts) confirm each
+  step. After loading it collapses into a compact **Data & mapping** panel you
+  can re-open to tweak.
+- **Reusable named datasets.** Finishing an upload saves it (under a name you
+  choose) as a first-class data source. Switching between it, the bundled demo,
+  and other datasets is instant — no re-uploading or re-mapping. Add another via
+  the sidebar's **➕ Add data** button.
+- **Optional participant & text.** Datasets without a participant column (a
+  single anonymous reader) or without a text/passage column now load and
+  visualize — the app fills sensible defaults and hides the Participant / Text
+  selectors when a dimension has only one value.
+- **Keep only the fields you need.** The wizard auto-detects reading measures,
+  linguistic features and condition columns and lets you drop the ones you don't
+  need; everything unmapped is pruned before processing, which is the main
+  speed-up on wide datasets (hundreds of columns).
+- **Dynamic trial filters.** The **Filter trials** panel now offers a value
+  picker for whichever condition fields your dataset actually has (and which you
+  chose to keep), instead of a fixed set of OneStop-specific conditions.
+- **Display calibration in the loading flow.** The **Experimental Setup**
+  (monitor size, font, line spacing, background) is now part of the wizard, so
+  the scanpath is true-to-scale from the first render; it stays adjustable from
+  the sidebar afterwards.
 - **PoTeC loader.** `sps.load_potec(root, download=True)` /
   `scanpath-studio render --potec` load the Potsdam Textbook Corpus end-to-end
   — its filename-encoded ids and separate character-AoI coordinates can't go
@@ -15,6 +40,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a dataset registry built for more corpora) ships feature-flagged off
   (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
   release.
+
+### Changed
+- **Much faster on large datasets.** Switching trial, participant, or settings
+  on a big dataset (hundreds of columns, many trials) is now near-instant
+  instead of taking minutes — heavy work is cached and thinned, with a visible
+  loading spinner while the first render builds.
+- **One Visualization controls panel.** The former *Advanced styling* expander
+  is merged into **Visualization controls**, grouped by layer (Fixations,
+  Saccades, Text, Heatmap) with thin separators; per-layer size/colour/colorscale
+  controls sit under each layer, and the fixation/heatmap colour-range sliders
+  show whenever they apply (no longer gated behind *Show color bars*).
+- **Clearer trial-id mapping.** One shared **Trial ID** picker applies to every
+  table by default (with an opt-in *Different trial-id columns per table*
+  toggle), and defaults to composing the paragraph and text ids when both exist.
+  If the per-table trial counts disagree the wizard says so.
+- **Simpler data-source picker.** "Use bundled demo" is now **Bundled Demo**;
+  the synthetic trial is no longer offered as a fresh source; a grayed-out
+  **Public Datasets** entry previews what's coming.
+- **Clearer Bulk Export controls.** The whole-dataset and filtered scopes are
+  now both **All** / **All filtered trials** options inside the *Trials to
+  include* picker (no separate checkbox), and the Scope section ends with a live
+  "*N of M trials will be exported*" count. Figures are listed one per row
+  (PDF → SVG → PNG), default to **PDF + Config** only, the plot-config checkbox
+  is renamed **Config** with a short explanation, and the PNG-scale stepper is
+  compact and only shown when PNG is ticked.
+- **Faster bulk figure export.** Rasterizing PNG/SVG/PDF for many trials now
+  reuses one persistent Kaleido browser for the whole batch instead of
+  cold-starting Chrome per trial — quicker on large exports and no more
+  per-trial "Resorting to unclean kill browser." log noise.
 
 ## [0.19.1] - 2026-06-14
 

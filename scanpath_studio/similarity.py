@@ -1,7 +1,7 @@
 """Scanpath similarity metrics for comparing scanpaths over the same text.
 
 The reference use case is the **Multiple Comparison** tab: score how close each
-model-generated scanpath is to the real reading of the same paragraph.
+model-generated scanpath is to the real reading of the same text.
 
 Currently one metric is implemented for real:
 

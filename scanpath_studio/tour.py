@@ -19,6 +19,12 @@ Mechanics worth knowing before editing:
   clear ``tour_mode`` — the fragment then renders nothing and the card +
   highlight CSS disappear with it, again with no full rerun. The dialog's
   Skip/Done close the modal client-side (``_close_dialog_clientside``).
+- The spotlight card streams to the browser *before* the heavy first-load
+  work, but its Exit/Done are ordinary Streamlit buttons — a click only
+  schedules a rerun, which can't run until that ~10 s load finishes, so the
+  card + dimming backdrop would linger the whole time. A same-origin listener
+  (``_dismiss_listener_script``) hides them instantly on click; the button's
+  native click still clears ``tour_mode`` once Streamlit catches up.
 - Spotlight targets are ``.st-key-tour_grp_*`` classes from keyed wrapper
   containers around the sidebar sections (app.py / controls.py /
   annotations.py) plus Streamlit's stable ``data-testid``/``data-baseweb``
@@ -292,6 +298,61 @@ def _exit_spotlight() -> None:
     st.session_state["tour_mode"] = None
 
 
+def _dismiss_listener_script(selector: str | None) -> str:
+    """JS that lets Exit/Done close the tour *instantly*, even mid-load.
+
+    The card streams to the browser early (before the ~10 s data/plot work),
+    but its Exit/Done are ordinary Streamlit buttons: a click only schedules a
+    rerun, which Streamlit can't process until the in-flight first run
+    finishes — so the card and its dimming backdrop linger for the whole load.
+
+    This same-origin script attaches a plain ``click`` listener to those
+    buttons that hides the card, backdrop, and highlight outline immediately
+    via an injected ``!important`` stylesheet — no server roundtrip. The
+    button's native click still fires too, so ``_exit_spotlight`` runs whenever
+    Streamlit catches up and clears ``tour_mode`` durably. Re-arming the tour
+    re-renders this script, which first drops any stale hide style so the
+    replayed card is visible.
+    """
+    outline_clear = (
+        f"{selector} {{ outline: none !important; animation: none !important; }}"
+        if selector
+        else ""
+    )
+    hide_css = (
+        ".st-key-tour_card, .tour-backdrop { display: none !important; } "
+        + outline_clear
+    )
+    return f"""<script>
+    (function () {{
+        const doc = window.parent.document;
+        doc.getElementById("tour-instant-hide")?.remove();  // clear stale hide
+        const hide = () => {{
+            const s = doc.createElement("style");
+            s.id = "tour-instant-hide";
+            s.textContent = {hide_css!r};
+            doc.head.appendChild(s);
+            doc.querySelectorAll(".tour-backdrop").forEach((e) => e.remove());
+        }};
+        let tries = 0;
+        (function wire() {{
+            const btns = [".st-key-tour_sp_exit button",
+                          ".st-key-tour_sp_done button"]
+                .map((sel) => doc.querySelector(sel)).filter(Boolean);
+            if (!btns.length) {{
+                if (++tries < 20) setTimeout(wire, 100);
+                return;
+            }}
+            btns.forEach((b) => {{
+                if (b.dataset.tourHideWired) return;
+                b.dataset.tourHideWired = "1";
+                b.addEventListener("click", hide, {{ once: true }});
+            }});
+        }})();
+    }})();
+    </script>"""
+
+
 @st.fragment
 def render_spotlight_tour() -> None:
     """Floating tour card + pulsing highlight for the current spotlight step.
@@ -378,6 +439,11 @@ def render_spotlight_tour() -> None:
                 type="primary",
                 on_click=_exit_spotlight,
             )
+
+        # Make Exit/Done hide the tour instantly, even while the app's first
+        # run is still loading (the Streamlit click alone would only take
+        # effect once that ~10 s run finishes). See _dismiss_listener_script.
+        components.html(_dismiss_listener_script(step["selector"]), height=0)
 
         if step["selector"]:
             # Bring the highlighted section into view. Same-origin iframe

@@ -1,6 +1,6 @@
 """Build a small, representative demo subset from the OneStop eye-tracking exports.
 
-The bundled sample data ships with the wheel and powers the "Use bundled demo"
+The bundled sample data ships with the wheel and powers the "Bundled Demo"
 mode. We aim for a corpus that lets users actually exercise every feature
 without uploading their own data: a handful of participants reading the same
 paragraphs at both Adv and Ele difficulty levels.

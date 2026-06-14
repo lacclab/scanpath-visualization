@@ -18,7 +18,7 @@ def minimal_combos():
         {
             "participant_id": ["p1", "p1"],
             "trial_id": ["t1", "t2"],
-            "paragraph_id": ["para1", "para2"],
+            "text_id": ["para1", "para2"],
         }
     )
 
@@ -29,7 +29,7 @@ def minimal_words():
         {
             "participant_id": ["p1"] * 4,
             "trial_id": ["t1", "t1", "t2", "t2"],
-            "paragraph_id": ["para1", "para1", "para2", "para2"],
+            "text_id": ["para1", "para1", "para2", "para2"],
             "word_id": [1, 2, 1, 2],
             "text": ["the", "cat", "the", "dog"],
             "line_idx": [1, 1, 1, 1],
@@ -47,7 +47,7 @@ def minimal_fixations():
         {
             "participant_id": ["p1"] * 4,
             "trial_id": ["t1", "t1", "t2", "t2"],
-            "paragraph_id": ["para1", "para1", "para2", "para2"],
+            "text_id": ["para1", "para1", "para2", "para2"],
             "x": [140, 240, 140, 240],
             "y": [70, 70, 70, 70],
             "duration_ms": [200, 250, 220, 230],
@@ -156,7 +156,7 @@ class TestBulkExport:
             {
                 "participant_id": ["p1", "p999"],
                 "trial_id": ["t1", "tNONE"],
-                "paragraph_id": ["para1", "paraX"],
+                "text_id": ["para1", "paraX"],
             }
         )
         opts = ExportOptions(

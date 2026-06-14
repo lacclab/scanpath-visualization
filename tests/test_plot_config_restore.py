@@ -148,6 +148,21 @@ class TestPlotConfigRestore:
         assert ss["single_trial_id"] == "t2"
         assert ss["_skipped"] == []
 
+    def test_restores_and_translates_column_mapping(self):
+        config = _full_config()
+        config["column_mapping"] = {
+            "col_map_fix_x": "CURRENT_FIX_X",
+            "col_map_words_paragraph": "unique_paragraph_id",  # legacy key
+            "col_map_words_upload": "ignored.csv",  # uploader widget — must skip
+        }
+        ss = _run(_restore_app, _config=config).session_state
+        assert ss["col_map_fix_x"] == "CURRENT_FIX_X"
+        # A legacy *_paragraph key is translated to the current *_text_id key.
+        assert ss["col_map_words_text_id"] == "unique_paragraph_id"
+        assert "col_map_words_paragraph" not in ss
+        # Uploader-widget keys are never seeded (not JSON-restorable state).
+        assert "col_map_words_upload" not in ss
+
     def test_restores_text_highlighting_and_annotations(self):
         # The merged "Save & restore" config (schema 2) also carries text
         # sizing, highlighting, and annotations — all re-applied on restore.

@@ -22,7 +22,7 @@ from tests.synthetic_data import make_synthetic_words
 _FIX_COLUMNS = {
     "participant_id",
     "trial_id",
-    "paragraph_id",
+    "text_id",
     "x",
     "y",
     "duration_ms",
