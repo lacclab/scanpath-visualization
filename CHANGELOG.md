@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Guided setup wizard for uploads.** Uploading now walks you through a
-  step-by-step flow — upload your tables, map the trial id, then only the few
-  required fields — instead of wrestling with column-mapping expanders in the
-  sidebar. Live counts ("✓ N trials loaded", participants, texts) confirm each
-  step. After loading it collapses into a compact **Data & mapping** panel you
-  can re-open to tweak.
+  step-by-step flow — upload your tables (in a collapsible box that tucks away
+  once files are in), then map the trial id, participants, texts, and the few
+  required fields. Live counts ("✓ N trials detected — make sure this is the
+  number you expect", participants, texts) confirm each step. After loading it
+  collapses into a compact **Data & mapping** panel you can re-open to tweak.
 - **Reusable named datasets.** Finishing an upload saves it (under a name you
   choose) as a first-class data source. Switching between it, the bundled demo,
   and other datasets is instant — no re-uploading or re-mapping. Add another via
@@ -21,7 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Optional participant & text.** Datasets without a participant column (a
   single anonymous reader) or without a text/passage column now load and
   visualize — the app fills sensible defaults and hides the Participant / Text
-  selectors when a dimension has only one value.
+  selectors when a dimension has only one value. The wizard maps **Participants**
+  and **Texts** in their own steps (mirroring the Trial id: one shared picker, an
+  opt-in per-table override, and several columns composable into one id).
+- **Choose the text-highlight column.** A new *Highlight words by* picker chooses
+  which per-word column (the OneStop answer span by default, or any boolean
+  column in your data) is marked on the reading text.
+- **Pick the saccade colour.** A colour picker under *Saccades* sets the saccade
+  line and arrow colour (two-trial comparisons keep their per-scanpath colours).
+- **Saved configs record their export date** (and the data source + app version),
+  shown when you restore one — including a confirmation line under the wizard's
+  *Restore a saved setup* box naming where the loaded setup came from.
 - **Keep only the fields you need.** The wizard auto-detects reading measures,
   linguistic features and condition columns and lets you drop the ones you don't
   need; everything unmapped is pruned before processing, which is the main
@@ -52,9 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controls sit under each layer, and the fixation/heatmap colour-range sliders
   show whenever they apply (no longer gated behind *Show color bars*).
 - **Clearer trial-id mapping.** One shared **Trial ID** picker applies to every
-  table by default (with an opt-in *Different trial-id columns per table*
-  toggle), and defaults to composing the paragraph and text ids when both exist.
-  If the per-table trial counts disagree the wizard says so.
+  table by default (with an opt-in *Different trial-id columns per table* toggle
+  that now keeps the columns you already picked instead of clearing them), and
+  defaults to composing the participant and text ids when both exist. If the
+  per-table trial counts disagree the wizard says so.
+- **Tidier wizard.** The required-field steps are renamed **Column mapping:
+  Fixations** and **Column mapping: Text & Interest Areas** (each collapsible); a
+  single **Fields to keep** list replaces the split *Optional fields* / *Extra
+  columns* pickers; the four upload boxes are narrower; and uploaded data now
+  defaults to a 2560×1440 monitor.
+- **Integer colour ranges.** The fixation- and heatmap-colour range sliders read
+  as whole numbers instead of long decimals.
+- **Refreshed the welcome tour** to match the current app (the *Experimental
+  Setup* / merged *Visualization controls* panels, the guided upload).
 - **Simpler data-source picker.** "Use bundled demo" is now **Bundled Demo**;
   the synthetic trial is no longer offered as a fresh source; a grayed-out
   **Public Datasets** entry previews what's coming.
@@ -69,6 +89,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuses one persistent Kaleido browser for the whole batch instead of
   cold-starting Chrome per trial — quicker on large exports and no more
   per-trial "Resorting to unclean kill browser." log noise.
+
+### Fixed
+- **Colour bars no longer squash the scanpath.** Turning on *Show color bars* or
+  colouring fixations by a categorical field used to shrink the plot and throw
+  off its aspect ratio (the reading text then overflowed its word boxes). The
+  colour bar / legend now sits in reserved margin, so the plot keeps its true
+  scale either way.
+- Dropped the stale **Reading regime** line from the Text & question panel, and
+  fixed the per-trial annotations note that pointed at an *Annotations* sidebar
+  panel that no longer exists (it lives in **💾 Save & restore**).
 
 ## [0.19.1] - 2026-06-14
 

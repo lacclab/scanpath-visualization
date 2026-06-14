@@ -50,6 +50,7 @@ from .constants import (  # noqa: E402
     DEFAULT_MARKER_SIZE_RANGE,
     DEFAULT_ORDER_FONT_COLOR,
     FONT_FAMILY,
+    SACCADE_COLOR,
 )
 from .plots import make_scanpath_animation, make_scanpath_figure  # noqa: E402
 
@@ -79,6 +80,8 @@ CANONICAL_FIGURE_DEFAULTS: dict = dict(
     fixation_colorscale=DEFAULT_FIXATION_COLORSCALE,
     heatmap_colorscale=DEFAULT_HEATMAP_COLORSCALE,
     critical_span_style="Mark text",
+    highlight_column="is_in_aspan",
+    saccade_color=SACCADE_COLOR,
     background_color=DEFAULT_BACKGROUND_COLOR,
     color_by_line=False,
     highlight_out_of_text=False,

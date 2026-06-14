@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
 
 from .annotations import known_tags
-from .data import frame_fingerprint
 from .constants import (
     BACKGROUND_PRESETS,
     COLORSCALES,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_FIXATION_COLORSCALE,
     DEFAULT_HEATMAP_COLORSCALE,
+    SACCADE_COLOR,
 )
+from .data import frame_fingerprint
 
 NONE_OPTION = "(none)"
 
@@ -30,6 +32,7 @@ _VIZ_WIDGET_DEFAULTS = {
     "global_show_order": False,
     "global_show_saccades": True,
     "global_show_saccade_arrows": True,
+    "global_saccade_color": SACCADE_COLOR,
     "global_show_heatmap": True,
     "global_show_raw_gaze": False,
     "global_heatmap_style": "Word boxes",
@@ -484,6 +487,26 @@ def numeric_field_options(trial_fixations: pd.DataFrame) -> List[str]:
     ]
 
 
+# Word columns that look like a per-word boolean flag the user might want to
+# highlight on the text (the OneStop answer/distractor spans first, then any
+# other boolean column).
+_PREFERRED_HIGHLIGHT_FIELDS = ["is_in_aspan", "is_in_dspan"]
+
+
+def highlight_column_options(words: Optional[pd.DataFrame]) -> List[str]:
+    """Boolean word columns offered in the 'Highlight words by' selector.
+
+    The OneStop answer/distractor spans lead, followed by any other boolean
+    column in the words frame. Empty when there's nothing to highlight."""
+    if words is None or words.empty:
+        return []
+    cols = [c for c in _PREFERRED_HIGHLIGHT_FIELDS if c in words.columns]
+    for col in words.columns:
+        if col not in cols and pd.api.types.is_bool_dtype(words[col]):
+            cols.append(col)
+    return cols
+
+
 def _drop_stale(state_key: str, options: list) -> None:
     """Clear a persisted selectbox value that isn't valid for the current
     ``options`` (e.g. after switching datasets, or restoring a config built on
@@ -511,7 +534,10 @@ def _clamp_range(state_key: str, lo: float, hi: float) -> None:
 
 
 def sidebar_controls(
-    trial_fixations: pd.DataFrame, base_font_size: int, has_raw_gaze: bool = False
+    trial_fixations: pd.DataFrame,
+    base_font_size: int,
+    has_raw_gaze: bool = False,
+    words: Optional[pd.DataFrame] = None,
 ) -> Dict:
     # Seed defaults for the widgets that the plot-config restore can set
     # (app._restore_plot_config). These render WITHOUT a `value=`/`index=`
@@ -582,11 +608,19 @@ def sidebar_controls(
         key="global_fixation_colorscale",
     )
     fixation_color_range = None
-    if color_by in trial_fixations.columns and pd.api.types.is_numeric_dtype(
-        trial_fixations[color_by]
-    ):
-        cmin = float(trial_fixations[color_by].min())
-        cmax = float(trial_fixations[color_by].max())
+    raw_cmin = (
+        trial_fixations[color_by].min()
+        if color_by in trial_fixations.columns
+        and pd.api.types.is_numeric_dtype(trial_fixations[color_by])
+        else None
+    )
+    raw_cmax = trial_fixations[color_by].max() if raw_cmin is not None else None
+    if pd.notna(raw_cmin) and pd.notna(raw_cmax):
+        # Integer bounds + step so the range reads as whole numbers (durations,
+        # surprisal, … all read cleaner as ints); values stay floats so a
+        # restored config built on different data still clamps in.
+        cmin = float(math.floor(raw_cmin))
+        cmax = float(math.ceil(raw_cmax))
         cmax_eff = cmax if cmax > cmin else cmin + 1.0
         _clamp_range("global_fixation_color_range", cmin, cmax_eff)
         st.session_state.setdefault("global_fixation_color_range", (cmin, cmax_eff))
@@ -594,7 +628,8 @@ def sidebar_controls(
             "Fixation color range",
             min_value=cmin,
             max_value=cmax_eff,
-            step=(cmax - cmin) / 100 if cmax > cmin else 1.0,
+            step=1.0,
+            format="%d",
             key="global_fixation_color_range",
         )
     show_order = viz.checkbox("Fixation index", key="global_show_order")
@@ -619,6 +654,13 @@ def sidebar_controls(
         key="global_show_saccade_arrows",
         help="Draw an arrowhead on each saccade pointing in the gaze direction.",
     )
+    saccade_color = viz.color_picker(
+        "Saccade color",
+        key="global_saccade_color",
+        disabled=not show_saccades,
+        help="Colour of the saccade lines and direction arrows (single scanpath; "
+        "two-trial comparisons keep their per-scanpath colours).",
+    )
 
     viz.divider()
     # --- Text -------------------------------------------------------------
@@ -631,11 +673,30 @@ def sidebar_controls(
         key="global_critical_span_style",
         disabled=not show_labels,
         help=(
-            "Mark text: color the critical-span words in dark pink. "
+            "Mark text: color the highlighted words in dark pink. "
             "Mark border: draw a thin black outline around the span. "
-            "None: don't mark the critical span. Needs Text to be on."
+            "None: don't highlight. Needs Text to be on."
         ),
     )
+    # Which word column drives the highlight (default the OneStop answer span).
+    highlight_options = highlight_column_options(words)
+    highlight_column = None
+    if highlight_options:
+        _drop_stale("global_highlight_column", highlight_options)
+        st.session_state.setdefault(
+            "global_highlight_column",
+            "is_in_aspan"
+            if "is_in_aspan" in highlight_options
+            else highlight_options[0],
+        )
+        highlight_column = viz.selectbox(
+            "Highlight words by",
+            options=highlight_options,
+            key="global_highlight_column",
+            disabled=not show_labels or critical_span_style == "None",
+            help="Which per-word column to highlight on the text (words where it "
+            "is true). Defaults to the OneStop answer span.",
+        )
     show_words = viz.checkbox("Bounding boxes", key="global_show_words")
 
     viz.divider()
@@ -675,9 +736,14 @@ def sidebar_controls(
             and "duration_ms" in trial_fixations.columns
             else None
         )
-        if heat_data is not None and len(heat_data) > 0:
-            hmin = float(heat_data.min())
-            hmax = float(heat_data.max())
+        if (
+            heat_data is not None
+            and len(heat_data) > 0
+            and pd.notna(heat_data.min())
+            and pd.notna(heat_data.max())
+        ):
+            hmin = float(math.floor(heat_data.min()))
+            hmax = float(math.ceil(heat_data.max()))
             hmax_eff = hmax if hmax > hmin else hmin + 1.0
             _clamp_range("global_heatmap_color_range", hmin, hmax_eff)
             st.session_state.setdefault("global_heatmap_color_range", (hmin, hmax_eff))
@@ -685,7 +751,8 @@ def sidebar_controls(
                 "Heatmap color range",
                 min_value=hmin,
                 max_value=hmax_eff,
-                step=(hmax - hmin) / 100 if hmax > hmin else 1.0,
+                step=1.0,
+                format="%d",
                 key="global_heatmap_color_range",
             )
 
@@ -746,6 +813,8 @@ def sidebar_controls(
         fixation_colorscale=fixation_colorscale,
         heatmap_colorscale=heatmap_colorscale,
         critical_span_style=critical_span_style,
+        highlight_column=highlight_column,
+        saccade_color=saccade_color,
         color_by_line=color_by_line,
         highlight_out_of_text=highlight_out_of_text,
         background_color=background_color,

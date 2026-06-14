@@ -849,7 +849,7 @@ def harmonize_frames(
 def _disambiguate_repeated_readings(
     df: pd.DataFrame,
     source: pd.DataFrame,
-    participant_col: str,
+    participant_mapping,
     trial_col: str,
 ) -> pd.DataFrame:
     """Suffix `trial_id` with `_r2`, `_r3` … when a participant read the same
@@ -863,6 +863,9 @@ def _disambiguate_repeated_readings(
     (which filter on TRIAL_INDEX) correctly avoid. We rank by TRIAL_INDEX so
     the chronologically-first reading keeps its original id; later readings
     get `_r2`, `_r3`, … appended.
+
+    ``participant_mapping`` is a single column name or a list of columns (a
+    composite participant id); the rank groups on its joined value.
     """
     if "unique_trial_id" in source.columns:
         return df
@@ -871,8 +874,15 @@ def _disambiguate_repeated_readings(
     )
     if idx_col is None:
         return df
+    grouper = pd.DataFrame(
+        {
+            "_pk": trial_id_series(source, participant_mapping).to_numpy(),
+            "_tc": source[trial_col].astype(str).to_numpy(),
+            "_idx": source[idx_col].to_numpy(),
+        }
+    )
     rank = (
-        source.groupby([participant_col, trial_col])[idx_col]
+        grouper.groupby(["_pk", "_tc"])["_idx"]
         .rank(method="dense")
         .astype(int)
         .to_numpy()
@@ -1074,7 +1084,8 @@ def normalize_words(
     # participant placeholder) fill every row even when assigned first.
     df = pd.DataFrame(index=words.index)
     if schema.get("participant"):
-        df["participant_id"] = words[schema["participant"]].astype(str)
+        # str or list (a composite participant id, joined like the trial id).
+        df["participant_id"] = trial_id_series(words, schema["participant"])
     else:
         # Stimulus-level word/AoI table (one row per word per text, shared by
         # all participants) — broadcast_stimulus_words() expands it across the
@@ -1102,7 +1113,8 @@ def normalize_words(
         df["unique_text_id"] = words["unique_paragraph_id"].astype(str)
         df["text_id"] = df["unique_text_id"]
     elif schema.get("text_id"):
-        df["text_id"] = words[schema["text_id"]].astype(str)
+        # str or list (a composite text id, joined like the trial id).
+        df["text_id"] = trial_id_series(words, schema["text_id"])
     else:
         df["text_id"] = df["trial_id"]
     df["word_id"] = pd.to_numeric(words[schema["word_id"]], errors="coerce")
@@ -1150,7 +1162,8 @@ def normalize_fixations(
     # Explicit index so a constant participant placeholder fills every row.
     df = pd.DataFrame(index=fixations.index)
     if schema.get("participant"):
-        df["participant_id"] = fixations[schema["participant"]].astype(str)
+        # str or list (a composite participant id, joined like the trial id).
+        df["participant_id"] = trial_id_series(fixations, schema["participant"])
     else:
         # No participant column → a single anonymous reader.
         df["participant_id"] = SYNTHETIC_PARTICIPANT
@@ -1172,13 +1185,11 @@ def normalize_fixations(
             )
         if "unique_trial_id" in fixations.columns:
             df["unique_trial_id"] = fixations["unique_trial_id"].astype(str)
-    text_id_col = (
-        "unique_paragraph_id"
-        if "unique_paragraph_id" in fixations.columns
-        else schema.get("text_id")
-    )
-    if text_id_col:
-        df["text_id"] = fixations[text_id_col].astype(str)
+    if "unique_paragraph_id" in fixations.columns:
+        df["text_id"] = fixations["unique_paragraph_id"].astype(str)
+    elif schema.get("text_id"):
+        # str or list (a composite text id, joined like the trial id).
+        df["text_id"] = trial_id_series(fixations, schema["text_id"])
     else:
         df["text_id"] = df["trial_id"]
     if "unique_paragraph_id" in fixations.columns:

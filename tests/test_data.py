@@ -4,6 +4,11 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from scanpath_studio.controls import (
+    BOX_FORMAT_EDGES,
+    BOX_FORMAT_ORIGIN,
+    _default_box_format,
+)
 from scanpath_studio.data import (
     compute_canvas_size,
     compute_word_metrics,
@@ -20,11 +25,6 @@ from scanpath_studio.data import (
     propose_word_schema,
     trial_id_series,
     trial_mapping_columns,
-)
-from scanpath_studio.controls import (
-    BOX_FORMAT_EDGES,
-    BOX_FORMAT_ORIGIN,
-    _default_box_format,
 )
 
 
@@ -499,6 +499,59 @@ class TestCompositeTrialId:
         result = normalize_raw_gaze(raw, schema)
         assert result["trial_id"].tolist() == ["p1_A_False", "p1_A_False"]
         assert (result["unique_trial_id"] == result["trial_id"]).all()
+
+    def test_composite_participant_and_text_join_like_trial(self):
+        # Participant and text ids can also be composed from several columns
+        # (joined with '_'), mirroring the trial id (the wizard's Participants /
+        # Texts steps allow this).
+        words = pd.DataFrame(
+            {
+                "site": ["s1", "s1", "s2"],
+                "subject": ["a", "a", "b"],
+                "batch": ["1", "1", "2"],
+                "article": ["x", "y", "x"],
+                "word_id": [1, 1, 1],
+                "x": [0, 0, 0],
+                "y": [0, 0, 0],
+                "width": [10, 10, 10],
+                "height": [10, 10, 10],
+            }
+        )
+        schema = {
+            **self.WORD_SCHEMA,
+            "participant": ["site", "subject"],
+            "trial": ["site", "subject", "batch", "article"],
+            "text_id": ["batch", "article"],
+        }
+        result = normalize_words(words, schema)
+        assert result["participant_id"].tolist() == ["s1_a", "s1_a", "s2_b"]
+        assert result["text_id"].tolist() == ["1_x", "1_y", "2_x"]
+
+    def test_composite_participant_disambiguates_repeated_readings(self):
+        # The repeated-reading suffixing must group on the *joined* composite
+        # participant id, not crash on a list participant mapping.
+        words = pd.DataFrame(
+            {
+                "site": ["s1", "s1"],
+                "subject": ["a", "a"],
+                "para": ["A", "A"],
+                "TRIAL_INDEX": [1, 2],
+                "word_id": [1, 1],
+                "x": [0, 0],
+                "y": [0, 0],
+                "width": [10, 10],
+                "height": [10, 10],
+            }
+        )
+        schema = {
+            **self.WORD_SCHEMA,
+            "participant": ["site", "subject"],
+            "trial": "para",  # single col → repeated-reading path runs
+            "text_id": "para",
+        }
+        result = normalize_words(words, schema)
+        # Same participant + paragraph read twice → second gets an _r2 suffix.
+        assert result["trial_id"].tolist() == ["A", "A_r2"]
 
     def test_onestop_composite_reproduces_unique_trial_id_partition(self):
         # OneStop's unique trial id is participant + paragraph + repeated

@@ -379,12 +379,19 @@ class TestGroupedUploadMapping:
 
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error: {[e.value for e in at.error]}"
-        # All three tables rendered their own mapping panel (a Participant field
-        # each) — words, fixations, and raw gaze as peers.
-        keys = {s.key for s in at.selectbox}
-        assert "col_map_words_participant" in keys
-        assert "col_map_fix_participant" in keys
-        assert "col_map_raw_gaze_participant" in keys
+        # Words + fixations share one unified Participant picker (a multiselect);
+        # raw gaze keeps its own participant mapping (a selectbox). All three
+        # present tables get mapped.
+        sel_keys = {s.key for s in at.selectbox}
+        multi_keys = {m.key for m in at.multiselect}
+        assert "col_map_participant_unified" in multi_keys
+        assert "col_map_raw_gaze_participant" in sel_keys
+        # The shared pick is mirrored into each present table's per-table key.
+        assert "col_map_words_participant" in at.session_state
+        assert "col_map_fix_participant" in at.session_state
+        # Required per-table column mappings render too.
+        assert "col_map_fix_duration" in sel_keys
+        assert "col_map_words_word_id" in sel_keys
 
     def test_words_only_upload_renders(self, monkeypatch):
         # Single-report upload: only a Words/IA table — the missing fixations
@@ -410,11 +417,15 @@ class TestGroupedUploadMapping:
 
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error: {[e.value for e in at.error]}"
-        keys = {s.key for s in at.selectbox}
-        # The Words/IA mapping renders; the (un-uploaded) Fixations table gets no
-        # mapping panel, and the app got past mapping (no unmapped-view warning).
-        assert "col_map_words_participant" in keys
-        assert "col_map_fix_participant" not in keys
+        sel_keys = {s.key for s in at.selectbox}
+        multi_keys = {m.key for m in at.multiselect}
+        # The Words/IA mapping renders (unified Participant multiselect + the word
+        # column mapping); the (un-uploaded) Fixations table gets no mapping, and
+        # the app got past mapping (no unmapped-view warning).
+        assert "col_map_participant_unified" in multi_keys
+        assert "col_map_words_word_id" in sel_keys
+        assert "col_map_fix_duration" not in sel_keys
+        assert "col_map_fix_participant" not in at.session_state
         warnings = " ".join(w.value for w in at.warning)
         assert "Finish the column mapping" not in warnings
 
@@ -982,7 +993,7 @@ class TestSetupWizard:
 
         from scanpath_studio import app
 
-        # Both a paragraph- and a text-level id present → unified default composes
+        # A participant- and a text-level id present → unified default composes
         # them (a composite trial id).
         raw_words = pd.DataFrame(
             {
@@ -1023,7 +1034,7 @@ class TestSetupWizard:
         at.run(timeout=60)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert set(at.session_state["_composite_trial_columns"]) == {
-            "paragraph_id",
+            "participant_id",
             "text_id",
         }
         [b for b in at.button if b.key == "wizard_finalize"][0].click()
@@ -1031,7 +1042,7 @@ class TestSetupWizard:
         stored = dict(at.session_state["_datasets"])
         name = at.session_state["data_source_choice"]
         assert set(stored[name]["composite_trial_columns"]) == {
-            "paragraph_id",
+            "participant_id",
             "text_id",
         }
 
@@ -1043,7 +1054,7 @@ class TestSetupWizard:
         at2.run(timeout=60)
         assert not at2.exception, f"Streamlit exceptions: {at2.exception}"
         assert set(at2.session_state["_composite_trial_columns"]) == {
-            "paragraph_id",
+            "participant_id",
             "text_id",
         }
         keys = {w.key for w in at2.selectbox if w.key}

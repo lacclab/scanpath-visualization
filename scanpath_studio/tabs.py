@@ -9,20 +9,23 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from scanpath_studio.animation_export import (
+    AnimationExportError,
+    export_animation,
+    mime_for,
+)
 from scanpath_studio.annotations import render_trial_annotations
-from scanpath_studio.constants import DEFAULT_LINE_SPACING
+from scanpath_studio.constants import DEFAULT_LINE_SPACING, SACCADE_COLOR
 from scanpath_studio.data import compute_word_metrics, frame_fingerprint
+from scanpath_studio.export import (
+    ExportProgress,
+    bulk_export,
+    render_export_options,
+)
 from scanpath_studio.model_scanpaths import (
     DEFAULT_N_MODELS,
     generate_model_scanpaths,
 )
-from scanpath_studio.similarity import (
-    METRICS,
-    compute_similarity_table,
-    nld_by_fixation_index,
-    nld_by_time,
-)
-
 from scanpath_studio.plots import (
     animation_playback_ms,
     make_comparison_figure,
@@ -32,15 +35,11 @@ from scanpath_studio.plots import (
     make_scanpath_figure,
     make_word_measure_bar_figure,
 )
-from scanpath_studio.export import (
-    ExportProgress,
-    bulk_export,
-    render_export_options,
-)
-from scanpath_studio.animation_export import (
-    AnimationExportError,
-    export_animation,
-    mime_for,
+from scanpath_studio.similarity import (
+    METRICS,
+    compute_similarity_table,
+    nld_by_fixation_index,
+    nld_by_time,
 )
 from scanpath_studio.utils import (
     build_comparison_options,
@@ -51,7 +50,6 @@ from scanpath_studio.utils import (
     safe_summary,
     select_trial,
 )
-
 
 # -----------------------------------------------------------------------------
 # Single Trial Tab
@@ -423,6 +421,8 @@ def _build_figure_settings(viz_settings: dict, effective_show_raw_gaze: bool) ->
         fixation_colorscale=viz_settings["fixation_colorscale"],
         heatmap_colorscale=viz_settings["heatmap_colorscale"],
         critical_span_style=viz_settings.get("critical_span_style", "Mark text"),
+        highlight_column=viz_settings.get("highlight_column", "is_in_aspan"),
+        saccade_color=viz_settings.get("saccade_color", SACCADE_COLOR),
         color_by_line=viz_settings.get("color_by_line", False),
         highlight_out_of_text=viz_settings.get("highlight_out_of_text", False),
         background_color=viz_settings.get("background_color"),
@@ -739,18 +739,6 @@ def _render_paragraph_panel(
     with st.expander("Text & question", expanded=expanded):
         _render_paragraph_with_spans(trial_words)
 
-        # Reading regime: in OneStop, question_preview=True means the reader saw
-        # the question before the text ("Hunting"); False is ordinary reading
-        # ("Gathering").
-        preview = _first_bool(trial_words, "question_preview")
-        if preview is not None:
-            regime = (
-                "Hunting (question previewed)"
-                if preview
-                else "Gathering (ordinary reading)"
-            )
-            st.caption(f"Reading regime: **{regime}**")
-
         question_val = _first_str(trial_words, "question")
         if question_val:
             st.markdown(f"**Question:** {question_val}")
@@ -1010,17 +998,22 @@ def _build_studio_config(
     column_mapping: dict,
     data_source: Optional[str],
     app_version: str,
+    exported_at: str,
 ) -> dict:
     """Build the "💾 Save & restore" JSON config dict (pure — no Streamlit).
 
     Schema 2 captures the full figure configuration (layers, colouring, sizing,
     text/highlighting, canvas, axes, trial selection), every per-trial
-    annotation, and provenance (app version, data source, column mapping)."""
+    annotation, and provenance (app version, export date, data source, column
+    mapping)."""
     return {
         # schema 2 = config + annotations + text/highlighting + provenance;
         # schema 1 (plot config only) still restores via the same reader.
         "schema": 2,
         "app": {"name": "Scanpath Studio", "version": app_version},
+        # When this config was saved (ISO 8601, local time) — provenance only,
+        # surfaced when restoring (sidebar + the upload wizard's restore step).
+        "exported_at": exported_at,
         "data_source": data_source,
         "column_mapping": column_mapping,
         "selection": {
@@ -1056,6 +1049,7 @@ def _build_studio_config(
             ),
             "fixation_colorscale": figure_settings["fixation_colorscale"],
             "heatmap_colorscale": figure_settings["heatmap_colorscale"],
+            "saccade_color": figure_settings.get("saccade_color", SACCADE_COLOR),
         },
         "sizing": {
             "marker_size_range": [int(s) for s in figure_settings["marker_size_range"]],
@@ -1076,6 +1070,7 @@ def _build_studio_config(
             "critical_span_style": figure_settings.get(
                 "critical_span_style", "Mark text"
             ),
+            "highlight_column": figure_settings.get("highlight_column", "is_in_aspan"),
             "highlight_out_of_text": bool(
                 figure_settings.get("highlight_out_of_text", False)
             ),
@@ -1130,13 +1125,15 @@ def _render_save_restore_expander(
     the widgets render). ``slot`` is a keyed sidebar container reserved by
     ``app.main`` so the panel sits under the controls rather than after the tab.
     """
+    from datetime import datetime
+
     from scanpath_studio import __version__, annotations
 
     container = slot if slot is not None else st.sidebar
     annotation_records = annotations.current_records()
     # Provenance (TODO 4.1): which data source + how its columns were mapped +
-    # the app version, so a saved config records the full context behind the
-    # figure, not just the plot settings.
+    # the app version + when it was exported, so a saved config records the full
+    # context behind the figure, not just the plot settings.
     column_mapping = _collect_column_mapping()
     plot_config = _build_studio_config(
         selected_participant=selected_participant,
@@ -1154,6 +1151,7 @@ def _render_save_restore_expander(
         column_mapping=column_mapping,
         data_source=st.session_state.get("data_source_choice"),
         app_version=__version__,
+        exported_at=datetime.now().isoformat(timespec="seconds"),
     )
     with container.expander("💾 Save & restore", expanded=False):
         n_anno = len(annotation_records)
@@ -1370,6 +1368,7 @@ def _build_and_render_animation(
         fixation_colorscale=viz_settings["fixation_colorscale"],
         fixation_color_range=viz_settings["fixation_color_range"],
         show_colorbars=viz_settings["show_colorbars"],
+        saccade_color=viz_settings.get("saccade_color", SACCADE_COLOR),
         background_color=viz_settings.get("background_color"),
         fixations_b=fixations_b if dual else None,
         words_b=words_b if dual else None,
@@ -2422,6 +2421,7 @@ def _render_data_provenance() -> None:
     the active data source). For uploads / bundled demo, falls through silently.
     """
     from datetime import datetime
+
     from .data import onestop_data_provenance
 
     # Honour the deep-link participant so the per-pid shard's mtime is shown.
