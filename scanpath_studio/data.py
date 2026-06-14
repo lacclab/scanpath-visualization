@@ -823,7 +823,9 @@ def _reconcile_participant_asymmetry(
         return words
     words = words.copy()
     words["participant_id"] = SYNTHETIC_PARTICIPANT
-    subset = [c for c in ("participant_id", "trial_id", "word_id") if c in words.columns]
+    subset = [
+        c for c in ("participant_id", "trial_id", "word_id") if c in words.columns
+    ]
     if subset:
         words = words.drop_duplicates(subset=subset)
     return words

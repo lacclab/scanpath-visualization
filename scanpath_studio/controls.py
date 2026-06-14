@@ -698,10 +698,14 @@ def sidebar_controls(
     )
     _drop_stale("global_x_field", numeric_fields)
     st.session_state.setdefault("global_x_field", x_default)
-    x_field = viz.selectbox("X axis field", options=numeric_fields, key="global_x_field")
+    x_field = viz.selectbox(
+        "X axis field", options=numeric_fields, key="global_x_field"
+    )
     _drop_stale("global_y_field", numeric_fields)
     st.session_state.setdefault("global_y_field", y_default)
-    y_field = viz.selectbox("Y axis field", options=numeric_fields, key="global_y_field")
+    y_field = viz.selectbox(
+        "Y axis field", options=numeric_fields, key="global_y_field"
+    )
 
     # Plot background is chosen in Experimental Setup; read the value here.
     bg_options = list(BACKGROUND_PRESETS.keys()) + ["Custom…"]
@@ -802,8 +806,16 @@ def _bool_metadata_filter(
 # Friendly labels for well-known trial-level condition columns. Any other field
 # the user picks as a filter just uses its column name + raw values.
 _FILTER_FIELD_LABELS = {
-    "question_preview": {"label": "Reading regime", "true": "Hunting", "false": "Gathering"},
-    "repeated_reading_trial": {"label": "Reading number", "true": "Repeated", "false": "First"},
+    "question_preview": {
+        "label": "Reading regime",
+        "true": "Hunting",
+        "false": "Gathering",
+    },
+    "repeated_reading_trial": {
+        "label": "Reading number",
+        "true": "Repeated",
+        "false": "First",
+    },
     "is_correct": {"label": "Answer", "true": "Correct", "false": "Incorrect"},
     "difficulty_level": {"label": "Difficulty"},
 }

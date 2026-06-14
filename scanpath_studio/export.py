@@ -233,9 +233,7 @@ def _render_scope_picker(
         "trial in the dataset, ignoring the **Filter trials** sidebar panel.",
     )
     scope, export_unfiltered = options_map[scope_label]
-    active = (
-        combos_all if (export_unfiltered and combos_all is not None) else combos
-    )
+    active = combos_all if (export_unfiltered and combos_all is not None) else combos
 
     scope_participant: Optional[str] = None
     scope_trial: Optional[str] = None
@@ -342,9 +340,7 @@ def render_export_options(
             "colors, sizing, text scaling) — bundle it to reproduce or restore "
             "these exact figures later."
         )
-        include_plot_config = st.checkbox(
-            "Config", value=True, key=f"{key_prefix}_cfg"
-        )
+        include_plot_config = st.checkbox("Config", value=True, key=f"{key_prefix}_cfg")
 
         st.markdown("##### Tabular data")
         include_fixations = st.checkbox(
@@ -495,8 +491,7 @@ def bulk_export(
             prefix = f"per_trial/{slug}/"
 
             trial_words = words[
-                (words["participant_id"] == participant)
-                & (words["trial_id"] == trial)
+                (words["participant_id"] == participant) & (words["trial_id"] == trial)
             ]
             trial_fix = fixations[
                 (fixations["participant_id"] == participant)
@@ -526,9 +521,7 @@ def bulk_export(
                         show_fixations=settings.get("show_fixations", True),
                         show_order=settings.get("show_order", True),
                         show_saccades=settings.get("show_saccades", True),
-                        show_saccade_arrows=settings.get(
-                            "show_saccade_arrows", False
-                        ),
+                        show_saccade_arrows=settings.get("show_saccade_arrows", False),
                         show_heatmap=settings.get("show_heatmap", False),
                         heatmap_style=settings.get("heatmap_style", "Word boxes"),
                         color_by=settings.get("color_by", "duration_ms"),
@@ -552,12 +545,8 @@ def bulk_export(
                         highlight_out_of_text=settings.get(
                             "highlight_out_of_text", False
                         ),
-                        line_spacing=settings.get(
-                            "line_spacing", DEFAULT_LINE_SPACING
-                        ),
-                        scale_text_to_boxes=settings.get(
-                            "scale_text_to_boxes", True
-                        ),
+                        line_spacing=settings.get("line_spacing", DEFAULT_LINE_SPACING),
+                        scale_text_to_boxes=settings.get("scale_text_to_boxes", True),
                     )
                     # Render at the figure's own fitted size (not the raw
                     # monitor canvas) so the exported reading text matches the

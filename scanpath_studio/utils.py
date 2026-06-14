@@ -55,7 +55,12 @@ def _build_combo_options_cached(
     text_col = next(
         (
             c
-            for c in ("unique_text_id", "text_id", "unique_paragraph_id", "paragraph_id")
+            for c in (
+                "unique_text_id",
+                "text_id",
+                "unique_paragraph_id",
+                "paragraph_id",
+            )
             if c in fixations.columns
         ),
         None,
@@ -72,7 +77,9 @@ def _build_combo_options_cached(
         if col in fixations.columns and col not in combo_cols:
             combo_cols.append(col)
 
-    combos = fixations[combo_cols].drop_duplicates().rename(columns={trial_col: "trial_id"})
+    combos = (
+        fixations[combo_cols].drop_duplicates().rename(columns={trial_col: "trial_id"})
+    )
     if "text_id" not in combos.columns:
         combos["text_id"] = (
             combos[text_col] if text_col is not None else combos["trial_id"]

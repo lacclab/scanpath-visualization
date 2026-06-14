@@ -1317,7 +1317,13 @@ def _default_dataset_name() -> str:
 # Built-in data-source labels a user dataset must not shadow (else the radio gets
 # a duplicate option and the stored entry hijacks the built-in source's branch).
 _RESERVED_SOURCE_NAMES = frozenset(
-    {DEMO_CHOICE, ONESTOP_CHOICE, PUBLIC_DATASETS_CHOICE, SYNTHETIC_CHOICE, UPLOAD_CHOICE}
+    {
+        DEMO_CHOICE,
+        ONESTOP_CHOICE,
+        PUBLIC_DATASETS_CHOICE,
+        SYNTHETIC_CHOICE,
+        UPLOAD_CHOICE,
+    }
 )
 
 
@@ -1655,8 +1661,15 @@ def _trial_id_values(raw, schema) -> Optional[set]:
 
 
 def _wizard_trial_step(
-    body, raw_words, raw_fix, prop_w, prop_f, word_schema, fix_schema,
-    has_words, has_fix,
+    body,
+    raw_words,
+    raw_fix,
+    prop_w,
+    prop_f,
+    word_schema,
+    fix_schema,
+    has_words,
+    has_fix,
 ) -> None:
     """Trial-identifier wizard step (Group C): a single unified picker shared
     across tables by default, an opt-in per-table override, the paragraph+text
@@ -1690,11 +1703,15 @@ def _wizard_trial_step(
     if per_table:
         body.caption("Fixations")
         fix_schema.update(
-            _map_section(raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", body, ["trial"])
+            _map_section(
+                raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", body, ["trial"]
+            )
         )
         body.caption("Words/IA")
         word_schema.update(
-            _map_section(raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["trial"])
+            _map_section(
+                raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["trial"]
+            )
         )
     else:
         # One multiselect over the columns common to every present table; its
@@ -1710,7 +1727,11 @@ def _wizard_trial_step(
             inherited = None
             for k in ("col_map_fix_trial", "col_map_words_trial"):
                 v = st.session_state.get(k)
-                if isinstance(v, (list, tuple)) and v and all(c in common_cols for c in v):
+                if (
+                    isinstance(v, (list, tuple))
+                    and v
+                    and all(c in common_cols for c in v)
+                ):
                     inherited = list(v)
                     break
             st.session_state[state_key] = inherited if inherited else default_trial
@@ -1794,9 +1815,7 @@ def _wizard_keep_fields(
     detected = cats["detected_optional"]
     optional_sources: set = set()
     if detected:
-        labels = {
-            d["source"]: f"{d['dest']}  ·  {d['category']}" for d in detected
-        }
+        labels = {d["source"]: f"{d['dest']}  ·  {d['category']}" for d in detected}
         _clean_multiselect_state(f"{prefix}_optional", [d["source"] for d in detected])
         chosen = host.multiselect(
             "Optional fields to keep",
@@ -1924,8 +1943,12 @@ def _render_data_setup(active: bool) -> _UploadResult:
             "a built-in source from the sidebar."
         )
         return _UploadResult(
-            empty_words_frame(), empty_fixations_frame(), pd.DataFrame(),
-            raw_words, raw_fix, [],
+            empty_words_frame(),
+            empty_fixations_frame(),
+            pd.DataFrame(),
+            raw_words,
+            raw_fix,
+            [],
         )
 
     counts = body.columns(3)
@@ -1948,15 +1971,29 @@ def _render_data_setup(active: bool) -> _UploadResult:
     if has_words or has_fix:
         step("Trial identifier")
         _wizard_trial_step(
-            body, raw_words, raw_fix, prop_w, prop_f, word_schema, fix_schema,
-            has_words, has_fix,
+            body,
+            raw_words,
+            raw_fix,
+            prop_w,
+            prop_f,
+            word_schema,
+            fix_schema,
+            has_words,
+            has_fix,
         )
 
     # Step 4 — fixation required fields.
     if has_fix:
         step("Fixations — required fields")
         fix_schema.update(
-            _map_section(raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", body, ["x", "y", "duration"])
+            _map_section(
+                raw_fix,
+                FIX_FIELD_SPECS,
+                prop_f,
+                "col_map_fix",
+                body,
+                ["x", "y", "duration"],
+            )
         )
         body.caption(
             "Leave X/Y blank for AOI-only data and map the fixation's Word/IA ID "
@@ -1967,7 +2004,14 @@ def _render_data_setup(active: bool) -> _UploadResult:
     if has_words:
         step("Words — required fields")
         word_schema.update(
-            _map_section(raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["word_id", "text", "box"])
+            _map_section(
+                raw_words,
+                WORD_FIELD_SPECS,
+                prop_w,
+                "col_map_words",
+                body,
+                ["word_id", "text", "box"],
+            )
         )
 
     # Step 7 — optional participant & text, then their counts.
@@ -1981,13 +2025,27 @@ def _render_data_setup(active: bool) -> _UploadResult:
             if has_words:
                 body.caption("Fixations")
             fix_schema.update(
-                _map_section(raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", body, ["participant", "text_id"])
+                _map_section(
+                    raw_fix,
+                    FIX_FIELD_SPECS,
+                    prop_f,
+                    "col_map_fix",
+                    body,
+                    ["participant", "text_id"],
+                )
             )
         if has_words:
             if has_fix:
                 body.caption("Words/IA")
             word_schema.update(
-                _map_section(raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["participant", "text_id"])
+                _map_section(
+                    raw_words,
+                    WORD_FIELD_SPECS,
+                    prop_w,
+                    "col_map_words",
+                    body,
+                    ["participant", "text_id"],
+                )
             )
         pp, pp_schema = (raw_fix, fix_schema) if has_fix else (raw_words, word_schema)
         bits = []
@@ -2004,15 +2062,23 @@ def _render_data_setup(active: bool) -> _UploadResult:
     if has_words:
         step("Extra word features (optional)")
         word_schema.update(
-            _map_section(raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["line"])
+            _map_section(
+                raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["line"]
+            )
         )
         body.caption("Line index enables colouring fixations/words by reading line.")
 
     # Remaining (advanced) fixation fields — collapsed in wizard mode.
     if has_fix:
         adv_keys = [
-            "word_id", "timestamp", "fixation_id", "pass_index",
-            "saccade_type", "saccade_amplitude", "eye", "noise_flag",
+            "word_id",
+            "timestamp",
+            "fixation_id",
+            "pass_index",
+            "saccade_type",
+            "saccade_amplitude",
+            "eye",
+            "noise_flag",
         ]
         if active:
             adv = body.expander("More fixation fields (optional)", expanded=False)
@@ -2063,10 +2129,18 @@ def _render_data_setup(active: bool) -> _UploadResult:
         "trials); the rest are dropped for speed."
     )
     kw_opt, kw_filter, kw_extra = _wizard_keep_fields(
-        raw_words, word_schema if has_words else None, WORD_OPTIONAL_FIELDS, "col_map_words", body
+        raw_words,
+        word_schema if has_words else None,
+        WORD_OPTIONAL_FIELDS,
+        "col_map_words",
+        body,
     )
     kf_opt, kf_filter, kf_extra = _wizard_keep_fields(
-        raw_fix, fix_schema if has_fix else None, FIX_OPTIONAL_FIELDS, "col_map_fix", body
+        raw_fix,
+        fix_schema if has_fix else None,
+        FIX_OPTIONAL_FIELDS,
+        "col_map_fix",
+        body,
     )
     st.session_state["wizard_filter_fields"] = sorted(set(kw_filter) | set(kf_filter))
 
@@ -2079,20 +2153,30 @@ def _render_data_setup(active: bool) -> _UploadResult:
             )
         st.session_state["_composite_trial_columns"] = None
         return _UploadResult(
-            empty_words_frame(), empty_fixations_frame(), pd.DataFrame(),
-            raw_words, raw_fix, problems,
+            empty_words_frame(),
+            empty_fixations_frame(),
+            pd.DataFrame(),
+            raw_words,
+            raw_fix,
+            problems,
         )
 
     keep_words = (
         compute_keep_columns(
-            word_schema, optional_sources=kw_opt, filter_fields=kw_filter, keep_columns=kw_extra
+            word_schema,
+            optional_sources=kw_opt,
+            filter_fields=kw_filter,
+            keep_columns=kw_extra,
         )
         if has_words
         else None
     )
     keep_fix = (
         compute_keep_columns(
-            fix_schema, optional_sources=kf_opt, filter_fields=kf_filter, keep_columns=kf_extra
+            fix_schema,
+            optional_sources=kf_opt,
+            filter_fields=kf_filter,
+            keep_columns=kf_extra,
         )
         if has_fix
         else None
@@ -2289,9 +2373,7 @@ def main() -> None:
         mapping_problems = []
         # Re-publish this dataset's chosen filter fields so the sidebar
         # "Filter trials" panel offers the same dynamic conditions.
-        st.session_state["wizard_filter_fields"] = list(
-            stored.get("filter_fields", [])
-        )
+        st.session_state["wizard_filter_fields"] = list(stored.get("filter_fields", []))
         # Restore the composite trial-id components (session-only state) so the
         # trial picker offers one cascading selector per part — every other load
         # path sets this, but the stored branch doesn't re-normalize. Without it

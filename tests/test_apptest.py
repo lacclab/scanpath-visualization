@@ -1026,7 +1026,10 @@ class TestSetupWizard:
         at.run(timeout=60)
         stored = dict(at.session_state["_datasets"])
         name = at.session_state["data_source_choice"]
-        assert set(stored[name]["composite_trial_columns"]) == {"paragraph_id", "text_id"}
+        assert set(stored[name]["composite_trial_columns"]) == {
+            "paragraph_id",
+            "text_id",
+        }
 
         # Fresh session with STALE composite state (as if Demo was loaded last).
         at2 = _make_apptest()

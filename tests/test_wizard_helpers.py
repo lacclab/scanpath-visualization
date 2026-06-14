@@ -16,7 +16,10 @@ class TestDefaultTrialColumns:
         # The user's "default to both paragraph id and text id".
         proposed = {"trial": "trial_id", "text_id": "text_id"}
         present = ["paragraph_id", "text_id", "participant_id"]
-        assert app._default_trial_columns(proposed, present) == ["paragraph_id", "text_id"]
+        assert app._default_trial_columns(proposed, present) == [
+            "paragraph_id",
+            "text_id",
+        ]
 
     def test_prefers_single_unique_trial_over_redundant_composite(self):
         # OneStop-shaped upload: a precomputed unique_trial_id plus a paragraph id.
@@ -57,7 +60,9 @@ class TestTrialIdValues:
 
 class TestSafeDatasetName:
     def test_reserved_label_is_suffixed(self):
-        assert app._safe_dataset_name(app.DEMO_CHOICE) == f"{app.DEMO_CHOICE} (uploaded)"
+        assert (
+            app._safe_dataset_name(app.DEMO_CHOICE) == f"{app.DEMO_CHOICE} (uploaded)"
+        )
 
     def test_plain_name_passes_through_trimmed(self):
         assert app._safe_dataset_name("  My data  ") == "My data"
