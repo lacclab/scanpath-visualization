@@ -9,11 +9,116 @@ from scanpath_studio.plots import (
     _width_fit_font,
     _word_label_font_px,
     animation_playback_ms,
+    build_critical_span_overlay,
     build_word_boxes,
     make_comparison_figure,
     make_scanpath_animation,
     make_scanpath_figure,
 )
+
+
+def _scanpath_kwargs(**overrides):
+    """Baseline make_scanpath_figure kwargs for the decoration/colour tests."""
+    base = dict(
+        canvas_width=800,
+        canvas_height=600,
+        base_font_size=12,
+        font_family="Arial",
+        x_field="x",
+        y_field="y",
+        show_words=True,
+        show_word_labels=True,
+        show_fixations=True,
+        show_order=False,
+        show_saccades=True,
+        show_heatmap=False,
+        color_by="duration_ms",
+        heatmap_metric=None,
+        marker_size_range=(8, 24),
+        order_font_size=10,
+        order_font_color="#000000",
+        show_colorbars=False,
+        fixation_color_range=None,
+        heatmap_range=None,
+    )
+    base.update(overrides)
+    return base
+
+
+def _plot_region(fig):
+    """The plotting area (figure minus margins) — what scaleanchor sizes."""
+    m = fig.layout.margin
+    return (
+        fig.layout.width - (m.l or 0) - (m.r or 0),
+        fig.layout.height - (m.t or 0) - (m.b or 0),
+    )
+
+
+class TestDecorationDoesNotShrinkPlot:
+    """A colorbar/legend must sit in reserved margin, not steal space from the
+    equal-aspect plot region (the colorbar-shrinks-the-plot bug, TODO 2)."""
+
+    def test_colorbar_keeps_plot_region(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        off = make_scanpath_figure(
+            normalized_words_df, normalized_fixations_df, **_scanpath_kwargs()
+        )
+        on = make_scanpath_figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            **_scanpath_kwargs(show_colorbars=True),
+        )
+        assert _plot_region(on) == _plot_region(off)
+        # The figure itself grew to hold the colorbar (it didn't shrink the plot).
+        assert on.layout.width > off.layout.width
+
+    def test_discrete_legend_keeps_plot_region(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        off = make_scanpath_figure(
+            normalized_words_df, normalized_fixations_df, **_scanpath_kwargs()
+        )
+        on = make_scanpath_figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            **_scanpath_kwargs(color_by_line=True),
+        )
+        # Same plot region; the by-line legend is reserved above the plot.
+        assert _plot_region(on) == _plot_region(off)
+        assert on.layout.height > off.layout.height
+
+
+class TestSaccadeColor:
+    def test_saccade_color_threads_to_line_and_arrows(
+        self, normalized_words_df, normalized_fixations_df
+    ):
+        fig = make_scanpath_figure(
+            normalized_words_df,
+            normalized_fixations_df,
+            **_scanpath_kwargs(show_saccade_arrows=True, saccade_color="#123456"),
+        )
+        line = [t for t in fig.data if t.name == "saccades"]
+        assert line and line[0].line.color == "#123456"
+        arrows = [t for t in fig.data if t.name == "saccade direction"]
+        assert arrows and arrows[0].marker.color == "#123456"
+
+
+class TestHighlightColumn:
+    def test_overlay_uses_chosen_column(self):
+        words = pd.DataFrame(
+            {
+                "x": [0.0, 10.0, 20.0],
+                "y": [0.0, 0.0, 0.0],
+                "width": [10.0, 10.0, 10.0],
+                "height": [10.0, 10.0, 10.0],
+                "my_flag": [True, True, False],
+            }
+        )
+        # One line with two adjacent flagged words → a single outline rectangle.
+        assert len(build_critical_span_overlay(words, "my_flag")) == 1
+        # The default column is absent → nothing to outline.
+        assert build_critical_span_overlay(words, "is_in_aspan") == []
 
 
 class TestSaccadeArrowMarkers:

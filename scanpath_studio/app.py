@@ -55,6 +55,7 @@ from scanpath_studio.constants import (
     BACKGROUND_PRESETS,
     COLORSCALES,
     DEFAULT_BACKGROUND_COLOR,
+    DEFAULT_FIGURE_SIZE,
     DEFAULT_LINE_SPACING,
     FONT_FAMILY,
 )
@@ -119,12 +120,19 @@ from scanpath_studio.tour import (
     render_tour_replay_button,
     spotlight_tour_pending,
 )
+
+# Some of these are re-exported (a few with a private alias) so tests can import
+# them from `app`; keep the F401 silence for the whole block.
 from scanpath_studio.utils import (  # noqa: F401
     build_combo_options,
-    build_comparison_options as _build_comparison_options,
     compute_trial_stats,
-    friendly_trial_label as _friendly_trial_label,
     gather_trial_metadata,
+)
+from scanpath_studio.utils import (  # noqa: F401
+    build_comparison_options as _build_comparison_options,
+)
+from scanpath_studio.utils import (  # noqa: F401
+    friendly_trial_label as _friendly_trial_label,
 )
 
 UPLOAD_CHOICE = "Upload tables"
@@ -434,6 +442,9 @@ def _restore_plot_config(
         val = coloring.get(cfg_key)
         if val is not None:
             put_valid(val in COLORSCALES, state_key, val, cfg_key.replace("_", " "))
+    sac = coloring.get("saccade_color")
+    if isinstance(sac, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", sac):
+        put("global_saccade_color", sac)
     # Range sliders only render when colour bars are on; store them anyway —
     # the widgets clamp to the current data via `controls._clamp_range`.
     for cfg_key, state_key, label in (
@@ -512,6 +523,13 @@ def _restore_plot_config(
             css,
             "text highlighting",
         )
+    if (
+        isinstance(highlighting.get("highlight_column"), str)
+        and highlighting["highlight_column"]
+    ):
+        # The sidebar's `_drop_stale` clears this if it isn't a column in the
+        # restored-onto data, so it needs no validation against words here.
+        put("global_highlight_column", highlighting["highlight_column"])
     if "highlight_out_of_text" in highlighting:
         put("global_highlight_out_of_text", bool(highlighting["highlight_out_of_text"]))
     bg = highlighting.get("background_color")
@@ -1298,9 +1316,12 @@ def _reset_wizard_widgets() -> None:
         "wizard_dataset_name",
         "wizard_config_restore",
         "_wizard_config_last",
+        "_wizard_restored_meta",
         "_composite_trial_columns",
         "wizard_filter_fields",
         "wizard_trial_per_table",
+        "wizard_participant_per_table",
+        "wizard_text_id_per_table",
     ):
         st.session_state.pop(key, None)
 
@@ -1509,6 +1530,11 @@ def render_sidebar_canvas_controls(
         default_canvas_w, default_canvas_h = 2560, 1440
     elif (monitor := _public_dataset_monitor(data_choice)) is not None:
         default_canvas_w, default_canvas_h = monitor
+    elif data_choice is None or data_choice == UPLOAD_CHOICE:
+        # Uploaded data (the setup wizard passes data_choice=None) defaults to a
+        # common 1440p monitor — data-derived extents undershoot the real screen,
+        # and the user can fine-tune it right here.
+        default_canvas_w, default_canvas_h = DEFAULT_FIGURE_SIZE
     else:
         default_canvas_w, default_canvas_h = compute_canvas_size(
             words_filtered, fixations_filtered
@@ -1643,21 +1669,30 @@ def _default_trial_columns(proposed: Dict, present_cols) -> list:
     """Default trial-id mapping for the wizard, restricted to ``present_cols`` (the
     columns common to every table).
 
-    When the data carries *both* a paragraph-level and a text-level identifier,
-    compose them — the user's 'default to both paragraph id and text id'. When it
-    doesn't, prefer a single precomputed unique trial id over a redundant
+    A *trial* is one reading of one text, so when the data carries both a
+    participant and a text identifier the default composes them (the user's
+    'default to participant and text ids'); falling back to paragraph+text for
+    OneStop-shaped uploads with no participant column. When neither composite is
+    available, prefer a single precomputed unique trial id over a redundant
     composite (e.g. don't pair ``unique_trial_id`` with the paragraph id it
     already encodes, which would force opaque composite ids for no benefit)."""
     cols_frame = pd.DataFrame(columns=list(present_cols))
-    paragraph = pick_column(cols_frame, ["unique_paragraph_id", "paragraph_id"])
+    participant = pick_column(
+        cols_frame, ["participant_id", "participant", "subject_id"]
+    )
     text = pick_column(cols_frame, ["unique_text_id", "text_id"])
-    combo = list(dict.fromkeys(c for c in (paragraph, text) if c))
-    if len(combo) >= 2:
-        return combo
+    if participant and text:
+        return [participant, text]
+    paragraph = pick_column(cols_frame, ["unique_paragraph_id", "paragraph_id"])
+    if paragraph and text:
+        return [paragraph, text]
     trial = proposed.get("trial")
     if trial and trial in set(present_cols):
         return [trial]
-    return combo
+    # No usable composite/trial — fall back to whatever text-like component we
+    # have (never a lone participant, which isn't a trial), else leave empty so
+    # the user picks.
+    return list(dict.fromkeys(c for c in (paragraph, text) if c))
 
 
 def _trial_id_values(raw, schema) -> Optional[set]:
@@ -1672,6 +1707,128 @@ def _trial_id_values(raw, schema) -> Optional[set]:
     return set(trial_id_series(raw, schema["trial"]).unique())
 
 
+def _render_unified_identifier(
+    field_key: str,
+    label: str,
+    help_text: str,
+    toggle_label: str,
+    body,
+    raw_words,
+    raw_fix,
+    word_schema,
+    fix_schema,
+    has_words,
+    has_fix,
+    common_cols: list,
+    default_cols: list,
+) -> None:
+    """Shared identifier picker for trial / participant / text.
+
+    One unified multiselect over the columns common to every present table by
+    default, with an opt-in *Different … per table* toggle. The per-table
+    override inherits the unified pick (so flipping it on never reverts to
+    nothing — the old behaviour). Several columns compose an id (joined with
+    ``_`` like the trial id). Writes ``schema[field_key]`` (str / list / None)
+    into ``word_schema`` / ``fix_schema`` in place, mirroring into the per-table
+    ``col_map_<tbl>_<field>`` keys for save/restore + a later per-table toggle.
+    """
+    fix_key, words_key = f"col_map_fix_{field_key}", f"col_map_words_{field_key}"
+    unified_key = f"col_map_{field_key}_unified"
+
+    def _mapping(chosen):
+        if not chosen:
+            return None
+        return chosen[0] if len(chosen) == 1 else list(chosen)
+
+    def _seed(key: str, options: list, fallback: list) -> None:
+        """Seed a multiselect's session value, dropping columns absent from
+        ``options`` (a new upload changes the column universe), like
+        ``column_mapping_ui`` — so the stale-reset never fights a default arg."""
+        stored = st.session_state.get(key)
+        if stored is None:
+            st.session_state[key] = list(fallback)
+            return
+        valid = [c for c in stored if c in options]
+        if len(valid) != len(stored):
+            st.session_state[key] = valid or list(fallback)
+
+    per_table = False
+    if has_words and has_fix:
+        st.session_state.setdefault(f"wizard_{field_key}_per_table", False)
+        per_table = body.toggle(
+            toggle_label,
+            key=f"wizard_{field_key}_per_table",
+            help="Most datasets name it the same way in every table, so one "
+            "shared mapping is used. Turn this on only if Words and Fixations "
+            "name it differently.",
+        )
+
+    if per_table:
+        # Inherit the unified pick so flipping per-table on doesn't start empty.
+        inherited = list(st.session_state.get(unified_key) or [])
+        if has_fix:
+            if inherited and not st.session_state.get(fix_key):
+                st.session_state[fix_key] = list(inherited)
+            body.caption("Fixations")
+            _seed(fix_key, list(raw_fix.columns), inherited)
+            chosen_f = body.multiselect(
+                label,
+                options=list(raw_fix.columns),
+                key=fix_key,
+                help=help_text,
+                label_visibility="collapsed",
+            )
+            fix_schema[field_key] = _mapping(chosen_f)
+        if has_words:
+            if inherited and not st.session_state.get(words_key):
+                st.session_state[words_key] = list(inherited)
+            body.caption("Words/IA")
+            _seed(words_key, list(raw_words.columns), inherited)
+            chosen_w = body.multiselect(
+                label,
+                options=list(raw_words.columns),
+                key=words_key,
+                help=help_text,
+                label_visibility="collapsed",
+            )
+            word_schema[field_key] = _mapping(chosen_w)
+    else:
+        # One multiselect over the columns common to every present table; its
+        # value is mirrored into each table's schema + the per-table widget keys
+        # (so the save/restore round-trip and a later per-table toggle both start
+        # from this choice). On first render, inherit a restored/seeded per-table
+        # mapping when the tables agree, else fall back to ``default_cols``.
+        stored = st.session_state.get(unified_key)
+        if stored is None:
+            inherited = None
+            for k in (fix_key, words_key):
+                v = st.session_state.get(k)
+                if (
+                    isinstance(v, (list, tuple))
+                    and v
+                    and all(c in common_cols for c in v)
+                ):
+                    inherited = list(v)
+                    break
+            st.session_state[unified_key] = (
+                inherited if inherited else list(default_cols)
+            )
+        else:
+            valid = [c for c in stored if c in common_cols]
+            if len(valid) != len(stored):
+                st.session_state[unified_key] = valid or list(default_cols)
+        chosen = body.multiselect(
+            label, options=common_cols, key=unified_key, help=help_text
+        )
+        mapping = _mapping(chosen)
+        if has_fix:
+            fix_schema[field_key] = mapping
+            st.session_state[fix_key] = list(chosen)
+        if has_words:
+            word_schema[field_key] = mapping
+            st.session_state[words_key] = list(chosen)
+
+
 def _wizard_trial_step(
     body,
     raw_words,
@@ -1683,13 +1840,13 @@ def _wizard_trial_step(
     has_words,
     has_fix,
 ) -> None:
-    """Trial-identifier wizard step (Group C): a single unified picker shared
-    across tables by default, an opt-in per-table override, the paragraph+text
-    default composite, and a per-table trial-count check that flags mismatches.
+    """Trial-identifier wizard step: a unified picker shared across tables by
+    default (the participant+text default composite), an opt-in per-table
+    override, and a per-table trial-count check that flags mismatches.
     Mutates ``word_schema`` / ``fix_schema`` in place."""
     body.caption(
         "Which column(s) identify a single trial (one reading of one text)? "
-        "Pick several to compose an id — by default the paragraph and text ids."
+        "Pick several to compose an id — by default the participant and text ids."
     )
 
     # Core tables present (raw-gaze keeps its own mapping in its own step).
@@ -1697,77 +1854,23 @@ def _wizard_trial_step(
     common_cols = [c for c in core[0].columns if all(c in f.columns for f in core)]
     prop_primary = prop_f if has_fix else prop_w
     default_trial = _default_trial_columns(prop_primary, common_cols)
-
-    per_table = False
-    if has_words and has_fix:
-        # Seed before rendering so the key always exists (a no-`value=` toggle),
-        # which also keeps AppTest's widget-state collection happy after the
-        # wizard later stops rendering this widget.
-        st.session_state.setdefault("wizard_trial_per_table", False)
-        per_table = body.toggle(
-            "Different trial-id columns per table",
-            key="wizard_trial_per_table",
-            help="Most datasets name the trial id the same way in every table, so "
-            "one shared mapping is used. Turn this on only if Words and Fixations "
-            "name it differently.",
-        )
-
-    if per_table:
-        body.caption("Fixations")
-        fix_schema.update(
-            _map_section(
-                raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", body, ["trial"]
-            )
-        )
-        body.caption("Words/IA")
-        word_schema.update(
-            _map_section(
-                raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["trial"]
-            )
-        )
-    else:
-        # One multiselect over the columns common to every present table; its
-        # value is written into each table's schema (and mirrored into the
-        # per-table widget keys so the save/restore round-trip and a later
-        # per-table toggle both start from this choice).
-        state_key = "col_map_trial_unified"
-        stored = st.session_state.get(state_key)
-        if stored is None:
-            # First render: inherit a restored/seeded per-table trial mapping when
-            # the tables agree (so a restored config isn't clobbered by the
-            # proposal default), else fall back to the paragraph+text default.
-            inherited = None
-            for k in ("col_map_fix_trial", "col_map_words_trial"):
-                v = st.session_state.get(k)
-                if (
-                    isinstance(v, (list, tuple))
-                    and v
-                    and all(c in common_cols for c in v)
-                ):
-                    inherited = list(v)
-                    break
-            st.session_state[state_key] = inherited if inherited else default_trial
-        else:
-            valid = [c for c in stored if c in common_cols]
-            if len(valid) != len(stored):
-                st.session_state[state_key] = valid or default_trial
-        chosen = body.multiselect(
-            "Trial ID *",
-            options=common_cols,
-            key=state_key,
-            help="Pick the column holding your unique trial ID — or several to "
-            "build one on the fly (values joined with '_'), e.g. paragraph + "
-            "text. The same mapping is applied to every table.",
-        )
-        trial_map = (
-            None if not chosen else (chosen[0] if len(chosen) == 1 else list(chosen))
-        )
-        if has_fix:
-            fix_schema["trial"] = trial_map
-            st.session_state["col_map_fix_trial"] = list(chosen)
-        if has_words:
-            word_schema["trial"] = trial_map
-            st.session_state["col_map_words_trial"] = list(chosen)
+    _render_unified_identifier(
+        "trial",
+        "Trial ID *",
+        "Pick the column holding your unique trial ID — or several to build one "
+        "on the fly (values joined with '_'), e.g. participant + text. The same "
+        "mapping is applied to every table.",
+        "Different trial-id columns per table",
+        body,
+        raw_words,
+        raw_fix,
+        word_schema,
+        fix_schema,
+        has_words,
+        has_fix,
+        common_cols,
+        default_trial,
+    )
 
     # Per-table trial-id sets. Equal → one clean count. Differing but overlapping
     # is usually benign (one table simply covers extra trials, e.g. words for a
@@ -1783,7 +1886,10 @@ def _wizard_trial_step(
         values = list(present.values())
         counts_str = ", ".join(f"{k}: **{len(v):,}**" for k, v in present.items())
         if all(v == values[0] for v in values):
-            body.success(f"✓ **{len(values[0]):,}** trials loaded")
+            body.success(
+                f"✓ **{len(values[0]):,}** trials detected — make sure this is the "
+                "number of trials you expect to see."
+            )
         elif set.intersection(*values):
             body.info(
                 f"ℹ️ Trial coverage differs per table — {counts_str}. They share "
@@ -1798,11 +1904,58 @@ def _wizard_trial_step(
             )
 
 
-def _count_unique(raw, col) -> Optional[int]:
-    """Number of distinct values in a mapped column (participants / texts)."""
-    if raw is None or getattr(raw, "empty", True) or not col or col not in raw.columns:
+def _distinct_id_count(raw, mapping) -> Optional[int]:
+    """Distinct values of a single-column or composite identifier mapping."""
+    if raw is None or getattr(raw, "empty", True) or not mapping:
         return None
-    return int(raw[col].nunique())
+    cols = trial_mapping_columns(mapping)
+    if not cols or not all(c in raw.columns for c in cols):
+        return None
+    return int(trial_id_series(raw, mapping).nunique())
+
+
+def _wizard_participant_text_step(
+    field_key: str,
+    label: str,
+    noun: str,
+    help_text: str,
+    body,
+    raw_words,
+    raw_fix,
+    prop_w,
+    prop_f,
+    word_schema,
+    fix_schema,
+    has_words,
+    has_fix,
+) -> None:
+    """Optional participant- or text-identifier step, in the same shape as the
+    Trial identifier (unified picker + per-table toggle + composite support),
+    followed by a distinct-value count. Mutates the schemas in place."""
+    core = [f for f, present in ((raw_fix, has_fix), (raw_words, has_words)) if present]
+    common_cols = [c for c in core[0].columns if all(c in f.columns for f in core)]
+    prop_primary = prop_f if has_fix else prop_w
+    default = prop_primary.get(field_key)
+    default_cols = [default] if default in common_cols else []
+    _render_unified_identifier(
+        field_key,
+        label,
+        help_text,
+        f"Different {noun} columns per table",
+        body,
+        raw_words,
+        raw_fix,
+        word_schema,
+        fix_schema,
+        has_words,
+        has_fix,
+        common_cols,
+        default_cols,
+    )
+    pp, pp_schema = (raw_fix, fix_schema) if has_fix else (raw_words, word_schema)
+    n = _distinct_id_count(pp, pp_schema.get(field_key))
+    if n is not None:
+        body.success(f"✓ **{n:,}** {noun}")
 
 
 def _clean_multiselect_state(key: str, valid) -> None:
@@ -1819,26 +1972,42 @@ def _clean_multiselect_state(key: str, valid) -> None:
 def _wizard_keep_fields(
     raw: pd.DataFrame, schema: Optional[Dict], registry: list, prefix: str, host
 ) -> Tuple[set, list, set]:
-    """Render the opt-out checklist + filter-field + extra-keep pickers for one
-    table. Returns ``(optional_sources, filter_dest_fields, keep_extra)``."""
+    """Render the keep-fields picker + filter-field picker for one table.
+
+    One combined *Fields to keep* multiselect spans both the detected optional
+    fields (reading measures / linguistic features / conditions, kept by
+    default) and any other unrecognised columns (off by default), so there's a
+    single list instead of the old split *Optional fields* / *Extra columns*.
+    Returns ``(optional_sources, filter_dest_fields, keep_extra)``."""
     if raw is None or raw.empty or schema is None:
         return set(), [], set()
     cats = categorize_columns(raw, schema, registry)
     detected = cats["detected_optional"]
-    optional_sources: set = set()
-    if detected:
-        labels = {d["source"]: f"{d['dest']}  ·  {d['category']}" for d in detected}
-        _clean_multiselect_state(f"{prefix}_optional", [d["source"] for d in detected])
-        chosen = host.multiselect(
-            "Optional fields to keep",
-            options=[d["source"] for d in detected],
-            default=[d["source"] for d in detected],
+    detected_sources = [d["source"] for d in detected]
+    detected_set = set(detected_sources)
+    options = detected_sources + list(cats["unclaimed"])
+    if not options:
+        return set(), [], set()
+    labels = {d["source"]: f"{d['dest']}  ·  {d['category']}" for d in detected}
+    labels.update({c: f"{c}  ·  extra" for c in cats["unclaimed"]})
+    _clean_multiselect_state(f"{prefix}_optional", options)
+    chosen = set(
+        host.multiselect(
+            "Fields to keep",
+            options=options,
+            # Detected fields kept by default; the unrecognised extras stay off
+            # until the user opts them in.
+            default=detected_sources,
             format_func=lambda s: labels.get(s, s),
             key=f"{prefix}_optional",
-            help="Detected reading measures, linguistic features and conditions. "
-            "Remove any you don't need — fewer columns means a faster app.",
+            help="Detected reading measures, linguistic features and conditions "
+            "(kept by default) plus any other columns in your data — keep extras "
+            "to colour fixations by them or filter on them. Fewer columns means "
+            "a faster app.",
         )
-        optional_sources = set(chosen)
+    )
+    optional_sources = chosen & detected_set
+    keep_extra = chosen - detected_set
     meta_dest = [
         d["dest"]
         for d in detected
@@ -1853,18 +2022,6 @@ def _wizard_keep_fields(
             default=meta_dest,
             key=f"{prefix}_filterfields",
             help="Each chosen field becomes a value picker in the Filter panel.",
-        )
-    keep_extra: set = set()
-    if cats["unclaimed"]:
-        _clean_multiselect_state(f"{prefix}_keepextra", cats["unclaimed"])
-        keep_extra = set(
-            host.multiselect(
-                "Extra columns to keep",
-                options=cats["unclaimed"],
-                default=[],
-                key=f"{prefix}_keepextra",
-                help="Any other columns to retain (e.g. to colour fixations by).",
-            )
         )
     return optional_sources, filter_fields, keep_extra
 
@@ -1893,16 +2050,45 @@ def _wizard_restore_config(host) -> None:
         return
     if isinstance(config, dict):
         _seed_column_mapping(config.get("column_mapping"))
+        # Remember the restored config's provenance so the caller can show which
+        # dataset (and when) it was exported from, below the upload box (9.1).
+        st.session_state["_wizard_restored_meta"] = {
+            "data_source": config.get("data_source"),
+            "exported_at": config.get("exported_at"),
+        }
         st.toast("Restored the saved mapping — review it below.", icon="✅")
         st.rerun()
 
 
+def _render_restored_config_caption(host) -> None:
+    """Below the restore box: name the dataset the restored setup came from (and
+    when it was exported), so the user can confirm they loaded the right one."""
+    meta = st.session_state.get("_wizard_restored_meta")
+    if not meta:
+        return
+    source = meta.get("data_source")
+    exported = meta.get("exported_at")
+    bits = []
+    if source:
+        bits.append(f"from **{source}**")
+    if exported:
+        try:
+            from datetime import datetime
+
+            bits.append(f"exported {datetime.fromisoformat(exported):%Y-%m-%d %H:%M}")
+        except (ValueError, TypeError):
+            bits.append(f"exported {exported}")
+    detail = " · ".join(bits) if bits else "from a saved file"
+    host.caption(f"✓ Restored setup {detail} — review the mapping below.")
+
+
 def _render_data_setup(active: bool) -> _UploadResult:
     """Hybrid data-setup surface for the Upload source — a granular, ordered setup
-    wizard on first load (restore → upload+counts → trial id+count → fixation core
-    → word core → optional participant/text+counts → functional fields → extra
-    columns → "Use this dataset"), then a compact collapsed "Data & mapping"
-    panel. Returns the normalized frames (or empties + ``problems``)."""
+    wizard on first load (upload+restore → trial id+count → participants → texts →
+    column mapping (fixations / text+IA) → extra word features → more fixation
+    fields → keep fields & filters → display setup → "Use this dataset"), then a
+    compact collapsed "Data & mapping" panel. Returns the normalized frames (or
+    empties + ``problems``)."""
     if active:
         st.header("📂 Set up your dataset")
         st.caption(
@@ -1910,7 +2096,6 @@ def _render_data_setup(active: bool) -> _UploadResult:
             "visualization works as soon as those are mapped."
         )
         body = st.container()
-        _wizard_restore_config(body)
     else:
         panel = st.expander("📋 Data & mapping", expanded=False)
         body = panel
@@ -1925,28 +2110,48 @@ def _render_data_setup(active: bool) -> _UploadResult:
     def step(title: str) -> None:
         body.markdown(f"##### {title}" if active else f"**{title}**")
 
-    # Step 1 (restore) handled above. Step 2 — upload + counts.
-    step("Upload your data")
+    def section_box(title: str, *, expanded: bool = True):
+        """A collapsible section: an expander in the wizard, an inline labelled
+        container in the collapsed panel (Streamlit forbids nesting an expander
+        inside the panel's own expander)."""
+        if active:
+            return body.expander(title, expanded=expanded)
+        body.markdown(f"**{title}**")
+        return body
+
+    # Step 1+2 — restore a saved setup + upload, all inside a collapsible "Upload
+    # your data" section (collapses once files are present so the boxes get out of
+    # the way). The four boxes sit in a narrower column rather than full width.
+    upload_keys = (
+        "col_map_words_upload",
+        "col_map_fix_upload",
+        "col_map_raw_gaze_upload",
+    )
+    has_upload = any(st.session_state.get(k) for k in upload_keys)
+    upload_box = section_box("Upload your data", expanded=not has_upload)
+    up = upload_box.columns([0.62, 0.38])[0] if active else upload_box
+    _wizard_restore_config(up)
+    _render_restored_config_caption(up)
     raw_words = _read_uploaded_frame(
         uploader_label="Words / IA table(s)",
         upload_help="One or more files (e.g. one per text); concatenated.",
         state_prefix="col_map_words",
         multi=True,
-        container=body,
+        container=up,
     )
     raw_fix = _read_uploaded_frame(
         uploader_label="Fixations table(s)",
         upload_help="One or more files (e.g. one per participant); concatenated.",
         state_prefix="col_map_fix",
         multi=True,
-        container=body,
+        container=up,
     )
     raw_gaze = _read_uploaded_frame(
         uploader_label="Raw gaze table (optional)",
         upload_help="Optional millisecond-level gaze overlay.",
         state_prefix="col_map_raw_gaze",
         multi=False,
-        container=body,
+        container=up,
     )
 
     if raw_words.empty and raw_fix.empty and raw_gaze.empty:
@@ -1994,81 +2199,88 @@ def _render_data_setup(active: bool) -> _UploadResult:
             has_fix,
         )
 
-    # Step 4 — fixation required fields.
+    # Participants — same shape as the Trial identifier (unified picker + opt-in
+    # per-table toggle + composite). Optional: blank = a single anonymous reader.
+    if has_words or has_fix:
+        step("Participants")
+        body.caption(
+            "Which column(s) identify the reader? Leave blank for a single "
+            "anonymous reader — the app hides the participant selector then."
+        )
+        _wizard_participant_text_step(
+            "participant",
+            "Participant ID",
+            "participants",
+            "Pick the reader column — or several to compose an id (joined with "
+            "'_'). Leave empty for a single anonymous reader.",
+            body,
+            raw_words,
+            raw_fix,
+            prop_w,
+            prop_f,
+            word_schema,
+            fix_schema,
+            has_words,
+            has_fix,
+        )
+
+    # Texts — same shape. Optional: blank falls back to the trial id.
+    if has_words or has_fix:
+        step("Texts")
+        body.caption(
+            "Which column(s) identify the text/passage? Leave blank for a single "
+            "text — used for filtering and same-text comparisons."
+        )
+        _wizard_participant_text_step(
+            "text_id",
+            "Text ID",
+            "texts",
+            "Pick the text column — or several to compose an id (joined with "
+            "'_'). Leave empty to fall back to the trial id.",
+            body,
+            raw_words,
+            raw_fix,
+            prop_w,
+            prop_f,
+            word_schema,
+            fix_schema,
+            has_words,
+            has_fix,
+        )
+
+    # Column mapping: Fixations — the required fixation fields (coordinates +
+    # duration), in a collapsible section.
     if has_fix:
-        step("Fixations — required fields")
+        fb = section_box("Column mapping: Fixations")
         fix_schema.update(
             _map_section(
                 raw_fix,
                 FIX_FIELD_SPECS,
                 prop_f,
                 "col_map_fix",
-                body,
+                fb,
                 ["x", "y", "duration"],
             )
         )
-        body.caption(
+        fb.caption(
             "Leave X/Y blank for AOI-only data and map the fixation's Word/IA ID "
             "under *More fixation fields* below instead."
         )
 
-    # Step 5 — word required fields.
+    # Column mapping: Text & Interest Areas — the required word fields (id, text,
+    # bounding boxes).
     if has_words:
-        step("Words — required fields")
+        wb = section_box("Column mapping: Text & Interest Areas")
         word_schema.update(
             _map_section(
                 raw_words,
                 WORD_FIELD_SPECS,
                 prop_w,
                 "col_map_words",
-                body,
+                wb,
                 ["word_id", "text", "box"],
             )
         )
-
-    # Step 7 — optional participant & text, then their counts.
-    if has_words or has_fix:
-        step("Participant & text (optional)")
-        body.caption(
-            "Leave blank for a single anonymous reader / single text — the app "
-            "adapts and hides the selectors when a dimension has only one value."
-        )
-        if has_fix:
-            if has_words:
-                body.caption("Fixations")
-            fix_schema.update(
-                _map_section(
-                    raw_fix,
-                    FIX_FIELD_SPECS,
-                    prop_f,
-                    "col_map_fix",
-                    body,
-                    ["participant", "text_id"],
-                )
-            )
-        if has_words:
-            if has_fix:
-                body.caption("Words/IA")
-            word_schema.update(
-                _map_section(
-                    raw_words,
-                    WORD_FIELD_SPECS,
-                    prop_w,
-                    "col_map_words",
-                    body,
-                    ["participant", "text_id"],
-                )
-            )
-        pp, pp_schema = (raw_fix, fix_schema) if has_fix else (raw_words, word_schema)
-        bits = []
-        n_part = _count_unique(pp, pp_schema.get("participant"))
-        if n_part is not None:
-            bits.append(f"**{n_part:,}** participants")
-        n_text = _count_unique(pp, pp_schema.get("text_id"))
-        if n_text is not None:
-            bits.append(f"**{n_text:,}** texts")
-        if bits:
-            body.success("✓ " + " · ".join(bits))
 
     # Step 8 — extra word features (line index for the visualization).
     if has_words:
@@ -2228,7 +2440,7 @@ def _render_data_setup(active: bool) -> _UploadResult:
         # sidebar shows after load, rendered inline here on the normalized frames
         # so the scanpath is true-to-scale from the first render. They write the
         # shared ``global_*`` keys, so the sidebar panel reflects these choices.
-        step("Display & experiment setup (optional)")
+        step("Display & experiment setup")
         body.caption(
             "Match your experimental display so the scanpath stays true to scale. "
             "You can fine-tune these any time from the sidebar after loading."
@@ -2534,7 +2746,10 @@ def main() -> None:
 
     has_raw_gaze = not raw_gaze_filtered.empty
     viz_settings = sidebar_controls(
-        fixations_filtered, base_font_size, has_raw_gaze=has_raw_gaze
+        fixations_filtered,
+        base_font_size,
+        has_raw_gaze=has_raw_gaze,
+        words=words_filtered,
     )
 
     # Reserve the "💾 Save & restore" slot here (a keyed container so the

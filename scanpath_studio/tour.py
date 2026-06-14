@@ -74,14 +74,12 @@ The **Data source** panel at the top of the sidebar switches between:
 - **Bundled demo** — the preloaded OneStop sample.
 - **Synthetic test trial** — a tiny ground-truth trial with documented
   expected measures, handy for sanity checks.
-- **Public datasets** — ready-made corpus loaders (currently PoTeC),
-  downloaded on demand.
-- **Upload tables** — your own words/IA and fixations tables
+- **Add data** — your own words/IA and fixations tables
   (CSV / TSV / Parquet / Feather; several files per table, or either
-  table alone).
+  table alone), through a short guided setup wizard.
 
 Column names are auto-detected (EyeLink, Gazepoint, snake_case …), and the
-**Column mapping** panels let you override any field.
+setup wizard's **Column mapping** steps let you override any field.
 """,
     ),
     (
@@ -97,13 +95,14 @@ directly, or pick a participant and step through their trials with a slider.
     (
         "🎨 Style the visualization",
         """
-The sidebar's **Visualization** section controls what's drawn: fixations
-(sized by duration), saccades, a density heatmap, word boxes, and the text
-itself.
+The sidebar's **Visualization controls** govern what's drawn — fixations
+(sized by duration, coloured by any field), saccades, a density heatmap, word
+boxes, and the text itself — together with their colours, marker sizing, and
+text highlighting, all in one panel.
 
-**Display settings** keeps the rendering true to the experiment: enter your
+**Experimental Setup** keeps the rendering true to the experiment: enter your
 monitor's resolution and the text and coordinates appear exactly as
-presented. **Advanced styling** holds colorscales and marker sizing.
+presented.
 """,
     ),
     (
@@ -230,11 +229,11 @@ _SPOTLIGHT_STEPS = [
     {
         "selector": ".st-key-tour_grp_viz_controls",
         "title": "🎨 Visualization controls",
-        "body": "Toggle what's drawn: fixations (sized by duration), "
-        "saccades, the density heatmap, word boxes, and the text itself. "
-        "**Display settings** (above) keeps everything true to your "
-        "experiment's monitor; **Advanced styling** (below) has colorscales "
-        "and marker sizing.",
+        "body": "Toggle what's drawn: fixations (sized by duration, coloured "
+        "by any field), saccades, the density heatmap, word boxes, and the "
+        "text itself — with their colours, marker sizing, and text "
+        "highlighting all in this one panel. **Experimental Setup** (above) "
+        "keeps everything true to your experiment's monitor.",
     },
     {
         "selector": '[data-testid="stTabs"] [data-baseweb="tab-list"]',

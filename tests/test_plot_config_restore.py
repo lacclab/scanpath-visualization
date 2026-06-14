@@ -358,9 +358,11 @@ def test_build_studio_config_includes_provenance_and_round_trips():
         column_mapping={"col_map_fix_x": "CURRENT_FIX_X"},
         data_source="Use bundled demo",
         app_version="9.9.9",
+        exported_at="2026-06-15T12:00:00",
     )
     assert cfg["schema"] == 2
     assert cfg["app"] == {"name": "Scanpath Studio", "version": "9.9.9"}
+    assert cfg["exported_at"] == "2026-06-15T12:00:00"
     assert cfg["data_source"] == "Use bundled demo"
     assert cfg["column_mapping"] == {"col_map_fix_x": "CURRENT_FIX_X"}
     assert cfg["selection"] == {"participant_id": "p1", "trial_id": "t1"}

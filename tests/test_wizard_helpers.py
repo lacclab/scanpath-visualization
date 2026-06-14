@@ -12,10 +12,19 @@ from scanpath_studio import app
 
 
 class TestDefaultTrialColumns:
-    def test_composes_paragraph_and_text_when_both_present(self):
-        # The user's "default to both paragraph id and text id".
+    def test_composes_participant_and_text_when_both_present(self):
+        # A trial is one reading of one text → default to participant + text ids.
         proposed = {"trial": "trial_id", "text_id": "text_id"}
         present = ["paragraph_id", "text_id", "participant_id"]
+        assert app._default_trial_columns(proposed, present) == [
+            "participant_id",
+            "text_id",
+        ]
+
+    def test_falls_back_to_paragraph_and_text_without_participant(self):
+        # OneStop-shaped upload with no participant column on the words table.
+        proposed = {"trial": "trial_id", "text_id": "text_id"}
+        present = ["paragraph_id", "text_id"]
         assert app._default_trial_columns(proposed, present) == [
             "paragraph_id",
             "text_id",

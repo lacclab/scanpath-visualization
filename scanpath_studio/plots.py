@@ -123,6 +123,47 @@ def _fit_display_size(
     return max(w, 100), max(h, 100)
 
 
+# Extra figure size (px) reserved OUTSIDE the equal-aspect plot region for a
+# right-side colorbar or a top legend. Without this, Plotly's automargin shrinks
+# the scaleanchor'd plot domain to fit them — and because the word labels are
+# sized for the full fitted_w x fitted_h plot region, a shrunken plot leaves the
+# text overflowing the boxes (the "colorbar / discrete colour legend shrinks the
+# plot and breaks the aspect ratio" bug). Mirroring the _CONTROLS_MARGIN_PX trick
+# the animation uses for its transport controls, we instead grow the figure by
+# the reserve and pin it as an explicit margin, so the plot region stays exactly
+# fitted_w x fitted_h whether or not a colorbar/legend is shown.
+_COLORBAR_RESERVE_PX = 160
+_LEGEND_RESERVE_PX = 60
+# Top reserve for the overlay-comparison figure's title + A/B legend (same idea
+# as _LEGEND_RESERVE_PX, but the title needs a touch more room).
+_OVERLAY_TOP_PX = 64
+
+
+def _decoration_margins(
+    fitted_w: int,
+    fitted_h: int,
+    *,
+    colorbar: bool,
+    legend: bool,
+    bottom: int = 0,
+) -> dict:
+    """Grow a spatial figure so a right colorbar / top legend sit in reserved
+    margin instead of stealing space from the equal-aspect plot region.
+
+    Returns ``{"width", "height", "margin"}`` for ``fig.update_layout``: the plot
+    region stays ``fitted_w x fitted_h`` (so the true-to-scale word labels keep
+    matching the boxes); ``bottom`` reserves additional space below the plot for
+    transport controls (the animation figure).
+    """
+    right = _COLORBAR_RESERVE_PX if colorbar else 0
+    top = _LEGEND_RESERVE_PX if legend else 0
+    return {
+        "width": fitted_w + right,
+        "height": fitted_h + top + bottom,
+        "margin": dict(l=0, r=right, t=top, b=bottom),
+    }
+
+
 # Text in Plotly is sized in screen pixels with no native "data unit" mode, so
 # to keep word labels true-to-scale we convert a real (monitor-pixel) font size
 # into the figure's screen pixels using the same scale the boxes/fixations use.
@@ -354,17 +395,20 @@ _CRITICAL_TEXT_COLOR = (
 )
 
 
-def build_critical_span_overlay(words: pd.DataFrame) -> list:
-    """Return outline shapes for the critical span (`is_in_aspan`).
+def build_critical_span_overlay(
+    words: pd.DataFrame, column: str = "is_in_aspan"
+) -> list:
+    """Return outline shapes for the highlighted span (``column``, default the
+    OneStop answer span ``is_in_aspan``).
 
-    Each visual line that contains critical-span words gets its own outline
-    rectangle, going from the *first* to the *last* critical word on that
+    Each visual line that contains highlighted words gets its own outline
+    rectangle, going from the *first* to the *last* highlighted word on that
     line (not the whole line). Returns [] when the column is missing or no
     words match.
     """
-    if "is_in_aspan" not in words.columns:
+    if not column or column not in words.columns:
         return []
-    mask = words["is_in_aspan"].fillna(False).astype(bool)
+    mask = words[column].fillna(False).astype(bool)
     if not mask.any():
         return []
     span = words[mask].copy()
@@ -406,7 +450,7 @@ def _add_word_label_trace(
     font_family: str,
     row: Optional[int] = None,
     col: Optional[int] = None,
-    highlight_critical_text: bool = False,
+    highlight_column: Optional[str] = None,
 ) -> None:
     if words.empty or "text" not in words.columns:
         return
@@ -418,10 +462,10 @@ def _add_word_label_trace(
             "Word %{text}<br>Word ID %{customdata[0]}"
             "<br>Line %{customdata[1]}<extra></extra>"
         )
-    # Per-word text color: dark pink for critical-span words when the caller
-    # asks for "Mark text", default label color otherwise.
-    if highlight_critical_text and "is_in_aspan" in words.columns:
-        critical_mask = words["is_in_aspan"].fillna(False).astype(bool)
+    # Per-word text color: dark pink for highlighted words when the caller asks
+    # for "Mark text" (``highlight_column`` set), default label color otherwise.
+    if highlight_column and highlight_column in words.columns:
+        critical_mask = words[highlight_column].fillna(False).astype(bool)
         text_color = [
             _CRITICAL_TEXT_COLOR if is_crit else WORD_LABEL_COLOR
             for is_crit in critical_mask
@@ -476,6 +520,8 @@ def make_scanpath_figure(
     raw_gaze: Optional[pd.DataFrame] = None,
     show_raw_gaze: bool = False,
     critical_span_style: str = "Mark text",
+    highlight_column: Optional[str] = "is_in_aspan",
+    saccade_color: str = SACCADE_COLOR,
     background_color: Optional[str] = None,
     color_by_line: bool = False,
     highlight_out_of_text: bool = False,
@@ -484,6 +530,11 @@ def make_scanpath_figure(
 ) -> go.Figure:
     fig = go.Figure()
     spatial_axes = x_field == "x" and y_field == "y"
+    # Track whether a colorbar / legend will render, to reserve margin for them
+    # below (so they don't shrink the equal-aspect plot). See _decoration_margins.
+    legend_active = False
+    heatmap_rendered = False
+    is_numeric_color = False
     font_settings = dict(family=font_family or FONT_FAMILY, size=base_font_size)
 
     raw_for_range = raw_gaze if (show_raw_gaze and raw_gaze is not None) else None
@@ -519,21 +570,23 @@ def make_scanpath_figure(
         scale_text_to_boxes=scale_text_to_boxes,
     )
 
-    # Hunting/preview trials get the critical span marked one of two ways:
-    #   - "Mark text": color the critical-span words dark pink (no border).
+    # Words flagged by ``highlight_column`` (default the OneStop answer span
+    # ``is_in_aspan``) get marked one of two ways:
+    #   - "Mark text": color the highlighted words dark pink (no border).
     #   - "Mark border": draw a thin black outline around the span.
-    has_preview = (
-        "question_preview" in words.columns
+    has_highlight = (
+        bool(highlight_column)
+        and highlight_column in words.columns
         and not words.empty
-        and bool(words["question_preview"].fillna(False).astype(bool).iloc[0])
+        and bool(words[highlight_column].fillna(False).astype(bool).any())
     )
-    highlight_critical_text = has_preview and critical_span_style == "Mark text"
+    highlight_text = has_highlight and critical_span_style == "Mark text"
 
     if spatial_axes and not words.empty:
         if show_words:
             shapes = build_word_boxes(words)
-            if has_preview and critical_span_style == "Mark border":
-                shapes = shapes + build_critical_span_overlay(words)
+            if has_highlight and critical_span_style == "Mark border":
+                shapes = shapes + build_critical_span_overlay(words, highlight_column)
             fig.update_layout(shapes=shapes)
         if show_word_labels:
             _add_word_label_trace(
@@ -541,7 +594,7 @@ def make_scanpath_figure(
                 words,
                 label_font_px,
                 font_settings["family"],
-                highlight_critical_text=highlight_critical_text,
+                highlight_column=highlight_column if highlight_text else None,
             )
 
     if show_raw_gaze and raw_gaze is not None and not raw_gaze.empty:
@@ -574,8 +627,10 @@ def make_scanpath_figure(
                 showlegend=True,
             )
         )
+        legend_active = True
 
     if spatial_axes and show_heatmap and not fixations.empty:
+        heatmap_rendered = True
         weights = fixations["duration_ms"] if heatmap_metric == "duration_ms" else None
         x_min = (
             x_min_data if x_min_data is not None else float(fixations[x_field].min())
@@ -640,6 +695,7 @@ def make_scanpath_figure(
             else "n_fixations"
         )
         if measure in words.columns:
+            heatmap_rendered = True
             _add_word_measure_heatmap(
                 fig,
                 words,
@@ -657,7 +713,7 @@ def make_scanpath_figure(
                     x=sx,
                     y=sy,
                     mode="lines",
-                    line=dict(color=SACCADE_COLOR, width=2),
+                    line=dict(color=saccade_color, width=2),
                     hoverinfo="skip",
                     showlegend=False,
                     name="saccades",
@@ -680,7 +736,7 @@ def make_scanpath_figure(
                         size=12,
                         angle=aang,
                         angleref="up",
-                        color=SACCADE_COLOR,
+                        color=saccade_color,
                         line=dict(width=0),
                     ),
                     hoverinfo="skip",
@@ -766,6 +822,8 @@ def make_scanpath_figure(
         )
         legend_limit = len(_QUALITATIVE_PALETTE)
         truncated_legend = category_legend[:legend_limit]
+        if category_legend:
+            legend_active = True
         for category, color in truncated_legend:
             fig.add_trace(
                 go.Scatter(
@@ -803,6 +861,7 @@ def make_scanpath_figure(
 
             off = ordered[~fixation_in_text_mask(ordered, words)]
             if not off.empty:
+                legend_active = True
                 fig.add_trace(
                     go.Scatter(
                         x=off[x_field],
@@ -826,9 +885,16 @@ def make_scanpath_figure(
     xaxis_cfg = dict(showticklabels=False, showgrid=False, zeroline=False, title=None)
     yaxis_cfg = dict(showticklabels=False, showgrid=False, zeroline=False, title=None)
     if spatial_axes:
-        xaxis_cfg.update(range=x_range, constrain="domain")
+        # automargin off: the colorbar/legend live in the reserved margin we size
+        # below (_decoration_margins), so Plotly must not also shrink the
+        # equal-aspect plot domain to fit them.
+        xaxis_cfg.update(range=x_range, constrain="domain", automargin=False)
         yaxis_cfg.update(
-            range=y_range, constrain="domain", scaleanchor="x", scaleratio=1
+            range=y_range,
+            constrain="domain",
+            scaleanchor="x",
+            scaleratio=1,
+            automargin=False,
         )
     else:
         xaxis_cfg.update(
@@ -852,12 +918,25 @@ def make_scanpath_figure(
             )
         )
 
-    # fitted_w / fitted_h were computed up front (so the label scale matched).
+    # fitted_w / fitted_h were computed up front (so the label scale matched). A
+    # colorbar (numeric colour / heatmap) or legend (discrete colour categories,
+    # out-of-text, raw gaze) is given reserved margin so it never shrinks the
+    # equal-aspect plot region — keeping the word labels matched to the boxes.
+    decoration = (
+        _decoration_margins(
+            fitted_w,
+            fitted_h,
+            colorbar=show_colorbars and (is_numeric_color or heatmap_rendered),
+            legend=legend_active,
+        )
+        if spatial_axes
+        else {"width": fitted_w, "height": fitted_h, "margin": dict(l=0, r=0, t=0, b=0)}
+    )
     fig.update_layout(
-        height=fitted_h,
-        width=fitted_w,
+        height=decoration["height"],
+        width=decoration["width"],
         autosize=False,
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=decoration["margin"],
         xaxis=xaxis_cfg,
         yaxis=yaxis_cfg,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1426,6 +1505,7 @@ def make_scanpath_animation(
     fixation_colorscale: str = DEFAULT_FIXATION_COLORSCALE,
     fixation_color_range: Optional[Tuple[float, float]] = None,
     show_colorbars: bool = False,
+    saccade_color: str = SACCADE_COLOR,
     background_color: Optional[str] = None,
     fixations_b: Optional[pd.DataFrame] = None,
     words_b: Optional[pd.DataFrame] = None,
@@ -1582,7 +1662,7 @@ def make_scanpath_animation(
         all_y = ordered["y"].tolist()
         first_size = float(s["sizes"][0])
         s["text_color"] = s["color"] if dual else order_font_color
-        sac_color = s["color"] if dual else SACCADE_COLOR
+        sac_color = s["color"] if dual else saccade_color
         curr_outline = s["color"] if dual else CURRENT_FIX_OUTLINE
         curr_outline_w = 2.5 if dual else 2
 
@@ -1808,11 +1888,15 @@ def make_scanpath_animation(
     # equal-aspect (`scaleanchor`) plot would shrink to fit the leftover height,
     # making the word boxes smaller than the true-to-scale label font computed
     # for fitted_h (text-too-large bug). _CONTROLS_MARGIN_PX is that reserve.
+    # A single-replay numeric colorbar gets the same treatment on the right
+    # (the dual-overlay legend overlays the plot, so it needs no reserve).
+    anim_colorbar = bool(specs and specs[0].get("marker_extra", {}).get("showscale"))
+    right_reserve = _COLORBAR_RESERVE_PX if anim_colorbar else 0
     layout = dict(
         height=fitted_h + _CONTROLS_MARGIN_PX + _CONTROLS_SAFETY_PX,
-        width=fitted_w,
+        width=fitted_w + right_reserve,
         autosize=False,
-        margin=dict(l=0, r=0, t=0, b=_CONTROLS_MARGIN_PX),
+        margin=dict(l=0, r=right_reserve, t=0, b=_CONTROLS_MARGIN_PX),
         xaxis=dict(
             showticklabels=False,
             showgrid=False,
@@ -1820,6 +1904,7 @@ def make_scanpath_animation(
             title=None,
             range=x_range,
             constrain="domain",
+            automargin=False,
         ),
         yaxis=dict(
             showticklabels=False,
@@ -1830,6 +1915,7 @@ def make_scanpath_animation(
             constrain="domain",
             scaleanchor="x",
             scaleratio=1,
+            automargin=False,
         ),
         template="plotly_white",
         plot_bgcolor=background_color,
@@ -2240,11 +2326,13 @@ def make_comparison_figure(
     )
 
     # fitted_w / fitted_h were computed up front (so the label scale matched).
+    # The title + top A/B legend get reserved space above the plot so they don't
+    # shrink the equal-aspect plot region (same fix as make_scanpath_figure).
     fig.update_layout(
-        height=fitted_h,
+        height=fitted_h + _OVERLAY_TOP_PX,
         width=fitted_w,
         autosize=False,
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=dict(l=0, r=0, t=_OVERLAY_TOP_PX, b=0),
         xaxis=dict(
             showticklabels=False,
             showgrid=False,
@@ -2252,6 +2340,7 @@ def make_comparison_figure(
             title=None,
             range=x_range,
             constrain="domain",
+            automargin=False,
         ),
         yaxis=dict(
             showticklabels=False,
@@ -2262,6 +2351,7 @@ def make_comparison_figure(
             constrain="domain",
             scaleanchor="x",
             scaleratio=1,
+            automargin=False,
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         template="plotly_white",

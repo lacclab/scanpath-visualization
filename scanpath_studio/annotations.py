@@ -238,8 +238,8 @@ def render_trial_annotations(participant_id: str, trial_id: str) -> None:
         )
         set_entry(participant_id, trial_id, star=star, tags=tags, note=note)
         st.caption(
-            "Saved for this session. Use the sidebar **Annotations** panel to "
-            "download a JSON copy or restore one."
+            "Saved for this session. Use the sidebar **💾 Save & restore** panel "
+            "to download all annotations as JSON or restore them."
         )
 
 
