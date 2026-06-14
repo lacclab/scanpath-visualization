@@ -681,8 +681,10 @@ def sidebar_controls(
     # Which word column drives the highlight (default the OneStop answer span).
     highlight_options = highlight_column_options(words)
     highlight_column = None
+    # Always clear a stale pick (e.g. a restored config on data with no boolean
+    # columns), even when the selector itself isn't rendered this run.
+    _drop_stale("global_highlight_column", highlight_options)
     if highlight_options:
-        _drop_stale("global_highlight_column", highlight_options)
         st.session_state.setdefault(
             "global_highlight_column",
             "is_in_aspan"

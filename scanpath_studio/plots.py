@@ -134,6 +134,9 @@ def _fit_display_size(
 # fitted_w x fitted_h whether or not a colorbar/legend is shown.
 _COLORBAR_RESERVE_PX = 160
 _LEGEND_RESERVE_PX = 60
+# Top reserve for the overlay-comparison figure's title + A/B legend (same idea
+# as _LEGEND_RESERVE_PX, but the title needs a touch more room).
+_OVERLAY_TOP_PX = 64
 
 
 def _decoration_margins(
@@ -2325,7 +2328,6 @@ def make_comparison_figure(
     # fitted_w / fitted_h were computed up front (so the label scale matched).
     # The title + top A/B legend get reserved space above the plot so they don't
     # shrink the equal-aspect plot region (same fix as make_scanpath_figure).
-    _OVERLAY_TOP_PX = 64
     fig.update_layout(
         height=fitted_h + _OVERLAY_TOP_PX,
         width=fitted_w,

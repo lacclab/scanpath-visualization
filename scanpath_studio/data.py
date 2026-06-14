@@ -669,7 +669,9 @@ def normalize_raw_gaze(raw_gaze: pd.DataFrame, schema: Dict[str, str]) -> pd.Dat
     """Normalize raw gaze data to canonical column names."""
     df = pd.DataFrame(index=raw_gaze.index)
     if schema.get("participant"):
-        df["participant_id"] = raw_gaze[schema["participant"]].astype(str)
+        # str or list (a composite participant id), joined like normalize_words —
+        # so a composite participant stays key-compatible with the fixations.
+        df["participant_id"] = trial_id_series(raw_gaze, schema["participant"])
     else:
         df["participant_id"] = SYNTHETIC_PARTICIPANT
     trial_cols = trial_mapping_columns(schema["trial"])
@@ -849,7 +851,6 @@ def harmonize_frames(
 def _disambiguate_repeated_readings(
     df: pd.DataFrame,
     source: pd.DataFrame,
-    participant_mapping,
     trial_col: str,
 ) -> pd.DataFrame:
     """Suffix `trial_id` with `_r2`, `_r3` … when a participant read the same
@@ -864,8 +865,8 @@ def _disambiguate_repeated_readings(
     the chronologically-first reading keeps its original id; later readings
     get `_r2`, `_r3`, … appended.
 
-    ``participant_mapping`` is a single column name or a list of columns (a
-    composite participant id); the rank groups on its joined value.
+    Groups on the already-computed ``df["participant_id"]`` (1:1 with ``source``),
+    so a composite participant id is handled without recomputing the join.
     """
     if "unique_trial_id" in source.columns:
         return df
@@ -876,7 +877,7 @@ def _disambiguate_repeated_readings(
         return df
     grouper = pd.DataFrame(
         {
-            "_pk": trial_id_series(source, participant_mapping).to_numpy(),
+            "_pk": df["participant_id"].to_numpy(),
             "_tc": source[trial_col].astype(str).to_numpy(),
             "_idx": source[idx_col].to_numpy(),
         }
@@ -1104,9 +1105,7 @@ def normalize_words(
         )
         df["trial_id"] = words[trial_col].astype(str)
         if schema.get("participant"):
-            df = _disambiguate_repeated_readings(
-                df, words, schema["participant"], trial_col
-            )
+            df = _disambiguate_repeated_readings(df, words, trial_col)
         if "unique_trial_id" in words.columns:
             df["unique_trial_id"] = words["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in words.columns:
@@ -1180,9 +1179,7 @@ def normalize_fixations(
         )
         df["trial_id"] = fixations[trial_col].astype(str)
         if schema.get("participant"):
-            df = _disambiguate_repeated_readings(
-                df, fixations, schema["participant"], trial_col
-            )
+            df = _disambiguate_repeated_readings(df, fixations, trial_col)
         if "unique_trial_id" in fixations.columns:
             df["unique_trial_id"] = fixations["unique_trial_id"].astype(str)
     if "unique_paragraph_id" in fixations.columns:

@@ -500,6 +500,29 @@ class TestCompositeTrialId:
         assert result["trial_id"].tolist() == ["p1_A_False", "p1_A_False"]
         assert (result["unique_trial_id"] == result["trial_id"]).all()
 
+    def test_raw_gaze_composite_participant(self):
+        # A composite participant id on raw gaze must join (like the fixations)
+        # so the overlay stays key-compatible with a composite-participant trial.
+        raw = pd.DataFrame(
+            {
+                "site": ["s1", "s2"],
+                "subject": ["a", "b"],
+                "para": ["A", "A"],
+                "x": [1.0, 2.0],
+                "y": [3.0, 4.0],
+            }
+        )
+        schema = {
+            "participant": ["site", "subject"],
+            "trial": "para",
+            "text": None,
+            "x": "x",
+            "y": "y",
+            "timestamp": None,
+        }
+        result = normalize_raw_gaze(raw, schema)
+        assert result["participant_id"].tolist() == ["s1_a", "s2_b"]
+
     def test_composite_participant_and_text_join_like_trial(self):
         # Participant and text ids can also be composed from several columns
         # (joined with '_'), mirroring the trial id (the wizard's Participants /
