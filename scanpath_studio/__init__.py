@@ -14,7 +14,7 @@ __all__ = [
     "save_figure",
     "load_potec",
 ]
-__version__ = "0.19.0"
+__version__ = "0.19.1"
 
 # Public headless API (see api.py / datasets.py). Resolved lazily so
 # `import scanpath_studio` stays cheap and doesn't pull in pandas/plotly/

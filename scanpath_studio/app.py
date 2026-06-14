@@ -928,8 +928,9 @@ def _render_unmapped_view(
         _render_raw_preview("Fixations", raw_fixations_df)
 
 
-# File types accepted by every upload box.
-_UPLOAD_TYPES = ["csv", "tsv", "parquet", "feather"]
+# File types accepted by every upload box. ``zip`` covers single-member
+# archives wrapping any of the others (e.g. ``data.csv.zip``).
+_UPLOAD_TYPES = ["csv", "tsv", "parquet", "feather", "zip"]
 
 
 def _read_uploaded_frame(
@@ -1150,7 +1151,7 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
     else:
         uploaded_raw_gaze = st.sidebar.file_uploader(
             "Raw gaze table (optional)",
-            type=["csv", "parquet", "feather"],
+            type=["csv", "parquet", "feather", "zip"],
             help="Optional: millisecond-level gaze with participant_id, trial_id, x, y.",
         )
         if uploaded_raw_gaze:

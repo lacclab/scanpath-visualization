@@ -2,6 +2,9 @@
 datasets (words-only / fixations-only), stimulus-level word tables, AOI-only
 fixations, and the PoTeC loader."""
 
+import io
+import zipfile
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -35,6 +38,88 @@ def test_read_table_tsv(tmp_path):
     df = data_module.read_table(path)
     assert list(df.columns) == ["a", "b"]
     assert len(df) == 2
+
+
+class _NamedBytesIO(io.BytesIO):
+    """A BytesIO that carries a ``name`` like Streamlit's UploadedFile, so we
+    can exercise the upload path (where pandas can't infer compression)."""
+
+    def __init__(self, data, name):
+        super().__init__(data)
+        self.name = name
+
+
+def _zip_bytes(member_name, data: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(member_name, data)
+    return buf.getvalue()
+
+
+def test_read_table_csv_zip_path(tmp_path):
+    path = tmp_path / "words.csv.zip"
+    path.write_bytes(_zip_bytes("words.csv", b"a,b\n1,x\n2,y\n"))
+    df = data_module.read_table(path)
+    assert list(df.columns) == ["a", "b"]
+    assert len(df) == 2
+
+
+def test_read_table_csv_zip_uploaded_file_like():
+    # The real bug: an in-memory upload named *.csv.zip — pandas infers
+    # compression only from string paths, so this must be handled explicitly.
+    upload = _NamedBytesIO(_zip_bytes("data.csv", b"a,b\n1,x\n2,y\n"), "data.csv.zip")
+    df = data_module.read_table(upload)
+    assert list(df.columns) == ["a", "b"]
+    assert len(df) == 2
+
+
+def test_read_table_tsv_zip():
+    upload = _NamedBytesIO(_zip_bytes("d.tsv", b"a\tb\n1\tx\n"), "d.tsv.zip")
+    df = data_module.read_table(upload)
+    assert list(df.columns) == ["a", "b"]
+
+
+def test_read_table_zip_ignores_macosx_cruft():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("real.csv", b"a,b\n1,2\n")
+        zf.writestr("__MACOSX/._real.csv", b"junk")
+        zf.writestr(".DS_Store", b"junk")
+    upload = _NamedBytesIO(buf.getvalue(), "bundle.zip")
+    df = data_module.read_table(upload)
+    assert list(df.columns) == ["a", "b"]
+
+
+def test_read_table_zip_multiple_members_concatenates():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("reader0.csv", b"a,b\n1,x\n2,y\n")
+        zf.writestr("reader1.csv", b"a,b\n3,z\n")
+    upload = _NamedBytesIO(buf.getvalue(), "bundle.zip")
+    df = data_module.read_table(upload)
+    assert len(df) == 3
+    # Each member's rows are traceable via the source_file stem.
+    assert set(df["source_file"]) == {"reader0", "reader1"}
+
+
+def test_read_table_zip_mixed_formats_concatenates():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.csv", b"x\n1\n")
+        zf.writestr("b.tsv", b"x\n2\n")
+    upload = _NamedBytesIO(buf.getvalue(), "mixed.zip")
+    df = data_module.read_table(upload)
+    assert sorted(df["x"]) == [1, 2]
+
+
+def test_read_table_zip_no_data_files_raises():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("__MACOSX/._x", b"junk")
+        zf.writestr(".DS_Store", b"junk")
+    upload = _NamedBytesIO(buf.getvalue(), "empty.zip")
+    with pytest.raises(ValueError, match="no readable table files"):
+        data_module.read_table(upload)
 
 
 def test_read_tables_list_adds_source_file(tmp_path):

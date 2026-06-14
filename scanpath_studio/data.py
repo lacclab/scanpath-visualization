@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import glob
 import importlib.resources as resources
+import io
 import os
 import re
+import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
@@ -437,25 +439,79 @@ def validate_raw_gaze_schema(schema: Dict[str, Optional[str]]) -> list:
     return problems
 
 
-def read_table(file_like_or_path) -> pd.DataFrame:
-    """Read a tabular file by extension: csv, tsv, parquet, or feather."""
-    name = getattr(file_like_or_path, "name", str(file_like_or_path)).lower()
-    if name.endswith(".parquet"):
-        return pd.read_parquet(file_like_or_path)
-    if name.endswith(".feather"):
-        return pd.read_feather(file_like_or_path)
-    if name.endswith((".tsv", ".tab")):
-        return pd.read_csv(file_like_or_path, sep="\t")
-    return pd.read_csv(file_like_or_path)
-
-
-# Column added by `read_tables` when concatenating several files: the source
-# file's stem. Lets datasets that key metadata in the *filename* (one file per
-# participant and/or per text, e.g. PoTeC's `reader0_b0_scanpath.tsv`) recover
-# it after concatenation — map it as (part of) the Trial/Participant ID.
+# Column added when concatenating several files (multi-file upload, glob, or a
+# multi-member zip): the source file's stem. Lets datasets that key metadata in
+# the *filename* (one file per participant and/or per text, e.g. PoTeC's
+# `reader0_b0_scanpath.tsv`) recover it after concatenation — map it as (part
+# of) the Trial/Participant ID.
 SOURCE_FILE_COLUMN = "source_file"
 
 TablesInput = Union[str, os.PathLike, object, List]
+
+
+def _read_by_extension(buf, name: str) -> pd.DataFrame:
+    """Dispatch a buffer/path to a pandas reader by its (lowercased) name."""
+    if name.endswith(".parquet"):
+        return pd.read_parquet(buf)
+    if name.endswith(".feather"):
+        return pd.read_feather(buf)
+    if name.endswith((".tsv", ".tab")):
+        return pd.read_csv(buf, sep="\t")
+    return pd.read_csv(buf)
+
+
+def _tag_and_concat(
+    frames: List[pd.DataFrame], labels: List[str], source_column: Optional[str]
+) -> pd.DataFrame:
+    """Concatenate frames into one. With more than one frame, tag each with its
+    source label in ``source_column`` (unless that frame already carries the
+    column, or ``source_column`` is None) so rows stay traceable to their
+    origin. Columns are aligned by name; fields absent from a frame become NaN
+    for its rows."""
+    if len(frames) == 1:
+        return frames[0]
+    if source_column:
+        for df, label in zip(frames, labels):
+            if source_column not in df.columns:
+                df[source_column] = label
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _read_zipped_table(file_like_or_path) -> pd.DataFrame:
+    """Read table(s) from a ``.zip`` archive (e.g. ``data.csv.zip``).
+
+    Each member is dispatched on its own extension, so a zip may wrap any
+    supported format. A multi-member archive is concatenated just like a
+    multi-file upload — every member's rows tagged with its stem in
+    ``source_file``. pandas infers compression only from string paths, not from
+    uploaded file-like objects, so we open the archive ourselves. Raises
+    ``ValueError`` if the archive holds no data file (macOS ``__MACOSX``/dotfile
+    cruft is ignored)."""
+    with zipfile.ZipFile(file_like_or_path) as zf:
+        members = [
+            m
+            for m in zf.namelist()
+            if not m.endswith("/") and not Path(m).name.startswith((".", "__"))
+        ]
+        if not members:
+            raise ValueError("the zip archive contains no readable table files")
+        frames, labels = [], []
+        for member in members:
+            with zf.open(member) as inner:
+                buf = io.BytesIO(inner.read())
+            frames.append(_read_by_extension(buf, member.lower()))
+            labels.append(Path(member).stem)
+    return _tag_and_concat(frames, labels, SOURCE_FILE_COLUMN)
+
+
+def read_table(file_like_or_path) -> pd.DataFrame:
+    """Read a tabular file by extension: csv, tsv, parquet, feather, or a
+    ``.zip`` wrapping one or more of those (e.g. ``data.csv.zip``). A
+    multi-member zip is concatenated like a multi-file upload."""
+    name = getattr(file_like_or_path, "name", str(file_like_or_path)).lower()
+    if name.endswith(".zip"):
+        return _read_zipped_table(file_like_or_path)
+    return _read_by_extension(file_like_or_path, name)
 
 
 def expand_table_inputs(inputs: TablesInput) -> list:
@@ -486,21 +542,17 @@ def read_tables(
     """Read one or many tabular files and concatenate them into one frame.
 
     ``inputs`` may be a single path or file-like object, a glob pattern, or a
-    list mixing those. When more than one file is read, each part gets a
-    ``source_file`` column holding the file's stem (unless the data already
-    has that column, or ``source_column=None``) so rows stay traceable to
-    their origin file. Columns are aligned by name across files; fields absent
-    from a file become NaN for its rows."""
+    list mixing those (a ``.zip`` member counts as a file too). When more than
+    one file is read, each part gets a ``source_file`` column holding the file's
+    stem (unless the data already has that column, or ``source_column=None``) so
+    rows stay traceable to their origin file. Columns are aligned by name across
+    files; fields absent from a file become NaN for its rows."""
     items = expand_table_inputs(inputs)
-    frames = []
+    frames, labels = [], []
     for item in items:
-        df = read_table(item)
-        if len(items) > 1 and source_column and source_column not in df.columns:
-            df[source_column] = Path(getattr(item, "name", str(item))).stem
-        frames.append(df)
-    if len(frames) == 1:
-        return frames[0]
-    return pd.concat(frames, ignore_index=True, sort=False)
+        frames.append(read_table(item))
+        labels.append(Path(getattr(item, "name", str(item))).stem)
+    return _tag_and_concat(frames, labels, source_column)
 
 
 def _load_bundled(name: str) -> pd.DataFrame:

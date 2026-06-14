@@ -16,6 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SCANPATH_PUBLIC_DATASETS=1` to preview); it will be enabled in a future
   release.
 
+## [0.19.1] - 2026-06-14
+
+### Added
+- **Zipped tables.** Upload boxes now accept `.zip` archives (e.g.
+  `data.csv.zip`) wrapping any supported format (csv/tsv/parquet/feather); a
+  multi-member zip is concatenated like a multi-file upload.
+
+### Changed
+- Raised the max upload size from 500 MB to 5000 MB.
+
+### Fixed
+- **Save & restore** no longer crashes when files are uploaded — the upload
+  widgets were being swept into the config's column mapping, which isn't
+  JSON-serializable.
+- Highlighted text in **Trial metadata** and **Paragraph & question** (critical
+  / distractor spans, difficulty / preview rows) is now readable in dark mode —
+  the light highlight backgrounds now pin a dark text color instead of
+  inheriting the theme's light one.
+
 ## [0.19.0] - 2026-06-13
 
 ### Added

@@ -354,3 +354,41 @@ def test_build_studio_config_includes_provenance_and_round_trips():
     assert cfg["highlighting"]["background_color"] == "#222222"
     assert len(cfg["annotations"]) == 1
     json.dumps(cfg)  # must be JSON-serializable
+
+
+def _collect_mapping_app():
+    """Seed session_state like an active upload, then collect the mapping."""
+    import streamlit as st
+
+    from scanpath_studio.tabs import _collect_column_mapping
+
+    class _FakeUpload:
+        name = "data.csv.zip"
+
+    # Real mapping selections.
+    st.session_state["col_map_fix_x"] = "CURRENT_FIX_X"
+    st.session_state["col_map_words_box_format"] = "edges"
+    # File-uploader widgets share the col_map_* prefix — must NOT be collected.
+    st.session_state["col_map_fix_upload"] = [_FakeUpload()]
+    st.session_state["col_map_words_upload"] = _FakeUpload()
+    st.session_state["col_map_raw_gaze_upload"] = None
+    # Unrelated key — also excluded.
+    st.session_state["other_key"] = "ignored"
+    st.session_state["_mapping"] = _collect_column_mapping()
+
+
+def test_collect_column_mapping_excludes_uploader_widgets():
+    """The mapping sweep must drop the upload boxes' file_uploader widgets, whose
+    UploadedFile values aren't JSON-serializable (regression: Save & restore
+    download crashed with an active upload)."""
+    import json
+
+    at = AppTest.from_function(_collect_mapping_app)
+    at.run()
+    assert not at.exception
+    mapping = at.session_state["_mapping"]
+    assert mapping == {
+        "col_map_fix_x": "CURRENT_FIX_X",
+        "col_map_words_box_format": "edges",
+    }
+    json.dumps(mapping)  # must be JSON-serializable

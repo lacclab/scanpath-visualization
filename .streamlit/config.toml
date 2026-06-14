@@ -19,7 +19,7 @@ textColor = "#e8eaed"
 
 [server]
 runOnSave = true
-maxUploadSize = 500
+maxUploadSize = 5000
 
 [browser]
 gatherUsageStats = false

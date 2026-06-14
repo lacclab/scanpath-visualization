@@ -509,6 +509,10 @@ def _render_comparison_controls(
 
 _CRITICAL_SPAN_BG = "#FCE7F3"  # light pink — critical-span words
 _DISTRACTOR_SPAN_BG = "#E5E7EB"  # light grey — distractor-span words
+# These highlight backgrounds are always light (they mirror the light stimulus),
+# so pin a dark text color too — otherwise the inherited theme text color goes
+# light in dark mode and the highlighted text is unreadable (light-on-light).
+_HIGHLIGHT_TEXT_COLOR = "#212529"
 
 
 def _ordered_words(trial_words: pd.DataFrame) -> pd.DataFrame:
@@ -542,7 +546,8 @@ def _render_paragraph_with_spans(trial_words: pd.DataFrame) -> None:
             bg = _DISTRACTOR_SPAN_BG
         if bg:
             parts.append(
-                f'<span style="background-color:{bg};padding:0 2px;border-radius:2px;">{word}</span>'
+                f'<span style="background-color:{bg};color:{_HIGHLIGHT_TEXT_COLOR};'
+                f'padding:0 2px;border-radius:2px;">{word}</span>'
             )
         else:
             parts.append(word)
@@ -699,7 +704,7 @@ def _render_paragraph_panel(
             note = _span_fixated_note(trial_words, trial_fixations, "is_in_aspan")
             st.markdown(
                 f'<span style="background-color:{_CRITICAL_SPAN_BG};'
-                f'padding:0 4px;border-radius:2px;">'
+                f'color:{_HIGHLIGHT_TEXT_COLOR};padding:0 4px;border-radius:2px;">'
                 f"<b>Answer (critical) span:</b></span> {critical_text}{note}",
                 unsafe_allow_html=True,
             )
@@ -708,7 +713,7 @@ def _render_paragraph_panel(
             note = _span_fixated_note(trial_words, trial_fixations, "is_in_dspan")
             st.markdown(
                 f'<span style="background-color:{_DISTRACTOR_SPAN_BG};'
-                f'padding:0 4px;border-radius:2px;">'
+                f'color:{_HIGHLIGHT_TEXT_COLOR};padding:0 4px;border-radius:2px;">'
                 f"<b>Distractor span:</b></span> {distractor_text}{note}",
                 unsafe_allow_html=True,
             )
@@ -768,16 +773,18 @@ _PREVIEW_COLOR = "#DBEAFE"  # light blue — Hunting/preview trials
 def _style_metadata_row(row: pd.Series) -> list[str]:
     field = str(row.get("Field", ""))
     value = str(row.get("Value", ""))
+    # Pin a dark text color alongside the light background so the row stays
+    # readable in dark mode (the inherited theme text color would go light).
     bg = ""
     if field == "difficulty_level":
         for prefix, color in _DIFFICULTY_COLORS.items():
             if value.lower().startswith(prefix):
-                bg = f"background-color: {color};"
+                bg = f"background-color: {color}; color: {_HIGHLIGHT_TEXT_COLOR};"
                 break
     elif field == "repeated_reading_trial" and value.lower().startswith("true"):
-        bg = f"background-color: {_REPEAT_COLOR};"
+        bg = f"background-color: {_REPEAT_COLOR}; color: {_HIGHLIGHT_TEXT_COLOR};"
     elif field == "question_preview" and value.lower().startswith("true"):
-        bg = f"background-color: {_PREVIEW_COLOR};"
+        bg = f"background-color: {_PREVIEW_COLOR}; color: {_HIGHLIGHT_TEXT_COLOR};"
 
     field_style = bg
     value_style = bg
@@ -1014,6 +1021,21 @@ def _build_studio_config(
     }
 
 
+def _collect_column_mapping() -> dict:
+    """The column-mapping selections from session_state, for config provenance.
+
+    The upload boxes share the ``col_map_*`` prefix (``state_prefix="col_map_fix"``
+    etc.), so their ``file_uploader`` widgets land in this sweep too. Their value
+    is an ``UploadedFile`` (or list of them), which isn't JSON serializable and
+    isn't part of the column mapping — so the ``_upload`` widget keys are
+    excluded."""
+    return {
+        k: st.session_state[k]
+        for k in sorted(st.session_state.keys())
+        if isinstance(k, str) and k.startswith("col_map_") and not k.endswith("_upload")
+    }
+
+
 def _render_save_restore_expander(
     selected_participant: str,
     selected_trial: str,
@@ -1047,11 +1069,7 @@ def _render_save_restore_expander(
     # Provenance (TODO 4.1): which data source + how its columns were mapped +
     # the app version, so a saved config records the full context behind the
     # figure, not just the plot settings.
-    column_mapping = {
-        k: st.session_state[k]
-        for k in sorted(st.session_state.keys())
-        if isinstance(k, str) and k.startswith("col_map_")
-    }
+    column_mapping = _collect_column_mapping()
     plot_config = _build_studio_config(
         selected_participant=selected_participant,
         selected_trial=selected_trial,
