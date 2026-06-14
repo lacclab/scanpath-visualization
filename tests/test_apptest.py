@@ -165,16 +165,23 @@ class TestAppLaunches:
         assert "single_playback_speed" in [s.key for s in at.select_slider]
 
     def test_bulk_export_whole_dataset_option(self):
-        # The Bulk Export tab ALWAYS offers an "export the whole dataset"
-        # checkbox (TODO 2.2), even with no sidebar filter active; toggling it on
-        # (export the unfiltered frames) builds clean.
-        at = _make_apptest(synthetic=True)
+        # The "Trials to include" scope radio always offers both "All" (every
+        # trial, ignoring the sidebar filter) first and "All filtered trials"
+        # (the current sidebar selection) second.
+        at = _make_apptest()  # bundled 3-pid demo
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
-        assert "bulk_export_unfiltered" in [c.key for c in at.checkbox], (
-            "whole-dataset checkbox missing"
+        scope_radios = [r for r in at.radio if r.key == "bulk_export_scope"]
+        assert scope_radios, "bulk-export scope radio missing"
+        assert scope_radios[0].options[:2] == ["All", "All filtered trials"], (
+            f"unexpected scope options: {scope_radios[0].options}"
         )
-        at.session_state["bulk_export_unfiltered"] = True
+
+        # Narrow to a single participant, pick "All" (whole dataset), build clean.
+        sel = [m for m in at.multiselect if m.key == "filter_participants"]
+        assert sel, "participant filter missing"
+        sel[0].set_value([sel[0].options[0]])
+        at.session_state["bulk_export_scope"] = "All"
         at.run(timeout=30)
         assert not at.exception, f"Streamlit exceptions: {at.exception}"
         assert at.error == [], f"st.error calls: {[e.value for e in at.error]}"
