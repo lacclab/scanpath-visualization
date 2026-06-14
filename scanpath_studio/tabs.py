@@ -1765,11 +1765,6 @@ def _render_bulk_export(
     figure_settings: dict,
 ) -> None:
     """Render configurable bulk-export UI (artifact picker + run + download)."""
-    st.caption(
-        f"**{len(combos)}** trials match the current filters "
-        f"(**{len(combos_all)}** in the whole dataset). "
-        "Choose a scope and which artifacts to bundle below."
-    )
     options = render_export_options(
         st, combos, key_prefix="bulk_export", combos_all=combos_all
     )

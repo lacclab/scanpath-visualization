@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Simpler data-source picker.** "Use bundled demo" is now **Bundled Demo**;
   the synthetic trial is no longer offered as a fresh source; a grayed-out
   **Public Datasets** entry previews what's coming.
+- **Clearer Bulk Export controls.** The whole-dataset and filtered scopes are
+  now both **All** / **All filtered trials** options inside the *Trials to
+  include* picker (no separate checkbox), and the Scope section ends with a live
+  "*N of M trials will be exported*" count. Figures are listed one per row
+  (PDF → SVG → PNG), default to **PDF + Config** only, the plot-config checkbox
+  is renamed **Config** with a short explanation, and the PNG-scale stepper is
+  compact and only shown when PNG is ticked.
+- **Faster bulk figure export.** Rasterizing PNG/SVG/PDF for many trials now
+  reuses one persistent Kaleido browser for the whole batch instead of
+  cold-starting Chrome per trial — quicker on large exports and no more
+  per-trial "Resorting to unclean kill browser." log noise.
 
 ## [0.19.1] - 2026-06-14
 
