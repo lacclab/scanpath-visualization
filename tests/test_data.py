@@ -639,20 +639,6 @@ class TestFilterData:
         )
         assert all(fixations_filtered["pass_index"] == 1)
 
-    def test_filter_data_exclude_noise(self, normalized_fixations_df):
-        normalized_fixations_df["noise_flag"] = [False, False, True]
-        filters = {"participants": ["p1"], "trials": ["t1"], "include_noise": False}
-        words_df = pd.DataFrame(
-            {
-                "participant_id": ["p1"],
-                "trial_id": ["t1"],
-            }
-        )
-        words_filtered, fixations_filtered = filter_data(
-            words_df, normalized_fixations_df, filters
-        )
-        assert all(~fixations_filtered["noise_flag"])
-
 
 class TestFilterRawGaze:
     """Tests for filter_raw_gaze function."""

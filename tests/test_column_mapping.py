@@ -137,8 +137,17 @@ class TestFixationFieldSpecs:
         problems = validate_fix_schema(schema)
         assert any("X, Y" in p or "Word/IA" in p for p in problems)
 
-    def test_saccade_amplitude_is_mappable(self):
-        # It is proposed + normalized, so it must be exposed for override too.
+    def test_fixation_extras_are_kept_not_mapped(self):
+        # pass_index / saccade_type / saccade_amplitude / eye are no longer
+        # explicit mapping fields — they ride the optional-keep registry instead
+        # (auto-detected, kept, colour-by-able). noise_flag is gone entirely.
         from scanpath_studio.controls import FIX_FIELD_SPECS
+        from scanpath_studio.data import FIX_OPTIONAL_FIELDS
 
-        assert "saccade_amplitude" in {s["key"] for s in FIX_FIELD_SPECS}
+        spec_keys = {s["key"] for s in FIX_FIELD_SPECS}
+        optional_dests = {dest for _src, dest, _kind, _cat in FIX_OPTIONAL_FIELDS}
+        for field in ("pass_index", "saccade_type", "saccade_amplitude", "eye"):
+            assert field not in spec_keys
+            assert field in optional_dests
+        assert "noise_flag" not in spec_keys
+        assert "noise_flag" not in optional_dests

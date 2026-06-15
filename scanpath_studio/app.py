@@ -61,6 +61,7 @@ from scanpath_studio.constants import (
 )
 from scanpath_studio.controls import (
     FIX_FIELD_SPECS,
+    NONE_OPTION,
     RAW_GAZE_FIELD_SPECS,
     WORD_FIELD_SPECS,
     color_field_options,
@@ -1242,7 +1243,7 @@ def load_raw_gaze_data(data_choice: str) -> pd.DataFrame:
         if not available or schema inference fails
 
     Canonical Columns (raw gaze):
-        participant_id, trial_id, x, y, timestamp_ms (optional: eye, noise_flag)
+        participant_id, trial_id, x, y, timestamp_ms (optional: text)
 
     UI Effects:
         - Renders optional file uploader for "Upload csv tables" mode
@@ -1319,6 +1320,8 @@ def _reset_wizard_widgets() -> None:
         "_wizard_restored_meta",
         "_composite_trial_columns",
         "wizard_filter_fields",
+        "wizard_filter_by",
+        "wizard_keep_extra",
         "wizard_trial_per_table",
         "wizard_participant_per_table",
         "wizard_text_id_per_table",
@@ -1367,7 +1370,7 @@ def _safe_dataset_name(name: Optional[str]) -> str:
 def _finalize_wizard_dataset() -> None:
     """Store the wizard's normalized frames as a named dataset and switch to it.
 
-    Runs as the "✅ Use this dataset" button's ``on_click`` callback. A callback —
+    Runs as the "✅ Add dataset" button's ``on_click`` callback. A callback —
     not an inline ``if button:`` handler — is required because a real
     ``st.file_uploader`` in the wizard can swallow an inline button click (the
     click triggers a rerun in which the uploader re-renders and the handler is
@@ -1669,30 +1672,40 @@ def _default_trial_columns(proposed: Dict, present_cols) -> list:
     """Default trial-id mapping for the wizard, restricted to ``present_cols`` (the
     columns common to every table).
 
-    A *trial* is one reading of one text, so when the data carries both a
-    participant and a text identifier the default composes them (the user's
-    'default to participant and text ids'); falling back to paragraph+text for
-    OneStop-shaped uploads with no participant column. When neither composite is
-    available, prefer a single precomputed unique trial id over a redundant
-    composite (e.g. don't pair ``unique_trial_id`` with the paragraph id it
-    already encodes, which would force opaque composite ids for no benefit)."""
+    A *trial* is one reading of one passage, so the default composes the
+    participant with the finest passage identifier present (paragraph preferred
+    over a coarser text id), plus a repeated-reading column when the data has one
+    — otherwise the two readings of the same paragraph would collapse into one
+    trial (OneStop's own ``unique_trial_id`` is participant + paragraph +
+    repeated reading). When that composite can't be built, prefer a single
+    precomputed unique trial id over a redundant composite (e.g. don't pair
+    ``unique_trial_id`` with the paragraph id it already encodes)."""
     cols_frame = pd.DataFrame(columns=list(present_cols))
     participant = pick_column(
         cols_frame, ["participant_id", "participant", "subject_id"]
     )
-    text = pick_column(cols_frame, ["unique_text_id", "text_id"])
-    if participant and text:
-        return [participant, text]
     paragraph = pick_column(cols_frame, ["unique_paragraph_id", "paragraph_id"])
+    text = pick_column(cols_frame, ["unique_text_id", "text_id"])
+    # Finest passage grain first: a paragraph is one trial; a text/article may
+    # span several paragraphs.
+    passage = paragraph or text
+    repeated = pick_column(cols_frame, ["repeated_reading_trial", "reread"])
+    trial = proposed.get("trial")
+    trial_present = bool(trial) and trial in set(present_cols)
+    # A precomputed unique trial id that isn't just the passage we'd otherwise
+    # compose wins outright (no benefit composing).
+    if trial_present and trial not in (paragraph, text):
+        return [trial]
+    if participant and passage:
+        return [c for c in (participant, passage, repeated) if c]
     if paragraph and text:
         return [paragraph, text]
-    trial = proposed.get("trial")
-    if trial and trial in set(present_cols):
+    if trial_present:
         return [trial]
-    # No usable composite/trial — fall back to whatever text-like component we
+    # No usable composite/trial — fall back to whatever passage component we
     # have (never a lone participant, which isn't a trial), else leave empty so
     # the user picks.
-    return list(dict.fromkeys(c for c in (paragraph, text) if c))
+    return list(dict.fromkeys(c for c in (passage,) if c))
 
 
 def _trial_id_values(raw, schema) -> Optional[set]:
@@ -1969,61 +1982,84 @@ def _clean_multiselect_state(key: str, valid) -> None:
             st.session_state[key] = cleaned
 
 
-def _wizard_keep_fields(
-    raw: pd.DataFrame, schema: Optional[Dict], registry: list, prefix: str, host
-) -> Tuple[set, list, set]:
-    """Render the keep-fields picker + filter-field picker for one table.
+def _wizard_keep_and_filter(tables: list, filter_host, keep_host) -> Tuple[dict, list]:
+    """Render ONE cross-table *Filter trials by* picker (``filter_host``) and ONE
+    *Additional fields to keep* picker (``keep_host``) — instead of duplicating
+    both per table, which was confusing.
 
-    One combined *Fields to keep* multiselect spans both the detected optional
-    fields (reading measures / linguistic features / conditions, kept by
-    default) and any other unrecognised columns (off by default), so there's a
-    single list instead of the old split *Optional fields* / *Extra columns*.
-    Returns ``(optional_sources, filter_dest_fields, keep_extra)``."""
-    if raw is None or raw.empty or schema is None:
-        return set(), [], set()
-    cats = categorize_columns(raw, schema, registry)
-    detected = cats["detected_optional"]
-    detected_sources = [d["source"] for d in detected]
-    detected_set = set(detected_sources)
-    options = detected_sources + list(cats["unclaimed"])
-    if not options:
-        return set(), [], set()
-    labels = {d["source"]: f"{d['dest']}  ·  {d['category']}" for d in detected}
-    labels.update({c: f"{c}  ·  extra" for c in cats["unclaimed"]})
-    _clean_multiselect_state(f"{prefix}_optional", options)
-    chosen = set(
-        host.multiselect(
-            "Fields to keep",
-            options=options,
-            # Detected fields kept by default; the unrecognised extras stay off
-            # until the user opts them in.
-            default=detected_sources,
-            format_func=lambda s: labels.get(s, s),
-            key=f"{prefix}_optional",
-            help="Detected reading measures, linguistic features and conditions "
-            "(kept by default) plus any other columns in your data — keep extras "
-            "to colour fixations by them or filter on them. Fewer columns means "
-            "a faster app.",
-        )
-    )
-    optional_sources = chosen & detected_set
-    keep_extra = chosen - detected_set
-    meta_dest = [
-        d["dest"]
-        for d in detected
-        if d["category"] == "meta" and d["source"] in optional_sources
-    ]
-    filter_fields: list = []
-    if meta_dest:
-        _clean_multiselect_state(f"{prefix}_filterfields", meta_dest)
-        filter_fields = host.multiselect(
+    ``tables`` is a list of ``(raw, schema, registry, prefix)``. Returns
+    ``(keep_by_prefix, filter_dest_fields)``: the source columns to retain per
+    table (fed to ``compute_keep_columns(keep_columns=…)``), and the trial-level
+    condition fields the Filter panel should offer."""
+    cat_by_prefix: dict = {}
+    for raw, schema, registry, prefix in tables:
+        if raw is None or raw.empty or schema is None:
+            continue
+        cat_by_prefix[prefix] = categorize_columns(raw, schema, registry)
+
+    # --- Filter trials by: trial-level condition (meta) fields, cross-table ---
+    # dest field -> [(prefix, source), …] so the chosen field's source column is
+    # kept in the table(s) that carry it.
+    filter_map: dict = {}
+    for prefix, cats in cat_by_prefix.items():
+        for d in cats["detected_optional"]:
+            if d["category"] == "meta":
+                filter_map.setdefault(d["dest"], []).append((prefix, d["source"]))
+    filter_dest_fields: list = []
+    if filter_map:
+        opts = sorted(filter_map)
+        _clean_multiselect_state("wizard_filter_by", opts)
+        filter_dest_fields = filter_host.multiselect(
             "Filter trials by",
-            options=meta_dest,
-            default=meta_dest,
-            key=f"{prefix}_filterfields",
-            help="Each chosen field becomes a value picker in the Filter panel.",
+            options=opts,
+            default=opts,
+            key="wizard_filter_by",
+            help="Trial-level conditions (Hunting/Gathering, difficulty, …). Each "
+            "becomes a value picker in the sidebar Filter panel.",
         )
-    return optional_sources, filter_fields, keep_extra
+
+    # --- Additional fields to keep: non-meta detected + unclaimed, cross-table ---
+    keep_map: dict = {}
+    keep_labels: dict = {}
+    keep_default: list = []
+    for prefix, cats in cat_by_prefix.items():
+        for d in cats["detected_optional"]:
+            if d["category"] == "meta":
+                continue  # handled by the Filter picker above
+            keep_map.setdefault(d["source"], []).append((prefix, d["source"]))
+            keep_labels[d["source"]] = f"{d['dest']}  ·  {d['category']}"
+            if d["source"] not in keep_default:
+                keep_default.append(d["source"])  # measures/linguistic kept by default
+        for col in cats["unclaimed"]:
+            keep_map.setdefault(col, []).append((prefix, col))
+            keep_labels.setdefault(col, f"{col}  ·  extra")
+    chosen_keep: set = set()
+    if keep_map:
+        opts = list(keep_map)
+        _clean_multiselect_state("wizard_keep_extra", opts)
+        chosen_keep = set(
+            keep_host.multiselect(
+                "Additional fields to keep",
+                options=opts,
+                # Detected reading measures / linguistic features kept by default;
+                # unrecognised extras stay off until opted in.
+                default=keep_default,
+                format_func=lambda s: keep_labels.get(s, s),
+                key="wizard_keep_extra",
+                help="Reading measures, linguistic features and any other columns "
+                "to retain (to colour or filter by). Fewer columns is faster.",
+            )
+        )
+
+    # Map both pickers' choices back to the per-table source columns to keep.
+    keep_by_prefix: dict = {prefix: set() for prefix in cat_by_prefix}
+    for dest in filter_dest_fields:
+        for prefix, source in filter_map.get(dest, []):
+            keep_by_prefix[prefix].add(source)
+    for key in chosen_keep:
+        for prefix, source in keep_map.get(key, []):
+            keep_by_prefix[prefix].add(source)
+    return keep_by_prefix, list(filter_dest_fields)
 
 
 def _wizard_restore_config(host) -> None:
@@ -2083,17 +2119,22 @@ def _render_restored_config_caption(host) -> None:
 
 
 def _render_data_setup(active: bool) -> _UploadResult:
-    """Hybrid data-setup surface for the Upload source — a granular, ordered setup
-    wizard on first load (upload+restore → trial id+count → participants → texts →
-    column mapping (fixations / text+IA) → extra word features → more fixation
-    fields → keep fields & filters → display setup → "Use this dataset"), then a
-    compact collapsed "Data & mapping" panel. Returns the normalized frames (or
+    """Hybrid data-setup surface for the Upload source.
+
+    On first load (``active``) it's a guided wizard: dataset name + display setup
+    at the top, a collapsible **Upload your data** subsection (one toggle per
+    table, each showing its row count), a **Column mapping** subsection (one
+    toggle per part — restore, trial id, participants, texts, fixations, text &
+    interest areas, more mappings), then filter/keep pickers and the **Add
+    dataset** button. Only the step you still need to fill stays open; finished /
+    auto-detected steps collapse (auto-advance). After finishing it becomes a
+    compact collapsed **Data & mapping** panel. Returns the normalized frames (or
     empties + ``problems``)."""
     if active:
         st.header("📂 Set up your dataset")
         st.caption(
-            "Follow the steps below. Only a few fields are required — the scanpath "
-            "visualization works as soon as those are mapped."
+            "Name your dataset, upload your tables, then map a few columns — only "
+            "the step you still need to fill stays open."
         )
         body = st.container()
     else:
@@ -2107,56 +2148,110 @@ def _render_data_setup(active: bool) -> _UploadResult:
             st.session_state["setup_complete"] = False
             st.rerun()
 
-    def step(title: str) -> None:
-        body.markdown(f"##### {title}" if active else f"**{title}**")
+    # Auto-advance: the first not-done step opens; finished + optional steps
+    # collapse. In the collapsed panel everything renders inline (Streamlit
+    # forbids nesting an expander inside the panel's own expander).
+    flow = {"claimed": False}
 
-    def section_box(title: str, *, expanded: bool = True):
-        """A collapsible section: an expander in the wizard, an inline labelled
-        container in the collapsed panel (Streamlit forbids nesting an expander
-        inside the panel's own expander)."""
-        if active:
-            return body.expander(title, expanded=expanded)
-        body.markdown(f"**{title}**")
-        return body
+    def toggle(title: str, *, done: bool = True, expanded: Optional[bool] = None):
+        if not active:
+            body.markdown(f"**{title}**")
+            return body
+        if expanded is None:
+            if done:
+                expanded = False
+            else:
+                expanded = not flow["claimed"]
+                if expanded:
+                    flow["claimed"] = True
+        return body.expander(title, expanded=expanded)
 
-    # Step 1+2 — restore a saved setup + upload, all inside a collapsible "Upload
-    # your data" section (collapses once files are present so the boxes get out of
-    # the way). The four boxes sit in a narrower column rather than full width.
-    upload_keys = (
-        "col_map_words_upload",
-        "col_map_fix_upload",
-        "col_map_raw_gaze_upload",
+    def subsection(title: str) -> None:
+        body.markdown(f"#### {title}" if active else f"**{title}**")
+
+    def mapped(prefix: str, field: str) -> bool:
+        """Best-effort 'this field is mapped' from last run's session state."""
+        v = st.session_state.get(f"{prefix}_{field}")
+        if isinstance(v, (list, tuple)):
+            return bool(v)
+        return bool(v) and v != NONE_OPTION
+
+    # === Dataset name + display setup, at the top ===
+    if active:
+        st.session_state.setdefault("wizard_dataset_name", _default_dataset_name())
+        body.text_input(
+            "Dataset name",
+            key="wizard_dataset_name",
+            help="Shown in the Data source list so you can switch back to it.",
+        )
+        # render_sidebar_canvas_controls renders its own "Experimental Setup"
+        # collapsible — that IS the display-setup toggle. Seed it on empty frames
+        # up front (uploads default to a 2560x1440 monitor; tweak it any time).
+        render_sidebar_canvas_controls(
+            empty_words_frame(),
+            empty_fixations_frame(),
+            data_choice=None,
+            slot=body,
+            expanded=False,
+        )
+
+    # === Upload your data — one toggle per table, with row counts ===
+    subsection("Upload your data")
+    core_uploaded = bool(
+        st.session_state.get("col_map_fix_upload")
+        or st.session_state.get("col_map_words_upload")
     )
-    has_upload = any(st.session_state.get(k) for k in upload_keys)
-    upload_box = section_box("Upload your data", expanded=not has_upload)
-    up = upload_box.columns([0.62, 0.38])[0] if active else upload_box
-    _wizard_restore_config(up)
-    _render_restored_config_caption(up)
-    raw_words = _read_uploaded_frame(
-        uploader_label="Words / IA table(s)",
-        upload_help="One or more files (e.g. one per text); concatenated.",
-        state_prefix="col_map_words",
-        multi=True,
-        container=up,
-    )
-    raw_fix = _read_uploaded_frame(
-        uploader_label="Fixations table(s)",
-        upload_help="One or more files (e.g. one per participant); concatenated.",
-        state_prefix="col_map_fix",
-        multi=True,
-        container=up,
-    )
-    raw_gaze = _read_uploaded_frame(
-        uploader_label="Raw gaze table (optional)",
-        upload_help="Optional millisecond-level gaze overlay.",
-        state_prefix="col_map_raw_gaze",
+
+    def upload_box(title, *, label, help_text, prefix, multi, noun, expanded):
+        box = toggle(title, expanded=expanded)
+        col = box.columns([0.7, 0.3])[0] if active else box
+        frame = _read_uploaded_frame(
+            uploader_label=label,
+            upload_help=help_text,
+            state_prefix=prefix,
+            multi=multi,
+            container=col,
+        )
+        if not frame.empty:
+            box.success(
+                f"✓ **{len(frame):,}** {noun} detected — make sure this is the "
+                "number you expect to see."
+            )
+        return frame
+
+    # Order: raw gaze, then fixations, then words. Raw gaze is optional →
+    # collapsed; the core tables stay open until one of them is uploaded.
+    raw_gaze = upload_box(
+        "Raw gaze (optional)",
+        label="Raw gaze table",
+        help_text="Optional millisecond-level gaze overlay (one file).",
+        prefix="col_map_raw_gaze",
         multi=False,
-        container=up,
+        noun="gaze points",
+        expanded=False,
+    )
+    raw_fix = upload_box(
+        "Fixations",
+        label="Fixations table(s)",
+        help_text="One or more files (e.g. one per participant); concatenated.",
+        prefix="col_map_fix",
+        multi=True,
+        noun="fixations",
+        expanded=not core_uploaded,
+    )
+    raw_words = upload_box(
+        "Words / Interest Areas",
+        label="Words / IA table(s)",
+        help_text="One or more files (e.g. one per text); concatenated.",
+        prefix="col_map_words",
+        multi=True,
+        noun="words",
+        expanded=not core_uploaded,
     )
 
     if raw_words.empty and raw_fix.empty and raw_gaze.empty:
         body.info(
-            "⬆️ Upload a **Words/IA** and/or **Fixations** table to begin — or pick "
+            "⬆️ Upload a **Fixations** and/or **Words/IA** table to begin — or pick "
             "a built-in source from the sidebar."
         )
         return _UploadResult(
@@ -2168,27 +2263,31 @@ def _render_data_setup(active: bool) -> _UploadResult:
             [],
         )
 
-    counts = body.columns(3)
-    counts[0].metric("Words", f"{len(raw_words):,}" if not raw_words.empty else "—")
-    counts[1].metric("Fixations", f"{len(raw_fix):,}" if not raw_fix.empty else "—")
-    counts[2].metric("Gaze points", f"{len(raw_gaze):,}" if not raw_gaze.empty else "—")
-
     prop_w = propose_word_schema(raw_words) if not raw_words.empty else {}
     prop_f = propose_fix_schema(raw_fix) if not raw_fix.empty else {}
     prop_g = propose_raw_gaze_schema(raw_gaze) if not raw_gaze.empty else {}
     word_schema: Dict = {}
     fix_schema: Dict = {}
-
     has_words, has_fix = not raw_words.empty, not raw_fix.empty
 
-    # Step 3 — trial identifier. By default ONE unified id maps across every
-    # table (the common case — tables share a trial-id column); a toggle reveals
-    # per-table pickers for datasets that name it differently. The default is the
-    # paragraph-id + text-id columns composed together when both are present.
+    # === Column mapping ===
+    subsection("Column mapping")
+
+    # Restore a saved setup (optional, collapsed).
+    restore_box = toggle("Restore a saved setup (optional)", done=True)
+    _wizard_restore_config(restore_box)
+    _render_restored_config_caption(restore_box)
+
+    # Trial identifier (required → opens first if not yet mapped).
     if has_words or has_fix:
-        step("Trial identifier")
+        trial_done = bool(
+            st.session_state.get("col_map_trial_unified")
+            or st.session_state.get("col_map_fix_trial")
+            or st.session_state.get("col_map_words_trial")
+        )
+        tbox = toggle("Trial identifier", done=trial_done)
         _wizard_trial_step(
-            body,
+            tbox,
             raw_words,
             raw_fix,
             prop_w,
@@ -2199,21 +2298,20 @@ def _render_data_setup(active: bool) -> _UploadResult:
             has_fix,
         )
 
-    # Participants — same shape as the Trial identifier (unified picker + opt-in
-    # per-table toggle + composite). Optional: blank = a single anonymous reader.
+    # Participants (optional, same shape as the trial id).
     if has_words or has_fix:
-        step("Participants")
-        body.caption(
+        pbox = toggle("Participants (optional)", done=True)
+        pbox.caption(
             "Which column(s) identify the reader? Leave blank for a single "
-            "anonymous reader — the app hides the participant selector then."
+            "anonymous reader."
         )
         _wizard_participant_text_step(
             "participant",
             "Participant ID",
             "participants",
-            "Pick the reader column — or several to compose an id (joined with "
-            "'_'). Leave empty for a single anonymous reader.",
-            body,
+            "Pick the reader column — or several to compose an id. Leave empty "
+            "for a single anonymous reader.",
+            pbox,
             raw_words,
             raw_fix,
             prop_w,
@@ -2224,20 +2322,19 @@ def _render_data_setup(active: bool) -> _UploadResult:
             has_fix,
         )
 
-    # Texts — same shape. Optional: blank falls back to the trial id.
+    # Texts (optional).
     if has_words or has_fix:
-        step("Texts")
-        body.caption(
-            "Which column(s) identify the text/passage? Leave blank for a single "
-            "text — used for filtering and same-text comparisons."
+        txbox = toggle("Texts (optional)", done=True)
+        txbox.caption(
+            "Which column(s) identify the text/passage? Leave blank for a single text."
         )
         _wizard_participant_text_step(
             "text_id",
             "Text ID",
             "texts",
-            "Pick the text column — or several to compose an id (joined with "
-            "'_'). Leave empty to fall back to the trial id.",
-            body,
+            "Pick the text column — or several to compose an id. Leave empty to "
+            "fall back to the trial id.",
+            txbox,
             raw_words,
             raw_fix,
             prop_w,
@@ -2248,80 +2345,88 @@ def _render_data_setup(active: bool) -> _UploadResult:
             has_fix,
         )
 
-    # Column mapping: Fixations — the required fixation fields (coordinates +
-    # duration), in a collapsible section.
+    # Column mapping: Fixations — required fields (coordinates + duration) plus
+    # the fixation id.
     if has_fix:
-        fb = section_box("Column mapping: Fixations")
+        fix_done = mapped("col_map_fix", "duration") and (
+            mapped("col_map_fix", "x") or mapped("col_map_fix", "word_id")
+        )
+        fbox = toggle("Fixations", done=fix_done)
         fix_schema.update(
             _map_section(
                 raw_fix,
                 FIX_FIELD_SPECS,
                 prop_f,
                 "col_map_fix",
-                fb,
-                ["x", "y", "duration"],
+                fbox,
+                ["x", "y", "duration", "fixation_id"],
             )
         )
-        fb.caption(
-            "Leave X/Y blank for AOI-only data and map the fixation's Word/IA ID "
-            "under *More fixation fields* below instead."
+        fbox.caption(
+            "Leave X/Y blank for AOI-only data and map the Word/IA ID under "
+            "*More fixation mappings* instead."
         )
 
-    # Column mapping: Text & Interest Areas — the required word fields (id, text,
-    # bounding boxes).
+    # Column mapping: Text & Interest Areas — required word fields.
     if has_words:
-        wb = section_box("Column mapping: Text & Interest Areas")
+        words_done = mapped("col_map_words", "word_id") and (
+            mapped("col_map_words", "left") or mapped("col_map_words", "x")
+        )
+        wbox = toggle("Text & Interest Areas", done=words_done)
         word_schema.update(
             _map_section(
                 raw_words,
                 WORD_FIELD_SPECS,
                 prop_w,
                 "col_map_words",
-                wb,
+                wbox,
                 ["word_id", "text", "box"],
             )
         )
 
-    # Step 8 — extra word features (line index for the visualization).
+    # More text mappings (line index) — optional.
     if has_words:
-        step("Extra word features (optional)")
+        mtbox = toggle("More text mappings (optional)", done=True)
         word_schema.update(
             _map_section(
-                raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", body, ["line"]
+                raw_words, WORD_FIELD_SPECS, prop_w, "col_map_words", mtbox, ["line"]
             )
         )
-        body.caption("Line index enables colouring fixations/words by reading line.")
+        mtbox.caption("Line index enables colouring fixations/words by reading line.")
 
-    # Remaining (advanced) fixation fields — collapsed in wizard mode.
+    # More fixation mappings (word id, timestamp) — optional.
     if has_fix:
-        adv_keys = [
-            "word_id",
-            "timestamp",
-            "fixation_id",
-            "pass_index",
-            "saccade_type",
-            "saccade_amplitude",
-            "eye",
-            "noise_flag",
-        ]
-        if active:
-            adv = body.expander("More fixation fields (optional)", expanded=False)
-        else:
-            body.markdown("**More fixation fields**")
-            adv = body
+        mfbox = toggle("More fixation mappings (optional)", done=True)
         fix_schema.update(
-            _map_section(raw_fix, FIX_FIELD_SPECS, prop_f, "col_map_fix", adv, adv_keys)
+            _map_section(
+                raw_fix,
+                FIX_FIELD_SPECS,
+                prop_f,
+                "col_map_fix",
+                mfbox,
+                ["word_id", "timestamp"],
+            )
         )
 
-    # Raw-gaze overlay mapping (its own table; participant/trial/x/y/timestamp).
+    # Raw gaze overlay mapping (its own table); required only for a raw-gaze-only
+    # upload, else an optional overlay.
     if not raw_gaze.empty:
-        step("Raw gaze overlay (optional)")
+        rg_required = not has_words and not has_fix
+        rg_done = not rg_required or (
+            mapped("col_map_raw_gaze", "trial")
+            and mapped("col_map_raw_gaze", "x")
+            and mapped("col_map_raw_gaze", "y")
+        )
+        rgbox = toggle(
+            "Raw gaze overlay" if rg_required else "Raw gaze overlay (optional)",
+            done=rg_done,
+        )
         raw_gaze_schema = _map_section(
             raw_gaze,
             RAW_GAZE_FIELD_SPECS,
             prop_g,
             "col_map_raw_gaze",
-            body,
+            rgbox,
             ["participant", "trial", "x", "y", "timestamp", "text"],
         )
     else:
@@ -2337,40 +2442,30 @@ def _render_data_setup(active: bool) -> _UploadResult:
         problems.append("Words/IA: " + "; ".join(words_problems))
     if fix_problems:
         problems.append("Fixations: " + "; ".join(fix_problems))
-    # For a raw-gaze-ONLY upload, an incomplete raw-gaze mapping is the only thing
-    # blocking a usable dataset — fold it into `problems` so finalize is gated
-    # (otherwise the wizard would happily store an all-empty dataset). When words
-    # or fixations are present, raw gaze stays optional (a warning, handled below).
+    # A raw-gaze-ONLY upload: an incomplete raw-gaze mapping is the only thing
+    # blocking a usable dataset — fold it into `problems` so finalize is gated.
     if not has_words and not has_fix and raw_gaze_problems:
         problems.append("Raw gaze: " + "; ".join(raw_gaze_problems))
 
-    # Steps 8/9 — functional fields to keep (highlighting, conditions to filter
-    # by, extra colour columns); everything else is dropped for speed.
-    step("Keep extra fields & filters (optional)")
-    body.caption(
-        "Detected reading measures, linguistic features, conditions and "
-        "highlighting columns. Keep what you need (to colour fixations or filter "
-        "trials); the rest are dropped for speed."
+    # === Filter & keep — one cross-table picker each (not per table) ===
+    subsection("Filter & keep (optional)")
+    keep_tables: list = []
+    if has_words:
+        keep_tables.append(
+            (raw_words, word_schema, WORD_OPTIONAL_FIELDS, "col_map_words")
+        )
+    if has_fix:
+        keep_tables.append((raw_fix, fix_schema, FIX_OPTIONAL_FIELDS, "col_map_fix"))
+    filter_box = toggle("Filter trials by (optional)", done=True)
+    keep_box = toggle("Additional fields to keep (optional)", done=True)
+    keep_by_prefix, filter_fields = _wizard_keep_and_filter(
+        keep_tables, filter_box, keep_box
     )
-    kw_opt, kw_filter, kw_extra = _wizard_keep_fields(
-        raw_words,
-        word_schema if has_words else None,
-        WORD_OPTIONAL_FIELDS,
-        "col_map_words",
-        body,
-    )
-    kf_opt, kf_filter, kf_extra = _wizard_keep_fields(
-        raw_fix,
-        fix_schema if has_fix else None,
-        FIX_OPTIONAL_FIELDS,
-        "col_map_fix",
-        body,
-    )
-    st.session_state["wizard_filter_fields"] = sorted(set(kw_filter) | set(kf_filter))
+    st.session_state["wizard_filter_fields"] = list(filter_fields)
 
     if problems:
         if active:
-            body.button("✅ Use this dataset", disabled=True, key="wizard_finalize")
+            body.button("✅ Add dataset", disabled=True, key="wizard_finalize")
             body.warning(
                 "Map the required field(s) above (marked \\*) to continue:\n\n"
                 + "\n".join(f"- {p}" for p in problems)
@@ -2387,20 +2482,14 @@ def _render_data_setup(active: bool) -> _UploadResult:
 
     keep_words = (
         compute_keep_columns(
-            word_schema,
-            optional_sources=kw_opt,
-            filter_fields=kw_filter,
-            keep_columns=kw_extra,
+            word_schema, keep_columns=keep_by_prefix.get("col_map_words", set())
         )
         if has_words
         else None
     )
     keep_fix = (
         compute_keep_columns(
-            fix_schema,
-            optional_sources=kf_opt,
-            filter_fields=kf_filter,
-            keep_columns=kf_extra,
+            fix_schema, keep_columns=keep_by_prefix.get("col_map_fix", set())
         )
         if has_fix
         else None
@@ -2435,35 +2524,10 @@ def _render_data_setup(active: bool) -> _UploadResult:
             raw_gaze_norm = normalize_raw_gaze(raw_gaze, raw_gaze_schema)
 
     if active:
-        # Group A — display calibration is part of the loading flow. The very
-        # same controls (monitor size, fonts, line spacing, background) the
-        # sidebar shows after load, rendered inline here on the normalized frames
-        # so the scanpath is true-to-scale from the first render. They write the
-        # shared ``global_*`` keys, so the sidebar panel reflects these choices.
-        step("Display & experiment setup")
-        body.caption(
-            "Match your experimental display so the scanpath stays true to scale. "
-            "You can fine-tune these any time from the sidebar after loading."
-        )
-        render_sidebar_canvas_controls(
-            words_norm,
-            fixations_norm if not fixations_norm.empty else raw_gaze_norm,
-            data_choice=None,
-            slot=body,
-            expanded=True,
-        )
-
-        step("Name & finish")
-        st.session_state.setdefault("wizard_dataset_name", _default_dataset_name())
-        body.text_input(
-            "Dataset name",
-            key="wizard_dataset_name",
-            help="Shown in the Data source list so you can switch back to it.",
-        )
         # Stash the assembled, already-normalized dataset so the finalize callback
         # can store it. The callback (not an inline `if button:` handler) is what
-        # makes "Use this dataset" reliable: a real st.file_uploader in the wizard
-        # can swallow an inline button click (the click reruns, the uploader
+        # makes "Add dataset" reliable: a real st.file_uploader in the wizard can
+        # swallow an inline button click (the click reruns, the uploader
         # re-renders, and the handler is never reached), so the dataset would
         # never get stored. on_click runs as part of the click event, before the
         # rerun — exactly like the "➕ Add data" button.
@@ -2479,7 +2543,7 @@ def _render_data_setup(active: bool) -> _UploadResult:
             ),
         }
         body.button(
-            "✅ Use this dataset",
+            "✅ Add dataset",
             type="primary",
             key="wizard_finalize",
             on_click=_finalize_wizard_dataset,

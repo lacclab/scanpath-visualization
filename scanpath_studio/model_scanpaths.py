@@ -97,7 +97,6 @@ _FIX_COLUMNS = [
     "pass_index",
     "order_in_trial",
     "eye",
-    "noise_flag",
     "saccade_type",
 ]
 
@@ -254,7 +253,6 @@ def generate_model_scanpath(
             "pass_index": [1] * k,
             "order_in_trial": np.arange(1, k + 1),
             "eye": ["Both"] * k,
-            "noise_flag": [False] * k,
             "saccade_type": ["unknown"] * k,
         }
     )

@@ -6,14 +6,14 @@ import numpy as np
 import pandas as pd
 
 from scanpath_studio.model_scanpaths import (
-    DEFAULT_N_MODELS,
-    MAX_MODELS,
     _MAX_DUR_MS,
     _MIN_DUR_MS,
+    DEFAULT_N_MODELS,
+    MAX_MODELS,
+    MODEL_PROFILES,
     _ordered_word_rows,
     generate_model_scanpath,
     generate_model_scanpaths,
-    MODEL_PROFILES,
 )
 from scanpath_studio.plots import make_scanpath_figure
 from scanpath_studio.similarity import aoi_sequence
@@ -32,7 +32,6 @@ _FIX_COLUMNS = {
     "pass_index",
     "order_in_trial",
     "eye",
-    "noise_flag",
     "saccade_type",
 }
 

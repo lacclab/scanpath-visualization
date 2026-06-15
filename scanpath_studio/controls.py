@@ -205,39 +205,11 @@ FIX_FIELD_SPECS: List[Dict] = [
         "present (overrides geometric assignment), and supplies the location "
         "when X/Y are absent.",
     },
-    {
-        "key": "pass_index",
-        "label": "Pass index",
-        "required": False,
-        "help": "Reading pass per fixation (1 = first pass, higher = re-reading); "
-        "separates first-pass from later measures.",
-    },
-    {
-        "key": "saccade_type",
-        "label": "Saccade type",
-        "required": False,
-        "help": "Label for the saccade into/out of this fixation "
-        "(e.g. progression / regression).",
-    },
-    {
-        "key": "saccade_amplitude",
-        "label": "Saccade amplitude",
-        "required": False,
-        "help": "Pixel distance from the previous fixation; computed from X/Y "
-        "when not provided.",
-    },
-    {
-        "key": "eye",
-        "label": "Eye",
-        "required": False,
-        "help": "Which eye was tracked (L / R / Both).",
-    },
-    {
-        "key": "noise_flag",
-        "label": "Noise flag",
-        "required": False,
-        "help": "Marks low-quality or invalid fixations so they can be filtered out.",
-    },
+    # pass_index / saccade_type / saccade_amplitude / eye are no longer explicit
+    # mapping fields — they're auto-detected and offered under "fields to keep"
+    # (see data.FIX_OPTIONAL_FIELDS), so they don't clutter the wizard and aren't
+    # hardcoded as schema. noise_flag was removed (it silently dropped fixations
+    # with no UI to undo); saccade_amplitude is recomputed from X/Y by measures.
 ]
 
 RAW_GAZE_FIELD_SPECS: List[Dict] = [
@@ -422,9 +394,10 @@ def data_dictionary_help_text() -> str:
         "pick which in the *Word box* selector.\n"
         "- Fixations: tries `participant_id`/`subject_id`, `unique_trial_id`/`trial_id`/`unique_paragraph_id`, "
         "`CURRENT_FIX_DURATION`, `CURRENT_FIX_X`/`CURRENT_FIX_Y`, and optionally `CURRENT_FIX_START`, "
-        "`IA_ID`, `pass_index`/`reread`, `saccade_type`, `saccade_amplitude`, "
-        "`eye`, `noise_flag`. X/Y are optional when `IA_ID` is mapped "
-        "(AOI-only fixations are placed at word-box centers).\n"
+        "`IA_ID`, and a fixation id. X/Y are optional when `IA_ID` is mapped "
+        "(AOI-only fixations are placed at word-box centers). Extra fixation "
+        "columns (`pass_index`/`reread`, `saccade_type`, `saccade_amplitude`, "
+        "`eye`, …) are auto-detected and offered under *fields to keep*.\n"
         "- Raw gaze (optional): millisecond-level data with `participant_id`, `trial_id`, `x`, `y`. "
         "Each row represents one timepoint.\n"
         "If your columns are named differently, after uploading expand the "

@@ -368,16 +368,6 @@ FIX_WORD_ID_CANDIDATES = [
     "word_index_in_text",
     "word_index",
 ]
-FIX_PASS_INDEX_CANDIDATES = ["pass_index", "reread"]
-FIX_SACCADE_TYPE_CANDIDATES = ["saccade_type", "NEXT_SAC_DIRECTION"]
-FIX_SACCADE_AMPLITUDE_CANDIDATES = [
-    "saccade_amplitude",
-    "NEXT_SAC_AMPLITUDE",
-    "PREVIOUS_SAC_AMPLITUDE",
-]
-FIX_EYE_CANDIDATES = ["eye", "EYE_USED", "EYE_TRACKED"]
-FIX_NOISE_CANDIDATES = ["noise_flag", "CURRENT_FIX_VALIDITY", "CURRENT_FIX_VALID"]
-
 RAW_GAZE_X_CANDIDATES = ["x", "FPOGX", "gaze_x"]
 RAW_GAZE_Y_CANDIDATES = ["y", "FPOGY", "gaze_y"]
 RAW_GAZE_TIMESTAMP_CANDIDATES = [
@@ -410,7 +400,11 @@ def propose_word_schema(words: pd.DataFrame) -> Dict[str, Optional[str]]:
 
 
 def propose_fix_schema(fixations: pd.DataFrame) -> Dict[str, Optional[str]]:
-    """Return a candidate column mapping for fixations data without erroring."""
+    """Return a candidate column mapping for fixations data without erroring.
+
+    pass_index / saccade_type / saccade_amplitude / eye are not schema fields —
+    they're auto-detected and kept via ``FIX_OPTIONAL_FIELDS`` (and offered under
+    *fields to keep*), so they're not proposed here."""
     return dict(
         participant=pick_column(fixations, PARTICIPANT_CANDIDATES),
         trial=pick_column(fixations, TRIAL_CANDIDATES),
@@ -421,11 +415,6 @@ def propose_fix_schema(fixations: pd.DataFrame) -> Dict[str, Optional[str]]:
         x=pick_column(fixations, FIX_X_CANDIDATES),
         y=pick_column(fixations, FIX_Y_CANDIDATES),
         word_id=pick_column(fixations, FIX_WORD_ID_CANDIDATES),
-        pass_index=pick_column(fixations, FIX_PASS_INDEX_CANDIDATES),
-        saccade_type=pick_column(fixations, FIX_SACCADE_TYPE_CANDIDATES),
-        saccade_amplitude=pick_column(fixations, FIX_SACCADE_AMPLITUDE_CANDIDATES),
-        eye=pick_column(fixations, FIX_EYE_CANDIDATES),
-        noise_flag=pick_column(fixations, FIX_NOISE_CANDIDATES),
     )
 
 
@@ -979,6 +968,20 @@ FIX_OPTIONAL_FIELDS = [
     ("is_correct", "is_correct", "passthrough", "meta"),
     ("repeated_reading_trial", "repeated_reading_trial", "boolean", "meta"),
     ("question_preview", "question_preview", "boolean", "meta"),
+    # Per-fixation extras — auto-detected + kept (renamed to canonical so the
+    # colour-by / per-fixation filters still find them), but not schema mapping
+    # fields. saccade_amplitude is also recomputed from X/Y by measures when
+    # absent, so it's never lost.
+    ("pass_index", "pass_index", "numeric", "fixation"),
+    ("reread", "pass_index", "numeric", "fixation"),
+    ("saccade_type", "saccade_type", "string", "fixation"),
+    ("NEXT_SAC_DIRECTION", "saccade_type", "string", "fixation"),
+    ("saccade_amplitude", "saccade_amplitude", "numeric", "fixation"),
+    ("NEXT_SAC_AMPLITUDE", "saccade_amplitude", "numeric", "fixation"),
+    ("PREVIOUS_SAC_AMPLITUDE", "saccade_amplitude", "numeric", "fixation"),
+    ("eye", "eye", "string", "fixation"),
+    ("EYE_USED", "eye", "string", "fixation"),
+    ("EYE_TRACKED", "eye", "string", "fixation"),
 ]
 
 
@@ -1218,38 +1221,11 @@ def normalize_fixations(
         df["word_id"] = pd.to_numeric(fixations[schema["word_id"]], errors="coerce")
     else:
         df["word_id"] = np.nan
-    if schema.get("pass_index"):
-        df["pass_index"] = pd.to_numeric(
-            fixations[schema["pass_index"]], errors="coerce"
-        )
-    else:
-        df["pass_index"] = 1
-    if schema.get("saccade_type"):
-        df["saccade_type"] = fixations[schema["saccade_type"]].astype(str)
-    else:
-        df["saccade_type"] = "unknown"
-    if schema.get("saccade_amplitude"):
-        df["saccade_amplitude"] = pd.to_numeric(
-            fixations[schema["saccade_amplitude"]], errors="coerce"
-        )
-    if schema.get("eye"):
-        df["eye"] = fixations[schema["eye"]].astype(str)
-    else:
-        df["eye"] = "Both"
-    if schema.get("noise_flag"):
-        raw_flag = fixations[schema["noise_flag"]]
-        if pd.api.types.is_bool_dtype(raw_flag):
-            df["noise_flag"] = raw_flag.fillna(False)
-        elif pd.api.types.is_numeric_dtype(raw_flag):
-            df["noise_flag"] = raw_flag.fillna(0).astype(bool)
-        else:
-            ok_tokens = {"ok", "good", "valid", "true", "1"}
-            df["noise_flag"] = ~raw_flag.astype(str).str.strip().str.lower().isin(
-                ok_tokens
-            )
-    else:
-        df["noise_flag"] = False
 
+    # pass_index / saccade_type / saccade_amplitude / eye are no longer schema
+    # fields — they ride through _apply_optional_fields (FIX_OPTIONAL_FIELDS) when
+    # the data carries them. saccade_amplitude is also recomputed from X/Y by
+    # measures.enrich_fixations when absent.
     emitted = _apply_optional_fields(df, fixations, FIX_OPTIONAL_FIELDS, keep_columns)
     if keep_columns is not None:
         _carry_extra_columns(
@@ -1292,10 +1268,6 @@ FIX_CANONICAL_COLUMNS: Dict[str, str] = {
     "timestamp_ms": "float64",
     "fixation_id": "float64",
     "word_id": "float64",
-    "pass_index": "float64",
-    "saccade_type": "object",
-    "eye": "object",
-    "noise_flag": "bool",
     "order_in_trial": "int64",
 }
 
@@ -1340,17 +1312,9 @@ def filter_data(
     )
     if cover_all:
         # participant/trial cover the whole frame and default_filters set the
-        # pass/saccade/eye filters to their full value sets (no-ops), so only the
-        # noise filter can actually narrow the fixations. Return the frames
-        # untouched (no full-frame mask, no copy) when there's nothing to drop —
-        # the common large-upload case where there's no noise data.
-        include_noise = filters.get("include_noise", True)
-        if (
-            not include_noise
-            and "noise_flag" in fixations.columns
-            and bool(fixations["noise_flag"].fillna(False).to_numpy().any())
-        ):
-            return words, fixations[~fixations["noise_flag"].fillna(False)]
+        # pass/saccade/eye filters to their full value sets (no-ops), so nothing
+        # can narrow the fixations — return the frames untouched (no full-frame
+        # mask, no copy), the common large-upload case.
         return words, fixations
 
     participants = filters.get("participants") or _union_column_values(
@@ -1376,9 +1340,6 @@ def filter_data(
         eyes = filters.get("eyes")
         if eyes:
             fix_mask &= fixations["eye"].isin(eyes)
-    include_noise = filters.get("include_noise", True)
-    if not include_noise and "noise_flag" in fixations.columns:
-        fix_mask &= ~fixations["noise_flag"].fillna(False)
     fixations_filtered = fixations[fix_mask]
     return words_filtered, fixations_filtered
 
@@ -1649,5 +1610,4 @@ def _default_filters_cached(
         )
     if "eye" in _fixations.columns:
         filters["eyes"] = sorted(_fixations["eye"].dropna().astype(str).unique())
-    filters["include_noise"] = False if "noise_flag" in _fixations.columns else True
     return filters

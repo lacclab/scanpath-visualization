@@ -8,12 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Guided setup wizard for uploads.** Uploading now walks you through a
-  step-by-step flow — upload your tables (in a collapsible box that tucks away
-  once files are in), then map the trial id, participants, texts, and the few
-  required fields. Live counts ("✓ N trials detected — make sure this is the
-  number you expect", participants, texts) confirm each step. After loading it
-  collapses into a compact **Data & mapping** panel you can re-open to tweak.
+- **Guided setup wizard for uploads.** Uploading now walks you through an
+  incremental flow where only the step you still need to fill stays open
+  (finished and auto-detected steps tuck away). You name the dataset and set the
+  display up front, upload each table in its own toggle (each showing its row
+  count — "✓ N fixations detected — make sure this is the number you expect"),
+  then map the trial id, participants, texts, and required fields in collapsible
+  parts. After loading it collapses into a compact **Data & mapping** panel you
+  can re-open to tweak.
 - **Reusable named datasets.** Finishing an upload saves it (under a name you
   choose) as a first-class data source. Switching between it, the bundled demo,
   and other datasets is instant — no re-uploading or re-mapping. Add another via
@@ -63,14 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   show whenever they apply (no longer gated behind *Show color bars*).
 - **Clearer trial-id mapping.** One shared **Trial ID** picker applies to every
   table by default (with an opt-in *Different trial-id columns per table* toggle
-  that now keeps the columns you already picked instead of clearing them), and
-  defaults to composing the participant and text ids when both exist. If the
-  per-table trial counts disagree the wizard says so.
-- **Tidier wizard.** The required-field steps are renamed **Column mapping:
-  Fixations** and **Column mapping: Text & Interest Areas** (each collapsible); a
-  single **Fields to keep** list replaces the split *Optional fields* / *Extra
-  columns* pickers; the four upload boxes are narrower; and uploaded data now
-  defaults to a 2560×1440 monitor.
+  that keeps the columns you already picked instead of clearing them), and
+  defaults to composing the participant and the finest passage id (paragraph,
+  plus a repeated-reading column when the data has one, so the two readings of a
+  paragraph stay distinct). If the per-table trial counts disagree the wizard
+  says so.
+- **Tidier wizard.** The mapping steps are grouped under **Column mapping** with
+  one collapsible part each (trial id, participants, texts, **Column mapping:
+  Fixations**, **Column mapping: Text & Interest Areas**, **More text mappings**,
+  **More fixation mappings**); a single cross-table **Filter trials by** picker
+  and a single **Additional fields to keep** picker replace the per-table
+  duplicates; the upload boxes are narrower; and uploaded data defaults to a
+  2560×1440 monitor. Niche fixation columns (pass index, saccade type/amplitude,
+  eye) are auto-detected under *fields to keep* rather than mapped by hand.
 - **Integer colour ranges.** The fixation- and heatmap-colour range sliders read
   as whole numbers instead of long decimals.
 - **Refreshed the welcome tour** to match the current app (the *Experimental
@@ -99,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropped the stale **Reading regime** line from the Text & question panel, and
   fixed the per-trial annotations note that pointed at an *Annotations* sidebar
   panel that no longer exists (it lives in **💾 Save & restore**).
+
+### Removed
+- **Noise-flag auto-filtering.** A mapped noise/validity column used to silently
+  drop "noisy" fixations from every view with no way to turn it off. It's gone —
+  every uploaded fixation is shown. If your data has such a column you can still
+  keep it (via *fields to keep*) and filter on it explicitly.
 
 ## [0.19.1] - 2026-06-14
 
